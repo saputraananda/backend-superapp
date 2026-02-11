@@ -3,7 +3,7 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
 import session from "express-session";
-import authRoutes from "./routes/authRoutes.js";
+import authRoutes from "./routes/auth/authRoutes.js";
 import appRoutes from "./routes/appRoutes.js";
 import employeeRoutes from "./routes/employeeRoutes.js";
 import pool from "./db/pool.js";

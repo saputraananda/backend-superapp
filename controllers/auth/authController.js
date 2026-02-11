@@ -1,7 +1,7 @@
 import express from "express";
-import pool from "../db/pool.js";
+import pool from "../../db/pool.js";
 import bcrypt from "bcrypt";
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth } from "../../middleware/auth.js";
 
 const router = express.Router();
 
@@ -111,26 +111,33 @@ router.get("/master-data", async (req, res) => {
 
 // REGISTER
 export async function register(req, res) {
-  const { full_name, gender, birth_place, birth_date, address, ktp_number,
-    family_card_number, phone_number, company_id, position_id,
-    department_id, join_date, employment_status_id, contract_end_date,
-    education_level_id, school_name, religion_id, marital_status,
-    bpjs_health_number, bpjs_employment_number, npwp_number,
-    bank_id, bank_account_number, emergency_contact, notes }
-    = req.body;
+  const { name, full_name, email, password } = req.body;
+
+  const finalFullName = full_name ?? name;
+  if (!finalFullName) return res.status(400).json({ message: "Full name is required" });
+  if (!email) return res.status(400).json({ message: "Email is required" });
+  if (!password) return res.status(400).json({ message: "Password is required" });
 
   try {
+    // 1) cek email sudah dipakai di users
+    const [exist] = await pool.query(`SELECT id FROM users WHERE email = ?`, [email]);
+    if (exist.length > 0) {
+      return res.status(409).json({ message: "Email already registered" });
+    }
+
+    // 2) insert users
+    const password_hash = await bcrypt.hash(password, 10);
     await pool.query(
-      `INSERT INTO mst_employee (full_name, gender, birth_place, birth_date, address, ktp_number, family_card_number, phone_number, company_id, position_id, department_id, join_date, employment_status_id, contract_end_date, education_level_id, school_name, religion_id, marital_status, bpjs_health_number, bpjs_employment_number, npwp_number, bank_id, bank_account_number, emergency_contact, notes)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        full_name, gender, birth_place, birth_date, address, ktp_number,
-        family_card_number, phone_number, company_id, position_id,
-        department_id, join_date, employment_status_id, contract_end_date,
-        education_level_id, school_name, religion_id, marital_status,
-        bpjs_health_number, bpjs_employment_number, npwp_number,
-        bank_id, bank_account_number, emergency_contact, notes
-      ]
+      `INSERT INTO users (name, email, password_hash, role)
+       VALUES (?, ?, ?, ?)`,
+      [finalFullName, email, password_hash, "employee"]
+    );
+
+    // 3) insert mst_employee (minimal)
+    await pool.query(
+      `INSERT INTO mst_employee (full_name, email)
+       VALUES (?, ?)`,
+      [finalFullName, email]
     );
 
     res.json({ message: "Registration successful" });
@@ -194,8 +201,12 @@ export async function login(req, res) {
 
 // LOGOUT
 export async function logout(req, res) {
-  req.session.userEmail = null;
-  res.json({ message: "Logout successful" });
+  req.session.destroy(err => {
+    if (err) {
+      return res.status(500).json({ message: "Logout failed" });
+    }
+    res.json({ message: "Logout successful" });
+  });
 }
 
 // ME
