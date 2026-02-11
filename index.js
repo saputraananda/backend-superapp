@@ -13,22 +13,19 @@ const app = express();
 
 app.use(express.json());
 app.use(cookieParser());
-app.use(cors({origin: "http://localhost:5173",credentials: true,}));
-
-app.use(
-  session({
-    name: "alora.sid",
-    secret: process.env.SESSION_SECRET,
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: false,
-      maxAge: 1000 * 60 * 60 * 2,
-    },
-  })
-);
+app.use(cors({ origin: "http://localhost:5173", credentials: true }));
+app.use(session({
+  name: "alora.sid",
+  secret: process.env.SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: false,
+    maxAge: 1000 * 60 * 60 * 2,
+  },
+}));
 
 app.get("/health", (req, res) => res.json({ message: "API berjalan Normal" }));
 
@@ -303,7 +300,8 @@ app.post("/database", async (req, res) => {
         (11, 'Director'),
         (12, 'Vice Director'),
         (13, 'President Director'),
-        (14, 'Commissioner')
+        (14, 'Commissioner'),
+        (15, 'Admin')
     `);
 
     // Insert default data Master Position (FULL)
@@ -378,20 +376,20 @@ app.post("/database", async (req, res) => {
         '3173050101230001',
         '081234567890',
         'ananda.prathama@waschen.co.id',
-        7,
-        13,
-        4,
+        1,      -- job_level_id (ada)
+        1,      -- position_id (ganti dari 13 ke 1, agar valid)
+        1,      -- department_id (ada)
         '2023-01-15',
-        4,
+        4,      -- employment_status_id (ada)
         NULL,
-        9,
+        9,      -- education_level_id (ada)
         'Institut Pertanian Bogor',
-        1,
+        1,      -- religion_id (ada)
         'Married',
         '0001234567890',
         '12345678901',
         '12.345.678.9-012.000',
-        1,
+        1,      -- bank_id (ada)
         '1234567890',
         'Bapak Deny (082198765432)',
         0,

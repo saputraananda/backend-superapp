@@ -1,12 +1,19 @@
 import express from "express";
-import { getApps } from "../controllers/appController.js";
+import pool from "../db/pool.js";
+import { requireAuth } from "../middleware/auth.js"; // ← Import middleware
+
 const router = express.Router();
 
-function requireAuth(req, res, next) {
-  if (!req.session.user) return res.status(401).json({ message: "Unauthorized" });
-  next();
-}
-
-router.get("/", requireAuth, getApps);
+router.get("/", requireAuth, async (req, res) => { // ← Pakai middleware
+  try {
+    const [rows] = await pool.query(
+      "SELECT * FROM mst_apps WHERE is_active = 1 ORDER BY sort_order ASC"
+    );
+    res.json({ apps: rows });
+  } catch (error) {
+    console.error("Get apps error:", error);
+    res.status(500).json({ message: error.message });
+  }
+});
 
 export default router;
