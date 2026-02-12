@@ -43,6 +43,7 @@ export const getProfile = async (req, res) => {
   }
 };
 
+// Update employee profile
 export const updateProfile = async (req, res) => {
   console.log("[API] PUT /employees/profile endpoint hit");
 
