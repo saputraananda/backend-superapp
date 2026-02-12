@@ -1,19 +1,10 @@
 import express from "express";
-import pool from "../db/pool.js";
-import { requireAuth } from "../middleware/auth.js"; // ← Import middleware
+import { requireAuth } from "../middleware/auth.js";
+import { getApps } from "../controllers/appController.js"; // ← Import controller
 
 const router = express.Router();
 
-router.get("/", requireAuth, async (req, res) => { // ← Pakai middleware
-  try {
-    const [rows] = await pool.query(
-      "SELECT * FROM mst_apps WHERE is_active = 1 ORDER BY sort_order ASC"
-    );
-    res.json({ apps: rows });
-  } catch (error) {
-    console.error("Get apps error:", error);
-    res.status(500).json({ message: error.message });
-  }
-});
+// Ganti handler langsung dengan controller
+router.get("/", requireAuth, getApps); // ← Pakai controller yang sudah ada filter role
 
 export default router;
