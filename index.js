@@ -7,6 +7,8 @@ import authRoutes from "./routes/auth/authRoutes.js";
 import appRoutes from "./routes/appRoutes.js";
 import employeeRoutes from "./routes/employeeRoutes.js";
 
+console.log("🚀 Starting AloraSuperApp API..."); // Tambahkan log di awal
+
 dotenv.config({
   path: process.env.NODE_ENV === "production" ? ".env.prod" : ".env"
 });
