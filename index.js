@@ -17,10 +17,7 @@ const isProd = process.env.NODE_ENV === "production";
 
 app.set("trust proxy", 1);
 
-app.use(express.json());
-app.use(cookieParser());
-
-// ===== CORS =====
+// ===== CORS - PINDAHKAN KE ATAS SEBELUM MIDDLEWARE LAIN =====
 const allowedOrigins = (process.env.CORS_ORIGIN || "")
   .split(",")
   .map(s => s.trim())
@@ -33,8 +30,17 @@ app.use(cors({
     if (allowedOrigins.includes(origin)) return cb(null, true);
     return cb(new Error("Not allowed by CORS"));
   },
-  credentials: true
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Cookie'],
+  exposedHeaders: ['Set-Cookie']
 }));
+
+// Handle preflight requests
+app.options('*', cors());
+
+app.use(express.json());
+app.use(cookieParser());
 
 // ===== SESSION =====
 app.use(session({
