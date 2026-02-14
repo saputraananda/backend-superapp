@@ -75,9 +75,23 @@ export async function login(req, res) {
       [email]
     );
 
-    // Set session
+    const employee = empRows[0] || null;
+
+    // Set session dengan struktur lengkap
     req.session.userId = user.id;
     req.session.userEmail = user.email;
+    req.session.userRole = user.role;
+    
+    // IMPORTANT: Set employee_id untuk satisfaction survey
+    if (employee) {
+      req.session.employeeId = employee.employee_id;
+    }
+
+    console.log("Login session set:", {
+      userId: req.session.userId,
+      employeeId: req.session.employeeId,
+      email: req.session.userEmail
+    });
 
     res.json({
       message: "Login successful",
@@ -86,7 +100,7 @@ export async function login(req, res) {
         name: user.name,
         email: user.email,
         role: user.role,
-        employee: empRows[0] || null
+        employee: employee
       }
     });
   } catch (error) {

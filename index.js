@@ -8,6 +8,7 @@ import pool from "./db/pool.js";
 import authRoutes from "./routes/auth/authRoutes.js";
 import appRoutes from "./routes/appRoutes.js";
 import employeeRoutes from "./routes/employeeRoutes.js";
+import satisfactionRoutes from "./routes/satisfactionRoutes.js";
 
 console.log("🚀 Starting AloraSuperApp API...");
 
@@ -109,6 +110,7 @@ app.get("/health", (req, res) => {
 app.use("/auth", authRoutes);
 app.use("/apps", appRoutes);
 app.use("/employees", employeeRoutes);
+app.use("/satisfaction", satisfactionRoutes);
 
 // ===== 404 Handler =====
 app.use((req, res) => {
