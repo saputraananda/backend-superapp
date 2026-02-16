@@ -61,6 +61,7 @@ export const updateProfile = async (req, res) => {
   } = req.body;
 
   try {
+    // Update mst_employee
     await pool.query(
       `UPDATE mst_employee SET
         full_name = ?, gender = ?, birth_place = ?, birth_date = ?,
@@ -82,6 +83,14 @@ export const updateProfile = async (req, res) => {
         req.session.userEmail
       ]
     );
+
+    // Update users table jika full_name diubah
+    if (typeof full_name === "string" && full_name.trim() !== "") {
+      await pool.query(
+        `UPDATE users SET name = ? WHERE email = ?`,
+        [full_name, req.session.userEmail]
+      );
+    }
 
     res.json({ message: "Profile updated successfully" });
   } catch (error) {

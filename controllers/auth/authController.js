@@ -141,9 +141,13 @@ export async function me(req, res) {
     const [empRows] = await pool.query(
       `SELECT 
          e.*,
+         c.company_name AS company_name,
+         d.department_name AS department_name,
          jl.job_level_name AS job_level_name,
          p.position_name  AS position_name
        FROM mst_employee e
+       LEFT JOIN mst_company c ON c.company_id = e.company_id
+       LEFT JOIN mst_department d ON d.department_id = e.department_id
        LEFT JOIN mst_job_level jl ON jl.job_level_id = e.job_level_id
        LEFT JOIN mst_position p   ON p.position_id  = e.position_id
        WHERE e.email = ? AND e.is_deleted = 0

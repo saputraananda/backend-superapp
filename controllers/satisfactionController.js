@@ -1,31 +1,28 @@
 import pool from "../db/pool.js";
 
-// Get current survey key (format: YYYY-Q1/Q2/Q3/Q4)
+// Get current survey key (format: YYYY-MM)
 function getCurrentSurveyKey() {
   const now = new Date();
   const year = now.getFullYear();
-  const quarter = Math.ceil((now.getMonth() + 1) / 3);
-  return `${year}-Q${quarter}`;
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  return `${year}-${month}`;
 }
 
 // Check if employee has already submitted survey this period
 export async function checkSurveyStatus(req, res) {
   try {
-    console.log("checkSurveyStatus - Session:", req.session);
-    
     const employeeId = req.session.employeeId;
     
     if (!employeeId) {
       return res.status(401).json({ 
-        message: "Employee ID not found in session. Please ensure you have a complete employee profile." 
+        message: "Employee ID not found in session" 
       });
     }
 
     const surveyKey = getCurrentSurveyKey();
-    console.log("Survey key:", surveyKey, "Employee ID:", employeeId);
 
     const [rows] = await pool.query(
-      `SELECT id, submitted_at, status 
+      `SELECT id, full_name, submitted_at, status 
        FROM tr_employee_satisfaction_audit 
        WHERE employee_id = ? AND survey_key = ? AND status = 'COMPLETED'`,
       [employeeId, surveyKey]
@@ -35,6 +32,7 @@ export async function checkSurveyStatus(req, res) {
       surveyKey,
       hasSubmitted: rows.length > 0,
       submittedAt: rows[0]?.submitted_at || null,
+      submittedBy: rows[0]?.full_name || null,
     });
   } catch (err) {
     console.error("Error checking survey status:", err);
@@ -45,8 +43,6 @@ export async function checkSurveyStatus(req, res) {
 // Get master data for survey
 export async function getSurveyMasterData(req, res) {
   try {
-    console.log("getSurveyMasterData - Session:", req.session);
-
     const [companies] = await pool.query(
       `SELECT company_id, company_name FROM mst_company WHERE is_active = 1 ORDER BY company_name`
     );
@@ -55,23 +51,41 @@ export async function getSurveyMasterData(req, res) {
       `SELECT department_id, department_name FROM mst_department WHERE is_active = 1 ORDER BY department_name`
     );
 
-    console.log("Master data fetched - Companies:", companies.length, "Departments:", departments.length);
+    // Ambil join_date semua karyawan aktif
+    const [employees] = await pool.query(
+      `SELECT join_date FROM mst_employee`
+    );
+
+    // Hitung masa kerja (tenure) untuk masing-masing join_date
+    const now = new Date();
+    const tenureSet = new Set();
+
+    employees.forEach(emp => {
+      const joinDate = new Date(emp.join_date);
+      const diffMs = now - joinDate;
+      const diffMonth = diffMs / (1000 * 60 * 60 * 24 * 30.44);
+
+      let label = "";
+      if (diffMonth < 3) label = "< 3 bulan";
+      else if (diffMonth < 6) label = "3 - 6 bulan";
+      else if (diffMonth < 12) label = "6 - 12 bulan";
+      else label = "> 1 tahun";
+
+      tenureSet.add(label);
+    });
+
+    // Buat array dan urutkan sesuai kebutuhan
+    const tenureOptions = [
+      { value: "< 3 bulan", label: "< 3 bulan" },
+      { value: "3 - 6 bulan", label: "3 - 6 bulan" },
+      { value: "6 - 12 bulan", label: "6 - 12 bulan" },
+      { value: "> 1 tahun", label: "> 1 tahun" },
+    ].filter(opt => tenureSet.has(opt.value));
 
     res.json({
       companies,
       departments,
-      jobLevels: [
-        { value: "Staff", label: "Staff" },
-        { value: "SPV", label: "Supervisor" },
-        { value: "Manager", label: "Manager" },
-        { value: "Lainnya", label: "Lainnya" },
-      ],
-      tenures: [
-        { value: "< 3 Bulan", label: "< 3 Bulan" },
-        { value: "3-6 Bulan", label: "3–6 Bulan" },
-        { value: "6-12 Bulan", label: "6–12 Bulan" },
-        { value: "> 1 Tahun", label: "> 1 Tahun" },
-      ],
+      tenures: tenureOptions,
       satisfactionLevels: [
         { value: "Sangat Puas", label: "Sangat Puas" },
         { value: "Puas", label: "Puas" },
@@ -101,13 +115,10 @@ export async function submitSurvey(req, res) {
 
   try {
     const employeeId = req.session.employeeId;
-    const email = req.session.userEmail;
 
-    console.log("submitSurvey - Employee ID:", employeeId, "Email:", email);
-
-    if (!employeeId || !email) {
+    if (!employeeId) {
       return res.status(401).json({ 
-        message: "Employee ID or email not found in session" 
+        message: "Employee ID not found in session" 
       });
     }
 
@@ -127,9 +138,10 @@ export async function submitSurvey(req, res) {
     }
 
     const {
-      company_id,
-      department_text,
-      job_level,
+      full_name,
+      company_name,
+      department_name,
+      job_level_name,
       tenure,
       overall_satisfaction,
       main_factors,
@@ -139,7 +151,7 @@ export async function submitSurvey(req, res) {
     } = req.body;
 
     // Validate required fields
-    if (!department_text || !job_level || !tenure || !overall_satisfaction) {
+    if (!full_name || !department_name || !job_level_name || !tenure || !overall_satisfaction) {
       return res.status(400).json({
         message: "Mohon lengkapi semua informasi umum dan kepuasan kerja",
       });
@@ -160,10 +172,10 @@ export async function submitSurvey(req, res) {
 
     await connection.beginTransaction();
 
-    // Insert satisfaction data (anonymous)
+    // Insert satisfaction data with employee identity
     const [result] = await connection.query(
       `INSERT INTO tr_employee_satisfaction (
-        company_id, department_text, job_level, tenure,
+        employee_id, full_name, company_name, department_name, job_level_name, tenure,
         overall_satisfaction, main_factors,
         c1_semangat_mulai_hari, c2_pekerjaan_bermakna,
         c3_berenergi_antusias, c4_fokus_terlibat,
@@ -175,11 +187,13 @@ export async function submitSurvey(req, res) {
         c15_ingin_tetap_bekerja, c16_tanggungjawab_berkontribusi,
         d1_kurang_nyaman_atau_capek, d2_bikin_betah_senang_termotivasi,
         d3_yang_perlu_dibenahi_cepat
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        company_id || null,
-        department_text,
-        job_level,
+        employeeId,
+        full_name,
+        company_name || null,
+        department_name || null,
+        job_level_name || null,
         tenure,
         overall_satisfaction,
         JSON.stringify(main_factors || []),
@@ -191,14 +205,12 @@ export async function submitSurvey(req, res) {
       ]
     );
 
-    const satisfactionId = result.insertId;
-
     // Insert audit record
     await connection.query(
       `INSERT INTO tr_employee_satisfaction_audit 
-       (employee_id, email, survey_key, satisfaction_id, status)
-       VALUES (?, ?, ?, ?, 'COMPLETED')`,
-      [employeeId, email, surveyKey, satisfactionId]
+       (employee_id, full_name, survey_key, status)
+       VALUES (?, ?, ?, 'COMPLETED')`,
+      [employeeId, full_name, surveyKey]
     );
 
     await connection.commit();
@@ -231,9 +243,8 @@ export async function getSurveyStats(req, res) {
     // Get satisfaction distribution
     const [satisfactionDist] = await pool.query(
       `SELECT overall_satisfaction, COUNT(*) as count 
-       FROM tr_employee_satisfaction s
-       JOIN tr_employee_satisfaction_audit a ON s.id = a.satisfaction_id
-       WHERE a.survey_key = ? AND a.status = 'COMPLETED'
+       FROM tr_employee_satisfaction
+       WHERE survey_key = ? AND status = 'COMPLETED'
        GROUP BY overall_satisfaction`,
       [surveyKey]
     );
@@ -257,8 +268,8 @@ export async function getSurveyStats(req, res) {
         AVG(c14_perusahaan_berarti) as c14,
         AVG(c15_ingin_tetap_bekerja) as c15,
         AVG(c16_tanggungjawab_berkontribusi) as c16
-       FROM tr_employee_satisfaction s
-       JOIN tr_employee_satisfaction_audit a ON s.id = a.satisfaction_id
+       FROM tr_employee_satisfaction
+       JOIN tr_employee_satisfaction_audit a ON tr_employee_satisfaction.employee_id = a.employee_id
        WHERE a.survey_key = ? AND a.status = 'COMPLETED'`,
       [surveyKey]
     );
