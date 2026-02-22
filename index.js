@@ -1,7 +1,14 @@
+import dotenv from "dotenv";
+
+// ✅ HARUS PALING PERTAMA sebelum import apapun yang butuh env
+dotenv.config({
+  path: process.env.NODE_ENV === "production" ? ".env.prod" : ".env"
+});
+
+// Baru import yang lain
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
-import dotenv from "dotenv";
 import session from "express-session";
 import MySQLStore from "express-mysql-session";
 import path from "path";
@@ -18,11 +25,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
 console.log("🚀 Starting AloraSuperApp API...");
-
-// Load environment variables
-dotenv.config({
-  path: process.env.NODE_ENV === "production" ? ".env.prod" : ".env"
-});
 
 // Validate required environment variables
 const requiredEnv = ['DB_HOST', 'DB_USER', 'DB_PASS', 'DB_NAME', 'SESSION_SECRET'];
