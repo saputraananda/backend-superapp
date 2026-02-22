@@ -4,11 +4,18 @@ import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
 import session from "express-session";
 import MySQLStore from "express-mysql-session";
+import path from "path";
+import { fileURLToPath } from "url";
 import pool from "./db/pool.js";
 import authRoutes from "./routes/auth/authRoutes.js";
 import appRoutes from "./routes/appRoutes.js";
 import employeeRoutes from "./routes/employeeRoutes.js";
 import satisfactionRoutes from "./routes/satisfactionRoutes.js";
+import pmRoutes from "./routes/pmRoutes.js";
+import masterKarRoutes from "./routes/masterKarRoutes.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = path.dirname(__filename);
 
 console.log("🚀 Starting AloraSuperApp API...");
 
@@ -111,6 +118,18 @@ app.use("/auth", authRoutes);
 app.use("/apps", appRoutes);
 app.use("/employees", employeeRoutes);
 app.use("/satisfaction", satisfactionRoutes);
+app.use("/api/pm", pmRoutes);
+app.use("/hr", masterKarRoutes);
+
+// ✅ Serve uploaded evidence files as static
+// Akses via: GET /assets/evidence/<filename>
+app.use(
+  "/assets/evidence",
+  express.static(path.join(__dirname, "assets", "evidence"))
+);
+
+// Serve static assets (avatars, dll)
+app.use("/assets", express.static(path.join(__dirname, "assets")));
 
 // ===== 404 Handler =====
 app.use((req, res) => {

@@ -25,3 +25,5 @@ dist/
 *.njsproj
 *.sln
 *.sw?
+assets/
+**/assets/
