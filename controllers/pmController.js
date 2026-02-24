@@ -621,3 +621,21 @@ export async function addTaskComment(req, res) {
     res.status(500).json({ message: err.message });
   }
 }
+
+export async function listEmployees(req, res) {
+  try {
+    if (!requireAuth(req, res)) return;
+    const [rows] = await safeQuery(
+      `SELECT employee_id, full_name, email, job_level_id
+       FROM mst_employee
+       WHERE is_deleted = 0
+         AND job_level_id != ?
+       ORDER BY full_name ASC`,
+      [JOB_LEVEL.DIREKTUR]
+    );
+    res.json({ data: rows });
+  } catch (err) {
+    console.error("listEmployees error:", err);
+    res.status(500).json({ message: err.message });
+  }
+}
