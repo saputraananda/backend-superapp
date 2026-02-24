@@ -1,51 +1,55 @@
-import pool from "../db/pool.js";
-import fs from "fs";
+import { safeQuery } from "../db/pool.js";
+import fs   from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
-const AVATAR_DIR = path.join(__dirname, "..", "assets", "avatars");
+const AVATAR_DIR   = path.join(__dirname, "..", "assets", "avatars");
+const DOCUMENT_DIR = path.join(__dirname, "..", "assets", "documents");
 
-// Helper: hapus file lama jika ada
-const deleteOldFile = (filePath) => {
+const deleteOldFile = (filePath, dir = AVATAR_DIR) => {
   if (!filePath) return;
-  const abs = path.join(AVATAR_DIR, path.basename(filePath));
+  const abs = path.join(dir, path.basename(filePath));
   if (fs.existsSync(abs)) {
     try { fs.unlinkSync(abs); } catch (_) {}
   }
 };
 
-// Get employee profile with joins to related master tables
-export const getProfile = async (req, res) => {
-  console.log("[API] /employees/profile endpoint hit");
+const DOC_MAP = {
+  ktp:        { nameCol: "ktp_name",        pathCol: "ktp_path"        },
+  kk:         { nameCol: "kk_name",         pathCol: "kk_path"         },
+  npwp:       { nameCol: "npwp_name",       pathCol: "npwp_path"       },
+  bpjs:       { nameCol: "bpjs_name",       pathCol: "bpjs_path"       },
+  bpjs_tk:    { nameCol: "bpjs_tk_name",    pathCol: "bpjs_tk_path"    },
+  ijazah:     { nameCol: "ijazah_name",     pathCol: "ijazah_path"     },
+  sertifikat: { nameCol: "sertifikat_name", pathCol: "sertifikat_path" },
+  rekomkerja: { nameCol: "rekomkerja_name", pathCol: "rekomkerja_path" },
+};
 
+// ── GET PROFILE ────────────────────────────────────────────────────────────
+export const getProfile = async (req, res) => {
   if (!req.session.userEmail) {
     return res.status(401).json({ message: "Not authenticated" });
   }
 
   try {
-    const [rows] = await pool.query(
+    const [rows] = await safeQuery(
       `SELECT e.*, 
-        c.company_name, 
-        j.job_level_name, 
-        p.position_name, 
-        d.department_name,
-        es.employment_status_name,
-        ed.education_level_name,
-        r.religion_name,
-        b.bank_name
-      FROM mst_employee e
-      LEFT JOIN mst_company c ON e.company_id = c.company_id
-      LEFT JOIN mst_job_level j ON e.job_level_id = j.job_level_id
-      LEFT JOIN mst_position p ON e.position_id = p.position_id
-      LEFT JOIN mst_department d ON e.department_id = d.department_id
-      LEFT JOIN mst_employment_status es ON e.employment_status_id = es.employment_status_id
-      LEFT JOIN mst_education_level ed ON e.education_level_id = ed.education_level_id
-      LEFT JOIN mst_religion r ON e.religion_id = r.religion_id
-      LEFT JOIN mst_bank b ON e.bank_id = b.bank_id
-      WHERE e.email = ? AND e.is_deleted = 0`,
+        c.company_name, j.job_level_name, p.position_name, d.department_name,
+        es.employment_status_name, ed.education_level_name,
+        r.religion_name, b.bank_name
+       FROM mst_employee e
+       LEFT JOIN mst_company          c  ON e.company_id          = c.company_id
+       LEFT JOIN mst_job_level        j  ON e.job_level_id        = j.job_level_id
+       LEFT JOIN mst_position         p  ON e.position_id         = p.position_id
+       LEFT JOIN mst_department       d  ON e.department_id       = d.department_id
+       LEFT JOIN mst_employment_status es ON e.employment_status_id = es.employment_status_id
+       LEFT JOIN mst_education_level  ed ON e.education_level_id  = ed.education_level_id
+       LEFT JOIN mst_religion         r  ON e.religion_id         = r.religion_id
+       LEFT JOIN mst_bank             b  ON e.bank_id             = b.bank_id
+       WHERE e.email = ? AND e.is_deleted = 0`,
       [req.session.userEmail]
     );
 
@@ -60,10 +64,8 @@ export const getProfile = async (req, res) => {
   }
 };
 
-// Update employee profile
+// ── UPDATE PROFILE ─────────────────────────────────────────────────────────
 export const updateProfile = async (req, res) => {
-  console.log("[API] PUT /employees/profile endpoint hit");
-
   if (!req.session.userEmail) {
     return res.status(401).json({ message: "Not authenticated" });
   }
@@ -74,11 +76,23 @@ export const updateProfile = async (req, res) => {
     department_id, join_date, employment_status_id, contract_end_date,
     education_level_id, school_name, religion_id, marital_status,
     bpjs_health_number, bpjs_employment_number, npwp_number,
-    bank_id, bank_account_number, emergency_contact, notes
+    bank_id, bank_account_number, emergency_contact, notes, employee_code,
   } = req.body;
 
+  if (!employee_code?.trim()) {
+    return res.status(400).json({ message: "Nomor Induk Karyawan wajib diisi." });
+  }
+
   try {
-    await pool.query(
+    const [existing] = await safeQuery(
+      "SELECT employee_id FROM mst_employee WHERE employee_code = ? AND email != ? AND is_deleted = 0",
+      [employee_code, req.session.userEmail]
+    );
+    if (existing.length > 0) {
+      return res.status(400).json({ message: "Nomor Induk Karyawan sudah digunakan oleh karyawan lain." });
+    }
+
+    await safeQuery(
       `UPDATE mst_employee SET
         full_name = ?, gender = ?, birth_place = ?, birth_date = ?,
         address = ?, ktp_number = ?, family_card_number = ?,
@@ -87,8 +101,8 @@ export const updateProfile = async (req, res) => {
         contract_end_date = ?, education_level_id = ?, school_name = ?,
         religion_id = ?, marital_status = ?, bpjs_health_number = ?,
         bpjs_employment_number = ?, npwp_number = ?, bank_id = ?,
-        bank_account_number = ?, emergency_contact = ?, notes = ?
-      WHERE email = ? AND is_deleted = 0`,
+        bank_account_number = ?, emergency_contact = ?, notes = ?, employee_code = ?
+       WHERE email = ? AND is_deleted = 0`,
       [
         full_name, gender, birth_place, birth_date, address, ktp_number,
         family_card_number, phone_number, company_id, job_level_id, position_id,
@@ -96,15 +110,12 @@ export const updateProfile = async (req, res) => {
         education_level_id, school_name, religion_id, marital_status,
         bpjs_health_number, bpjs_employment_number, npwp_number,
         bank_id, bank_account_number, emergency_contact, notes,
-        req.session.userEmail
+        employee_code, req.session.userEmail,
       ]
     );
 
     if (typeof full_name === "string" && full_name.trim() !== "") {
-      await pool.query(
-        `UPDATE users SET name = ? WHERE email = ?`,
-        [full_name, req.session.userEmail]
-      );
+      await safeQuery("UPDATE users SET name = ? WHERE email = ?", [full_name, req.session.userEmail]);
     }
 
     res.json({ message: "Profile updated successfully" });
@@ -114,48 +125,33 @@ export const updateProfile = async (req, res) => {
   }
 };
 
-// Upload foto profil
+// ── UPLOAD PAS FOTO ────────────────────────────────────────────────────────
 export const uploadProfilePhoto = async (req, res) => {
-  console.log("[API] POST /employees/profile/photo endpoint hit");
-
-  if (!req.session.userEmail) {
-    return res.status(401).json({ message: "Not authenticated" });
-  }
-
-  if (!req.file) {
-    return res.status(400).json({ message: "Tidak ada file yang diupload." });
-  }
+  if (!req.session.userEmail) return res.status(401).json({ message: "Not authenticated" });
+  if (!req.file)              return res.status(400).json({ message: "Tidak ada file yang diupload." });
 
   try {
-    // Ambil path foto lama
-    const [rows] = await pool.query(
+    const [rows] = await safeQuery(
       "SELECT profile_path FROM mst_employee WHERE email = ? AND is_deleted = 0",
       [req.session.userEmail]
     );
+    if (rows.length === 0) return res.status(404).json({ message: "Employee not found" });
 
-    if (rows.length === 0) {
-      return res.status(404).json({ message: "Employee not found" });
-    }
+    deleteOldFile(rows[0].profile_path, AVATAR_DIR);
 
-    // Hapus file lama
-    deleteOldFile(rows[0].profile_path);
+    const filePath = `/assets/avatars/${req.file.filename}`;
 
-    const fileName  = req.file.filename;
-    const filePath  = `/assets/avatars/${fileName}`;
-
-    await pool.query(
+    await safeQuery(
       "UPDATE mst_employee SET profile_name = ?, profile_path = ? WHERE email = ? AND is_deleted = 0",
       [req.file.originalname, filePath, req.session.userEmail]
     );
-
-    // Sinkron ke tabel users juga
-    await pool.query(
+    await safeQuery(
       "UPDATE users SET avatar = ? WHERE email = ?",
       [filePath, req.session.userEmail]
     );
 
     res.json({
-      message: "Foto profil berhasil diupload.",
+      message:      "Foto profil berhasil diupload.",
       profile_name: req.file.originalname,
       profile_path: filePath,
     });
@@ -165,35 +161,24 @@ export const uploadProfilePhoto = async (req, res) => {
   }
 };
 
-// Delete foto profil
+// ── DELETE PAS FOTO ────────────────────────────────────────────────────────
 export const deleteProfilePhoto = async (req, res) => {
-  console.log("[API] DELETE /employees/profile/photo endpoint hit");
-
-  if (!req.session.userEmail) {
-    return res.status(401).json({ message: "Not authenticated" });
-  }
+  if (!req.session.userEmail) return res.status(401).json({ message: "Not authenticated" });
 
   try {
-    const [rows] = await pool.query(
+    const [rows] = await safeQuery(
       "SELECT profile_path FROM mst_employee WHERE email = ? AND is_deleted = 0",
       [req.session.userEmail]
     );
+    if (rows.length === 0) return res.status(404).json({ message: "Employee not found" });
 
-    if (rows.length === 0) {
-      return res.status(404).json({ message: "Employee not found" });
-    }
+    deleteOldFile(rows[0].profile_path, AVATAR_DIR);
 
-    deleteOldFile(rows[0].profile_path);
-
-    await pool.query(
+    await safeQuery(
       "UPDATE mst_employee SET profile_name = NULL, profile_path = NULL WHERE email = ? AND is_deleted = 0",
       [req.session.userEmail]
     );
-
-    await pool.query(
-      "UPDATE users SET avatar = NULL WHERE email = ?",
-      [req.session.userEmail]
-    );
+    await safeQuery("UPDATE users SET avatar = NULL WHERE email = ?", [req.session.userEmail]);
 
     res.json({ message: "Foto profil berhasil dihapus." });
   } catch (error) {
@@ -202,94 +187,84 @@ export const deleteProfilePhoto = async (req, res) => {
   }
 };
 
-// Upload foto KTP
-export const uploadKtpPhoto = async (req, res) => {
-  console.log("[API] POST /employees/profile/ktp endpoint hit");
+// ── UPLOAD DOKUMEN ─────────────────────────────────────────────────────────
+export const uploadDoc = async (req, res) => {
+  const { docType } = req.params;
 
-  if (!req.session.userEmail) {
-    return res.status(401).json({ message: "Not authenticated" });
-  }
+  if (!req.session.userEmail) return res.status(401).json({ message: "Not authenticated" });
 
-  if (!req.file) {
-    return res.status(400).json({ message: "Tidak ada file yang diupload." });
-  }
+  const docMeta = DOC_MAP[docType];
+  if (!docMeta) return res.status(400).json({ message: "Tipe dokumen tidak valid." });
+  if (!req.file) return res.status(400).json({ message: "Tidak ada file yang diupload." });
 
   try {
-    const [rows] = await pool.query(
-      "SELECT ktp_path FROM mst_employee WHERE email = ? AND is_deleted = 0",
+    const [rows] = await safeQuery(
+      `SELECT ${docMeta.pathCol} FROM mst_employee WHERE email = ? AND is_deleted = 0`,
       [req.session.userEmail]
     );
+    if (rows.length === 0) return res.status(404).json({ message: "Employee not found" });
 
-    if (rows.length === 0) {
-      return res.status(404).json({ message: "Employee not found" });
-    }
+    deleteOldFile(rows[0][docMeta.pathCol], DOCUMENT_DIR);
 
-    deleteOldFile(rows[0].ktp_path);
+    const filePath = `/assets/documents/${req.file.filename}`;
 
-    const fileName = req.file.filename;
-    const filePath = `/assets/avatars/${fileName}`;
-
-    await pool.query(
-      "UPDATE mst_employee SET ktp_name = ?, ktp_path = ? WHERE email = ? AND is_deleted = 0",
+    await safeQuery(
+      `UPDATE mst_employee SET ${docMeta.nameCol} = ?, ${docMeta.pathCol} = ? WHERE email = ? AND is_deleted = 0`,
       [req.file.originalname, filePath, req.session.userEmail]
     );
 
     res.json({
-      message: "Foto KTP berhasil diupload.",
-      ktp_name: req.file.originalname,
-      ktp_path: filePath,
+      message: "Dokumen berhasil diupload.",
+      [`${docType}_name`]: req.file.originalname,
+      [`${docType}_path`]: filePath,
     });
   } catch (error) {
-    console.error("Upload KTP photo error:", error);
+    console.error("Upload document error:", error);
     res.status(500).json({ message: error.message });
   }
 };
 
-// Delete foto KTP
-export const deleteKtpPhoto = async (req, res) => {
-  console.log("[API] DELETE /employees/profile/ktp endpoint hit");
+// ── DELETE DOKUMEN ─────────────────────────────────────────────────────────
+export const deleteDoc = async (req, res) => {
+  const { docType } = req.params;
 
-  if (!req.session.userEmail) {
-    return res.status(401).json({ message: "Not authenticated" });
-  }
+  if (!req.session.userEmail) return res.status(401).json({ message: "Not authenticated" });
+
+  const docMeta = DOC_MAP[docType];
+  if (!docMeta) return res.status(400).json({ message: "Tipe dokumen tidak valid." });
 
   try {
-    const [rows] = await pool.query(
-      "SELECT ktp_path FROM mst_employee WHERE email = ? AND is_deleted = 0",
+    const [rows] = await safeQuery(
+      `SELECT ${docMeta.pathCol} FROM mst_employee WHERE email = ? AND is_deleted = 0`,
+      [req.session.userEmail]
+    );
+    if (rows.length === 0) return res.status(404).json({ message: "Employee not found" });
+
+    deleteOldFile(rows[0][docMeta.pathCol], DOCUMENT_DIR);
+
+    await safeQuery(
+      `UPDATE mst_employee SET ${docMeta.nameCol} = NULL, ${docMeta.pathCol} = NULL WHERE email = ? AND is_deleted = 0`,
       [req.session.userEmail]
     );
 
-    if (rows.length === 0) {
-      return res.status(404).json({ message: "Employee not found" });
-    }
-
-    deleteOldFile(rows[0].ktp_path);
-
-    await pool.query(
-      "UPDATE mst_employee SET ktp_name = NULL, ktp_path = NULL WHERE email = ? AND is_deleted = 0",
-      [req.session.userEmail]
-    );
-
-    res.json({ message: "Foto KTP berhasil dihapus." });
+    res.json({ message: "Dokumen berhasil dihapus." });
   } catch (error) {
-    console.error("Delete KTP photo error:", error);
+    console.error("Delete document error:", error);
     res.status(500).json({ message: error.message });
   }
 };
 
-// Get master data
+// ── GET MASTER DATA ────────────────────────────────────────────────────────
 export const getMasterData = async (req, res) => {
-  console.log("[API] /employees/master-data endpoint hit");
-
   try {
-    const [companies]          = await pool.query("SELECT * FROM mst_company WHERE is_active = 1");
-    const [departments]        = await pool.query("SELECT * FROM mst_department WHERE is_active = 1");
-    const [positions]          = await pool.query("SELECT * FROM mst_position WHERE is_active = 1");
-    const [jobLevels]          = await pool.query("SELECT * FROM mst_job_level WHERE is_active = 1");
-    const [employmentStatuses] = await pool.query("SELECT * FROM mst_employment_status WHERE is_active = 1");
-    const [educationLevels]    = await pool.query("SELECT * FROM mst_education_level WHERE is_active = 1");
-    const [religions]          = await pool.query("SELECT * FROM mst_religion WHERE is_active = 1");
-    const [banks]              = await pool.query("SELECT * FROM mst_bank WHERE is_active = 1");
+    const [companies]          = await safeQuery("SELECT company_id, company_name, company_code FROM mst_company WHERE is_active = 1");
+    const [departments]        = await safeQuery("SELECT department_id, department_name, company_code FROM mst_department WHERE is_active = 1");
+    const [positions]          = await safeQuery("SELECT position_id, position_name, company_code FROM mst_position WHERE is_active = 1");
+    const [jobLevels]          = await safeQuery("SELECT job_level_id, job_level_name, company_code FROM mst_job_level WHERE is_active = 1");
+    const [employmentStatuses] = await safeQuery("SELECT * FROM mst_employment_status WHERE is_active = 1");
+    const [educationLevels]    = await safeQuery("SELECT * FROM mst_education_level WHERE is_active = 1");
+    const [religions]          = await safeQuery("SELECT * FROM mst_religion WHERE is_active = 1");
+    const [banks]              = await safeQuery("SELECT * FROM mst_bank WHERE is_active = 1");
 
     res.json({ companies, departments, positions, jobLevels, employmentStatuses, educationLevels, religions, banks });
   } catch (error) {
@@ -298,27 +273,21 @@ export const getMasterData = async (req, res) => {
   }
 };
 
-// List all employees
+// ── LIST EMPLOYEES ─────────────────────────────────────────────────────────
 export const listEmployees = async (req, res) => {
-  console.log("[API] GET /employees endpoint hit");
-
   try {
-    const [rows] = await pool.query(
+    const [rows] = await safeQuery(
       `SELECT 
-        e.employee_id,
-        e.full_name,
-        e.email,
-        e.position_id,
-        e.department_id,
-        p.position_name AS position,
+        e.employee_id, e.full_name, e.email,
+        e.position_id, e.department_id,
+        p.position_name  AS position,
         d.department_name AS department
-      FROM mst_employee e
-      LEFT JOIN mst_position p ON e.position_id = p.position_id
-      LEFT JOIN mst_department d ON e.department_id = d.department_id
-      WHERE e.is_deleted = 0
-      ORDER BY e.full_name ASC`
+       FROM mst_employee e
+       LEFT JOIN mst_position   p ON e.position_id   = p.position_id
+       LEFT JOIN mst_department d ON e.department_id = d.department_id
+       WHERE e.is_deleted = 0
+       ORDER BY e.full_name ASC`
     );
-
     res.json(rows);
   } catch (error) {
     console.error("List employees error:", error);

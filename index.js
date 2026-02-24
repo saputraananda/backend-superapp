@@ -13,7 +13,7 @@ import session from "express-session";
 import MySQLStore from "express-mysql-session";
 import path from "path";
 import { fileURLToPath } from "url";
-import pool from "./db/pool.js";
+import { pool, startDbPing } from "./db/pool.js";
 import authRoutes from "./routes/auth/authRoutes.js";
 import appRoutes from "./routes/appRoutes.js";
 import employeeRoutes from "./routes/employeeRoutes.js";
@@ -85,6 +85,11 @@ const sessionStore = new MySQLStoreSession({
   }
 }, pool);
 
+// ── Ganti sessionStore.onReady (tidak valid) → pakai .on("error") ──
+sessionStore.on("error", (err) => {
+  console.error("[SessionStore] Error (server tetap jalan):", err.code ?? err.message);
+});
+
 // Handle session store errors
 sessionStore.onReady = () => {
   console.log('✅ MySQL session store ready');
@@ -123,15 +128,16 @@ app.use("/satisfaction", satisfactionRoutes);
 app.use("/api/pm", pmRoutes);
 app.use("/hr", masterKarRoutes);
 
-// ✅ Serve uploaded evidence files as static
 // Akses via: GET /assets/evidence/<filename>
 app.use(
   "/assets/evidence",
   express.static(path.join(__dirname, "assets", "evidence"))
 );
 
-// Serve static assets (avatars, dll)
-app.use("/assets", express.static(path.join(__dirname, "assets")));
+// Serve static assets
+app.use("/assets/avatars",   express.static(path.join(__dirname, "assets", "avatars")));
+app.use("/assets/documents", express.static(path.join(__dirname, "assets", "documents")));
+app.use("/assets",           express.static(path.join(__dirname, "assets")));
 
 // ===== 404 Handler =====
 app.use((req, res) => {
@@ -184,21 +190,20 @@ app.listen(PORT, () => {
   console.log(`✅ API running on port ${PORT}`);
   console.log(`📍 Environment: ${process.env.NODE_ENV}`);
   console.log(`🌐 CORS Origins: ${allowedOrigins.join(', ') || 'All'}`);
+  startDbPing(30_000); // ← tambahkan ini
 });
 
 // ===== Graceful Shutdown =====
-process.on('SIGTERM', () => {
+process.on('SIGTERM', async () => {
   console.log('SIGTERM signal received: closing HTTP server');
-  pool.end(() => {
-    console.log('Database pool closed');
-    process.exit(0);
-  });
+  await pool.end();
+  console.log('Database pool closed');
+  process.exit(0);
 });
 
-process.on('SIGINT', () => {
+process.on('SIGINT', async () => {
   console.log('SIGINT signal received: closing HTTP server');
-  pool.end(() => {
-    console.log('Database pool closed');
-    process.exit(0);
-  });
+  await pool.end();
+  console.log('Database pool closed');
+  process.exit(0);
 });

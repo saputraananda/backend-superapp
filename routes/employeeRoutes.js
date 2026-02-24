@@ -6,10 +6,10 @@ import {
   listEmployees,
   uploadProfilePhoto,
   deleteProfilePhoto,
-  uploadKtpPhoto,
-  deleteKtpPhoto,
+  uploadDoc,
+  deleteDoc,
 } from "../controllers/employeeController.js";
-import { uploadAvatar } from "../middleware/upload.js";
+import { uploadAvatar, uploadDocument } from "../middleware/upload.js";
 
 const router = express.Router();
 
@@ -18,10 +18,12 @@ router.get("/profile", getProfile);
 router.put("/profile", updateProfile);
 router.get("/master-data", getMasterData);
 
-// Photo routes
+// Pas foto — tetap hanya gambar
 router.post("/profile/photo", uploadAvatar.single("profile_photo"), uploadProfilePhoto);
 router.delete("/profile/photo", deleteProfilePhoto);
-router.post("/profile/ktp", uploadAvatar.single("ktp_photo"), uploadKtpPhoto);
-router.delete("/profile/ktp", deleteKtpPhoto);
+
+// Semua dokumen (KTP, KK, NPWP, BPJS, dst) — gambar + PDF
+router.post("/profile/document/:docType", uploadDocument.single("file"), uploadDoc);
+router.delete("/profile/document/:docType", deleteDoc);
 
 export default router;

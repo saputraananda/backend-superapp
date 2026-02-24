@@ -1,14 +1,14 @@
-import pool from "../db/pool.js";
+import { pool, safeQuery } from "../db/pool.js";
 
 export const getApps = async (req, res) => {
-  console.log("[API] /apps endpoint hit"); // Log saat API diakses
+  console.log("[API] /apps endpoint hit");
 
   const userId = req.session.userId;
   if (!userId) {
     return res.status(401).json({ message: "Unauthorized: not logged in" });
   }
 
-  const [userRows] = await pool.query(
+  const [userRows] = await safeQuery(
     "SELECT role FROM users WHERE id = ?",
     [userId]
   );
@@ -18,7 +18,7 @@ export const getApps = async (req, res) => {
 
   const myRole = userRows[0].role;
 
-  const [apps] = await pool.query(
+  const [apps] = await safeQuery(
     `SELECT id, name, description, href, authorization, is_active 
      FROM mst_apps 
      WHERE is_active = 1 

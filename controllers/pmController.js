@@ -1,5 +1,5 @@
 // src/controllers/pmController.js
-import pool from "../db/pool.js";
+import { pool, safeQuery } from "../db/pool.js";
 import fs   from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -7,14 +7,20 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
-// Route prefix yang di-serve sebagai static: /assets/evidence/<filename>
 const EVIDENCE_URL_PREFIX = "/assets/evidence";
 const EVIDENCE_DISK_DIR   = path.join(__dirname, "..", "assets", "evidence");
+
+// ─── Job Level Constants (sesuai DB) ──────────────────────────────────────────
+const JOB_LEVEL = {
+  DIREKTUR:   1,   // bisa semua
+  SUPERVISOR: 2,   // bisa create semester, monthly, task + set assignees
+  STAFF:      3,   // hanya bisa create task (self PIC only)
+};
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 async function getSessionEmployee(req) {
   if (!req.session?.employeeId) return null;
-  const [rows] = await pool.query(
+  const [rows] = await safeQuery(
     `SELECT employee_id, full_name, email, job_level_id
      FROM mst_employee
      WHERE employee_id = ? AND is_deleted = 0
@@ -36,20 +42,27 @@ function requireAuth(req, res) {
   return true;
 }
 
-function requireMinJobLevel(employee, minLevel) {
-  return Number(employee?.job_level_id || 0) >= Number(minLevel);
+// Semakin kecil angka = semakin tinggi level (1=Direktur, 2=Supervisor, 3=Staff)
+// "minLevel" artinya: job_level_id harus <= angka ini
+function requireMinJobLevel(employee, maxLevelId) {
+  return Number(employee?.job_level_id || 99) <= Number(maxLevelId);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PROJECT (Annual)
-// ─────────────────────────────────────────────────────────────────────────────
+// Shorthand helpers
+function isDirektur(employee)   { return Number(employee?.job_level_id) === JOB_LEVEL.DIREKTUR; }
+function isSupervisorUp(employee) { return requireMinJobLevel(employee, JOB_LEVEL.SUPERVISOR); } // level 1 & 2
+function isStaffUp(employee)    { return requireMinJobLevel(employee, JOB_LEVEL.STAFF); }       // semua level
+
+// ─── PROJECT ──────────────────────────────────────────────────────────────────
 export async function listProjects(req, res) {
   try {
     if (!requireAuth(req, res)) return;
-    const [rows] = await pool.query(
+    const [rows] = await safeQuery(
       `SELECT p.id, p.title, p.\`desc\`,
-              p.requestor_employee_id, p.created_at, p.updated_at
+              p.requestor_employee_id, p.created_at, p.updated_at,
+              e.full_name AS requestor_name
        FROM tr_pm_project p
+       LEFT JOIN mst_employee e ON e.employee_id = p.requestor_employee_id AND e.is_deleted = 0
        ORDER BY p.created_at DESC`
     );
     res.json({ data: rows });
@@ -63,13 +76,16 @@ export async function createProject(req, res) {
   try {
     if (!requireAuth(req, res)) return;
     const employee = await getSessionEmployee(req);
-    if (!requireMinJobLevel(employee, 3)) {
-      return res.status(403).json({ message: "Only BoD can create annual project" });
+
+    // ✅ Hanya Direktur (level 1) yang bisa buat annual project
+    if (!isDirektur(employee)) {
+      return res.status(403).json({ message: "Hanya Direktur yang bisa membuat annual project" });
     }
+
     const { title, desc } = req.body;
     if (!title?.trim()) return res.status(400).json({ message: "title is required" });
 
-    const [result] = await pool.query(
+    const [result] = await safeQuery(
       `INSERT INTO tr_pm_project (title, \`desc\`, requestor_employee_id) VALUES (?, ?, ?)`,
       [title.trim(), desc || null, employee.employee_id]
     );
@@ -84,19 +100,25 @@ export async function getProjectDetail(req, res) {
   try {
     if (!requireAuth(req, res)) return;
     const { projectId } = req.params;
-    const [[project]] = await pool.query(
-      `SELECT id, title, \`desc\`, requestor_employee_id, created_at, updated_at
-       FROM tr_pm_project WHERE id = ? LIMIT 1`,
+    const [[project]] = await safeQuery(
+      `SELECT p.id, p.title, p.\`desc\`,
+              p.requestor_employee_id, p.created_at, p.updated_at,
+              e.full_name AS requestor_name
+       FROM tr_pm_project p
+       LEFT JOIN mst_employee e ON e.employee_id = p.requestor_employee_id AND e.is_deleted = 0
+       WHERE p.id = ? LIMIT 1`,
       [projectId]
     );
     if (!project) return res.status(404).json({ message: "Project not found" });
 
-    const [semesters] = await pool.query(
-      `SELECT id, id_project, semester, title, \`desc\`,
-              requestor_employee_id, created_at, updated_at
-       FROM tr_pm_semester
-       WHERE id_project = ?
-       ORDER BY semester ASC, created_at DESC`,
+    const [semesters] = await safeQuery(
+      `SELECT s.id, s.id_project, s.semester, s.title, s.\`desc\`,
+              s.requestor_employee_id, s.created_at, s.updated_at,
+              e.full_name AS requestor_name
+       FROM tr_pm_semester s
+       LEFT JOIN mst_employee e ON e.employee_id = s.requestor_employee_id AND e.is_deleted = 0
+       WHERE s.id_project = ?
+       ORDER BY s.semester ASC, s.created_at DESC`,
       [projectId]
     );
     res.json({ project, semesters });
@@ -106,22 +128,23 @@ export async function getProjectDetail(req, res) {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// SEMESTER
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── SEMESTER ─────────────────────────────────────────────────────────────────
 export async function createSemester(req, res) {
   const conn = await pool.getConnection();
   try {
     if (!requireAuth(req, res)) return;
     const employee = await getSessionEmployee(req);
-    if (!requireMinJobLevel(employee, 2)) {
-      return res.status(403).json({ message: "Only HoD+ can create semester project" });
+
+    //  Direktur (1) & Supervisor (2) bisa buat semester
+    if (!isSupervisorUp(employee)) {
+      return res.status(403).json({ message: "Hanya Supervisor+ yang bisa membuat semester project" });
     }
+
     const { projectId } = req.params;
     const { semester, title, desc } = req.body;
     const sem = Number(semester);
-    if (![1, 2].includes(sem)) return res.status(400).json({ message: "semester must be 1 or 2" });
-    if (!title?.trim())        return res.status(400).json({ message: "title is required" });
+    if (![1, 2].includes(sem))  return res.status(400).json({ message: "semester must be 1 or 2" });
+    if (!title?.trim())          return res.status(400).json({ message: "title is required" });
 
     await conn.beginTransaction();
     const [[exists]] = await conn.query(
@@ -131,7 +154,7 @@ export async function createSemester(req, res) {
     );
     if (exists.cnt >= 1) {
       await conn.rollback();
-      return res.status(409).json({ message: "You already created this semester for this project" });
+      return res.status(409).json({ message: "Anda sudah membuat semester ini untuk project ini" });
     }
     const [ins] = await conn.query(
       `INSERT INTO tr_pm_semester (id_project, semester, title, \`desc\`, requestor_employee_id)
@@ -153,11 +176,14 @@ export async function listSemesters(req, res) {
   try {
     if (!requireAuth(req, res)) return;
     const { projectId } = req.params;
-    const [rows] = await pool.query(
-      `SELECT id, id_project, semester, title, \`desc\`,
-              requestor_employee_id, created_at, updated_at
-       FROM tr_pm_semester WHERE id_project = ?
-       ORDER BY semester ASC, created_at DESC`,
+    const [rows] = await safeQuery(
+      `SELECT s.id, s.id_project, s.semester, s.title, s.\`desc\`,
+              s.requestor_employee_id, s.created_at, s.updated_at,
+              e.full_name AS requestor_name
+       FROM tr_pm_semester s
+       LEFT JOIN mst_employee e ON e.employee_id = s.requestor_employee_id AND e.is_deleted = 0
+       WHERE s.id_project = ?
+       ORDER BY s.semester ASC, s.created_at DESC`,
       [projectId]
     );
     res.json({ data: rows });
@@ -171,10 +197,13 @@ export async function getSemesterDetail(req, res) {
   try {
     if (!requireAuth(req, res)) return;
     const { semesterId } = req.params;
-    const [[semester]] = await pool.query(
-      `SELECT id, id_project, semester, title, \`desc\`,
-              requestor_employee_id, created_at, updated_at
-       FROM tr_pm_semester WHERE id = ? LIMIT 1`,
+    const [[semester]] = await safeQuery(
+      `SELECT s.id, s.id_project, s.semester, s.title, s.\`desc\`,
+              s.requestor_employee_id, s.created_at, s.updated_at,
+              e.full_name AS requestor_name
+       FROM tr_pm_semester s
+       LEFT JOIN mst_employee e ON e.employee_id = s.requestor_employee_id AND e.is_deleted = 0
+       WHERE s.id = ? LIMIT 1`,
       [semesterId]
     );
     if (!semester) return res.status(404).json({ message: "Semester not found" });
@@ -185,16 +214,17 @@ export async function getSemesterDetail(req, res) {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// MONTHLY
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── MONTHLY ──────────────────────────────────────────────────────────────────
 export async function createMonthly(req, res) {
   try {
     if (!requireAuth(req, res)) return;
     const employee = await getSessionEmployee(req);
-    if (!requireMinJobLevel(employee, 2)) {
-      return res.status(403).json({ message: "Only HoD+ can create monthly project" });
+
+    // ✅ Direktur (1) & Supervisor (2) bisa buat monthly
+    if (!isSupervisorUp(employee)) {
+      return res.status(403).json({ message: "Hanya Supervisor+ yang bisa membuat monthly project" });
     }
+
     const { semesterId } = req.params;
     const { projectId, month, title, desc } = req.body;
     const m = Number(month);
@@ -202,13 +232,13 @@ export async function createMonthly(req, res) {
     if (!title?.trim())        return res.status(400).json({ message: "title is required" });
     if (!projectId)            return res.status(400).json({ message: "projectId is required" });
 
-    const [[sem]] = await pool.query(
+    const [[sem]] = await safeQuery(
       `SELECT id, id_project, semester FROM tr_pm_semester WHERE id = ? LIMIT 1`,
       [semesterId]
     );
     if (!sem) return res.status(404).json({ message: "Semester not found" });
 
-    const [ins] = await pool.query(
+    const [ins] = await safeQuery(
       `INSERT INTO tr_pm_monthly (id_project, id_semester, \`month\`, title, \`desc\`, requestor_employee_id)
        VALUES (?, ?, ?, ?, ?, ?)`,
       [projectId, semesterId, m, title.trim(), desc || null, employee.employee_id]
@@ -224,11 +254,14 @@ export async function listMonthlyBySemester(req, res) {
   try {
     if (!requireAuth(req, res)) return;
     const { semesterId } = req.params;
-    const [rows] = await pool.query(
-      `SELECT id, id_project, id_semester, \`month\`, title, \`desc\`,
-              requestor_employee_id, created_at, updated_at
-       FROM tr_pm_monthly WHERE id_semester = ?
-       ORDER BY \`month\` ASC`,
+    const [rows] = await safeQuery(
+      `SELECT m.id, m.id_project, m.id_semester, m.\`month\`, m.title, m.\`desc\`,
+              m.requestor_employee_id, m.created_at, m.updated_at,
+              e.full_name AS requestor_name
+       FROM tr_pm_monthly m
+       LEFT JOIN mst_employee e ON e.employee_id = m.requestor_employee_id AND e.is_deleted = 0
+       WHERE m.id_semester = ?
+       ORDER BY m.\`month\` ASC`,
       [semesterId]
     );
     res.json({ data: rows });
@@ -242,15 +275,18 @@ export async function getMonthlyDetail(req, res) {
   try {
     if (!requireAuth(req, res)) return;
     const { monthlyId } = req.params;
-    const [[monthly]] = await pool.query(
+    const [[monthly]] = await safeQuery(
       `SELECT m.id, m.id_semester, m.month, m.title, m.\`desc\`,
-              m.requestor_employee_id, m.created_at, m.updated_at
-       FROM tr_pm_monthly m WHERE m.id = ? LIMIT 1`,
+              m.requestor_employee_id, m.created_at, m.updated_at,
+              e.full_name AS requestor_name
+       FROM tr_pm_monthly m
+       LEFT JOIN mst_employee e ON e.employee_id = m.requestor_employee_id AND e.is_deleted = 0
+       WHERE m.id = ? LIMIT 1`,
       [monthlyId]
     );
     if (!monthly) return res.status(404).json({ message: "Monthly not found" });
 
-    const [tasks] = await pool.query(
+    const [tasks] = await safeQuery(
       `SELECT
          t.id, t.id_monthly, t.title, t.\`desc\`, t.status, t.priority,
          t.startdate, t.enddate, t.evidance, t.evidance_path,
@@ -265,11 +301,10 @@ export async function getMonthlyDetail(req, res) {
       [monthlyId]
     );
 
-    // Attach evidence files per task
     const taskIds = tasks.map((t) => t.id);
     let evidenceMap = {};
     if (taskIds.length) {
-      const [evRows] = await pool.query(
+      const [evRows] = await safeQuery(
         `SELECT id, task_id, file_name, file_path, file_type, file_size, uploaded_by, created_at
          FROM tr_pm_task_evidence
          WHERE task_id IN (?)
@@ -282,28 +317,26 @@ export async function getMonthlyDetail(req, res) {
       }
     }
 
-    const tasksWithEvidence = tasks.map((t) => ({
-      ...t,
-      evidence_files: evidenceMap[t.id] || [],
-    }));
-
-    res.json({ monthly, tasks: tasksWithEvidence });
+    res.json({
+      monthly,
+      tasks: tasks.map((t) => ({ ...t, evidence_files: evidenceMap[t.id] || [] })),
+    });
   } catch (err) {
     console.error("getMonthlyDetail error:", err);
     res.status(500).json({ message: err.message });
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// TASKS
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── TASKS ────────────────────────────────────────────────────────────────────
 export async function createTask(req, res) {
   const conn = await pool.getConnection();
   try {
     if (!requireAuth(req, res)) return;
     const employee = await getSessionEmployee(req);
-    if (!requireMinJobLevel(employee, 1)) {
-      return res.status(403).json({ message: "Invalid employee" });
+
+    // ✅ Semua level bisa buat task
+    if (!employee) {
+      return res.status(403).json({ message: "Employee tidak ditemukan" });
     }
 
     const { monthlyId } = req.params;
@@ -313,10 +346,12 @@ export async function createTask(req, res) {
     await conn.beginTransaction();
 
     let picId = pic_employee_id ?? null;
-    if (Number(employee.job_level_id) === 1) {
+
+    // ✅ Staff (job_level_id = 3) hanya bisa assign diri sendiri sebagai PIC
+    if (Number(employee.job_level_id) === JOB_LEVEL.STAFF) {
       if (picId && Number(picId) !== Number(employee.employee_id)) {
         await conn.rollback();
-        return res.status(403).json({ message: "Staff cannot assign other PIC" });
+        return res.status(403).json({ message: "Staff tidak bisa assign PIC ke orang lain" });
       }
       if (!picId) picId = employee.employee_id;
     }
@@ -334,10 +369,11 @@ export async function createTask(req, res) {
       ]
     );
 
+    // ✅ Hanya Direktur (1) & Supervisor (2) yang bisa set assignees list
     if (Array.isArray(assignees) && assignees.length) {
-      if (!requireMinJobLevel(employee, 2)) {
+      if (!isSupervisorUp(employee)) {
         await conn.rollback();
-        return res.status(403).json({ message: "Only HoD+ can set assignees list" });
+        return res.status(403).json({ message: "Hanya Supervisor+ yang bisa set assignees" });
       }
       for (const a of assignees) {
         await conn.query(
@@ -364,22 +400,22 @@ export async function updateTask(req, res) {
     const { taskId } = req.params;
     const employee = await getSessionEmployee(req);
 
-    const [[task]] = await pool.query(`SELECT * FROM tr_pm_task WHERE id = ? LIMIT 1`, [taskId]);
+    const [[task]] = await safeQuery(`SELECT * FROM tr_pm_task WHERE id = ? LIMIT 1`, [taskId]);
     if (!task) return res.status(404).json({ message: "Task not found" });
 
-    const isHoD   = requireMinJobLevel(employee, 2);
-    const isOwner = task.owner_employee_id === employee.employee_id;
-    const isPic   = task.pic_employee_id   === employee.employee_id;
+    const isSupUp  = isSupervisorUp(employee);   // Direktur & Supervisor
+    const isOwner  = task.owner_employee_id === employee.employee_id;
+    const isPic    = task.pic_employee_id   === employee.employee_id;
 
-    if (!isHoD && !isOwner && !isPic) {
+    if (!isSupUp && !isOwner && !isPic) {
       return res.status(403).json({ message: "Tidak punya akses update task ini" });
     }
 
     const { title, desc, status, priority, startdate, enddate, evidance, pic_employee_id } = req.body;
 
     const validStatus = [
-      "assigned","in_progress","on_hold",
-      "submitted_for_review","revision_required","approved","completed",
+      "assigned", "in_progress", "on_hold",
+      "submitted_for_review", "revision_required", "approved", "completed",
     ];
     if (status && !validStatus.includes(status)) {
       return res.status(400).json({ message: "Status tidak valid" });
@@ -388,18 +424,22 @@ export async function updateTask(req, res) {
     const fields = [];
     const vals   = [];
 
-    if (isPic && !isOwner && !isHoD) {
+    // Staff yang hanya sebagai PIC (bukan owner, bukan Supervisor+)
+    // hanya boleh update status & evidance
+    if (isPic && !isOwner && !isSupUp) {
       if (status   !== undefined) { fields.push("status = ?");   vals.push(status); }
       if (evidance !== undefined) { fields.push("evidance = ?"); vals.push(evidance || null); }
     } else {
-      if (title    !== undefined) { fields.push("title = ?");            vals.push(title?.trim() || task.title); }
-      if (desc     !== undefined) { fields.push("`desc` = ?");           vals.push(desc || null); }
-      if (status   !== undefined) { fields.push("status = ?");           vals.push(status); }
-      if (priority !== undefined) { fields.push("priority = ?");         vals.push(priority); }
-      if (startdate !== undefined){ fields.push("startdate = ?");        vals.push(startdate || null); }
-      if (enddate  !== undefined) { fields.push("enddate = ?");          vals.push(enddate || null); }
-      if (evidance !== undefined) { fields.push("evidance = ?");         vals.push(evidance || null); }
-      if (pic_employee_id !== undefined && isHoD) {
+      // Owner atau Supervisor+ bisa update semua
+      if (title    !== undefined) { fields.push("title = ?");          vals.push(title?.trim() || task.title); }
+      if (desc     !== undefined) { fields.push("`desc` = ?");         vals.push(desc || null); }
+      if (status   !== undefined) { fields.push("status = ?");         vals.push(status); }
+      if (priority !== undefined) { fields.push("priority = ?");       vals.push(priority); }
+      if (startdate!== undefined) { fields.push("startdate = ?");      vals.push(startdate || null); }
+      if (enddate  !== undefined) { fields.push("enddate = ?");        vals.push(enddate || null); }
+      if (evidance !== undefined) { fields.push("evidance = ?");       vals.push(evidance || null); }
+      // Hanya Direktur & Supervisor yang bisa ganti PIC
+      if (pic_employee_id !== undefined && isSupUp) {
         fields.push("pic_employee_id = ?");
         vals.push(pic_employee_id || null);
       }
@@ -410,9 +450,9 @@ export async function updateTask(req, res) {
     fields.push("updated_at = NOW()");
     vals.push(taskId);
 
-    await pool.query(`UPDATE tr_pm_task SET ${fields.join(", ")} WHERE id = ?`, vals);
+    await safeQuery(`UPDATE tr_pm_task SET ${fields.join(", ")} WHERE id = ?`, vals);
 
-    const [[updated]] = await pool.query(
+    const [[updated]] = await safeQuery(
       `SELECT t.*, owner.full_name AS owner_name, pic.full_name AS pic_name
        FROM tr_pm_task t
        LEFT JOIN mst_employee owner ON owner.employee_id = t.owner_employee_id AND owner.is_deleted = 0
@@ -421,8 +461,7 @@ export async function updateTask(req, res) {
       [taskId]
     );
 
-    // Attach evidence files
-    const [evidenceFiles] = await pool.query(
+    const [evidenceFiles] = await safeQuery(
       `SELECT id, task_id, file_name, file_path, file_type, file_size, uploaded_by, created_at
        FROM tr_pm_task_evidence WHERE task_id = ? ORDER BY created_at ASC`,
       [taskId]
@@ -435,11 +474,7 @@ export async function updateTask(req, res) {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// EVIDENCE (upload / list / delete)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/** POST /api/pm/tasks/:taskId/evidence  (multipart, field: files[]) */
+// ─── EVIDENCE ─────────────────────────────────────────────────────────────────
 export async function uploadEvidence(req, res) {
   try {
     if (!requireAuth(req, res)) return;
@@ -447,11 +482,10 @@ export async function uploadEvidence(req, res) {
     if (!employee) return res.status(403).json({ message: "Employee not found" });
 
     const { taskId } = req.params;
-
-    const [[task]] = await pool.query(`SELECT id FROM tr_pm_task WHERE id = ? LIMIT 1`, [taskId]);
+    const [[task]] = await safeQuery(`SELECT id FROM tr_pm_task WHERE id = ? LIMIT 1`, [taskId]);
     if (!task) return res.status(404).json({ message: "Task not found" });
 
-    const files = req.files; // array dari multer
+    const files = req.files;
     if (!files || files.length === 0) {
       return res.status(400).json({ message: "Tidak ada file yang diupload" });
     }
@@ -459,18 +493,18 @@ export async function uploadEvidence(req, res) {
     const inserted = [];
     for (const file of files) {
       const filePath = `${EVIDENCE_URL_PREFIX}/${file.filename}`;
-      const [ins] = await pool.query(
+      const [ins] = await safeQuery(
         `INSERT INTO tr_pm_task_evidence (task_id, file_name, file_path, file_type, file_size, uploaded_by)
          VALUES (?, ?, ?, ?, ?, ?)`,
         [taskId, file.originalname, filePath, file.mimetype, file.size, employee.employee_id]
       );
       inserted.push({
-        id:         ins.insertId,
-        task_id:    Number(taskId),
-        file_name:  file.originalname,
-        file_path:  filePath,
-        file_type:  file.mimetype,
-        file_size:  file.size,
+        id:          ins.insertId,
+        task_id:     Number(taskId),
+        file_name:   file.originalname,
+        file_path:   filePath,
+        file_type:   file.mimetype,
+        file_size:   file.size,
         uploaded_by: employee.employee_id,
       });
     }
@@ -482,12 +516,11 @@ export async function uploadEvidence(req, res) {
   }
 }
 
-/** GET /api/pm/tasks/:taskId/evidence */
 export async function listEvidence(req, res) {
   try {
     if (!requireAuth(req, res)) return;
     const { taskId } = req.params;
-    const [rows] = await pool.query(
+    const [rows] = await safeQuery(
       `SELECT id, task_id, file_name, file_path, file_type, file_size, uploaded_by, created_at
        FROM tr_pm_task_evidence WHERE task_id = ? ORDER BY created_at ASC`,
       [taskId]
@@ -499,36 +532,34 @@ export async function listEvidence(req, res) {
   }
 }
 
-/** DELETE /api/pm/tasks/:taskId/evidence/:evidenceId */
 export async function deleteEvidence(req, res) {
   try {
     if (!requireAuth(req, res)) return;
-    const employee     = await getSessionEmployee(req);
+    const employee = await getSessionEmployee(req);
     const { taskId, evidenceId } = req.params;
 
-    const [[ev]] = await pool.query(
+    const [[ev]] = await safeQuery(
       `SELECT * FROM tr_pm_task_evidence WHERE id = ? AND task_id = ? LIMIT 1`,
       [evidenceId, taskId]
     );
     if (!ev) return res.status(404).json({ message: "Evidence not found" });
 
-    // Hanya uploader, owner task, atau HoD+ yang boleh delete
-    const [[task]] = await pool.query(`SELECT owner_employee_id FROM tr_pm_task WHERE id = ? LIMIT 1`, [taskId]);
-    const isHoD      = requireMinJobLevel(employee, 2);
-    const isUploader = ev.uploaded_by  === employee.employee_id;
-    const isOwner    = task?.owner_employee_id === employee.employee_id;
+    const [[task]] = await safeQuery(
+      `SELECT owner_employee_id FROM tr_pm_task WHERE id = ? LIMIT 1`, [taskId]
+    );
 
-    if (!isHoD && !isUploader && !isOwner) {
+    const isSupUp    = isSupervisorUp(employee);
+    const isUploader = ev.uploaded_by          === employee.employee_id;
+    const isOwner    = task?.owner_employee_id  === employee.employee_id;
+
+    if (!isSupUp && !isUploader && !isOwner) {
       return res.status(403).json({ message: "Tidak punya akses hapus evidence ini" });
     }
 
-    // Hapus file dari disk
     const diskPath = path.join(EVIDENCE_DISK_DIR, path.basename(ev.file_path));
-    if (fs.existsSync(diskPath)) {
-      fs.unlinkSync(diskPath);
-    }
+    if (fs.existsSync(diskPath)) fs.unlinkSync(diskPath);
 
-    await pool.query(`DELETE FROM tr_pm_task_evidence WHERE id = ?`, [evidenceId]);
+    await safeQuery(`DELETE FROM tr_pm_task_evidence WHERE id = ?`, [evidenceId]);
     res.json({ message: "Evidence deleted" });
   } catch (err) {
     console.error("deleteEvidence error:", err);
@@ -536,14 +567,12 @@ export async function deleteEvidence(req, res) {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// COMMENTS
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── COMMENTS ─────────────────────────────────────────────────────────────────
 export async function listTaskComments(req, res) {
   try {
     if (!requireAuth(req, res)) return;
     const { taskId } = req.params;
-    const [rows] = await pool.query(
+    const [rows] = await safeQuery(
       `SELECT c.id, c.id_task, c.employee_id, c.comment, c.created_at,
               e.full_name AS employee_name, e.email AS employee_email
        FROM tr_pm_task_comment c
@@ -569,15 +598,15 @@ export async function addTaskComment(req, res) {
     const { comment } = req.body;
     if (!comment?.trim()) return res.status(400).json({ message: "Comment tidak boleh kosong" });
 
-    const [[task]] = await pool.query(`SELECT id FROM tr_pm_task WHERE id = ? LIMIT 1`, [taskId]);
+    const [[task]] = await safeQuery(`SELECT id FROM tr_pm_task WHERE id = ? LIMIT 1`, [taskId]);
     if (!task) return res.status(404).json({ message: "Task not found" });
 
-    const [ins] = await pool.query(
+    const [ins] = await safeQuery(
       `INSERT INTO tr_pm_task_comment (id_task, employee_id, comment) VALUES (?, ?, ?)`,
       [taskId, employee.employee_id, comment.trim()]
     );
 
-    const [[newComment]] = await pool.query(
+    const [[newComment]] = await safeQuery(
       `SELECT c.id, c.id_task, c.employee_id, c.comment, c.created_at,
               e.full_name AS employee_name, e.email AS employee_email
        FROM tr_pm_task_comment c

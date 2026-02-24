@@ -1,7 +1,6 @@
 import express from "express";
-import pool from "../../db/pool.js";
+import { safeQuery } from "../../db/pool.js";
 import bcrypt from "bcrypt";
-import { requireAuth } from "../../middleware/auth.js";
 
 const router = express.Router();
 
@@ -11,28 +10,23 @@ export async function register(req, res) {
 
   const finalFullName = full_name ?? name;
   if (!finalFullName) return res.status(400).json({ message: "Full name is required" });
-  if (!email) return res.status(400).json({ message: "Email is required" });
-  if (!password) return res.status(400).json({ message: "Password is required" });
+  if (!email)         return res.status(400).json({ message: "Email is required" });
+  if (!password)      return res.status(400).json({ message: "Password is required" });
 
   try {
-    // 1) cek email sudah dipakai di users
-    const [exist] = await pool.query(`SELECT id FROM users WHERE email = ?`, [email]);
+    const [exist] = await safeQuery(`SELECT id FROM users WHERE email = ?`, [email]);
     if (exist.length > 0) {
       return res.status(409).json({ message: "Email already registered" });
     }
 
-    // 2) insert users
     const password_hash = await bcrypt.hash(password, 10);
-    await pool.query(
-      `INSERT INTO users (name, email, password_hash, role)
-       VALUES (?, ?, ?, ?)`,
+    await safeQuery(
+      `INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, ?)`,
       [finalFullName, email, password_hash, "employee"]
     );
 
-    // 3) insert mst_employee (minimal)
-    await pool.query(
-      `INSERT INTO mst_employee (full_name, email)
-       VALUES (?, ?)`,
+    await safeQuery(
+      `INSERT INTO mst_employee (full_name, email) VALUES (?, ?)`,
       [finalFullName, email]
     );
 
@@ -48,8 +42,7 @@ export async function login(req, res) {
   const { email, password } = req.body;
 
   try {
-    // Cari user di tabel users
-    const [rows] = await pool.query(
+    const [rows] = await safeQuery(
       `SELECT * FROM users WHERE email = ?`,
       [email]
     );
@@ -63,45 +56,36 @@ export async function login(req, res) {
       return res.status(401).json({ message: "Invalid email or password" });
     }
 
-    // Bandingkan password
     const isMatch = await bcrypt.compare(password, user.password_hash);
     if (!isMatch) {
       return res.status(401).json({ message: "Invalid email or password" });
     }
 
-    // Ambil data employee (jika ada)
-    const [empRows] = await pool.query(
+    const [empRows] = await safeQuery(
       `SELECT * FROM mst_employee WHERE email = ? AND is_deleted = 0`,
       [email]
     );
 
     const employee = empRows[0] || null;
 
-    // Set session dengan struktur lengkap
-    req.session.userId = user.id;
-    req.session.userEmail = user.email;
-    req.session.userRole = user.role;
-    
-    // IMPORTANT: Set employee_id untuk satisfaction survey
-    if (employee) {
-      req.session.employeeId = employee.employee_id;
-    }
+    req.session.userId       = user.id;
+    req.session.userEmail    = user.email;
+    req.session.userRole     = user.role;
 
-    console.log("Login session set:", {
-      userId: req.session.userId,
-      employeeId: req.session.employeeId,
-      email: req.session.userEmail
-    });
+    if (employee) {
+      req.session.employeeId    = employee.employee_id;
+      req.session.employee_code = employee.employee_code;
+    }
 
     res.json({
       message: "Login successful",
       user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        employee: employee
-      }
+        id:       user.id,
+        name:     user.name,
+        email:    user.email,
+        role:     user.role,
+        employee: employee,
+      },
     });
   } catch (error) {
     console.error("Login error:", error);
@@ -112,9 +96,7 @@ export async function login(req, res) {
 // LOGOUT
 export async function logout(req, res) {
   req.session.destroy(err => {
-    if (err) {
-      return res.status(500).json({ message: "Logout failed" });
-    }
+    if (err) return res.status(500).json({ message: "Logout failed" });
     res.json({ message: "Logout successful" });
   });
 }
@@ -126,7 +108,7 @@ export async function me(req, res) {
   }
 
   try {
-    const [rows] = await pool.query(
+    const [rows] = await safeQuery(
       "SELECT id, name, email, role FROM users WHERE id = ?",
       [req.session.userId]
     );
@@ -137,19 +119,18 @@ export async function me(req, res) {
 
     const user = rows[0];
 
-    // Ambil data employee + JOIN master job level & position
-    const [empRows] = await pool.query(
+    const [empRows] = await safeQuery(
       `SELECT 
          e.*,
-         c.company_name AS company_name,
-         d.department_name AS department_name,
-         jl.job_level_name AS job_level_name,
-         p.position_name  AS position_name
+         c.company_name,
+         d.department_name,
+         jl.job_level_name,
+         p.position_name
        FROM mst_employee e
-       LEFT JOIN mst_company c ON c.company_id = e.company_id
-       LEFT JOIN mst_department d ON d.department_id = e.department_id
-       LEFT JOIN mst_job_level jl ON jl.job_level_id = e.job_level_id
-       LEFT JOIN mst_position p   ON p.position_id  = e.position_id
+       LEFT JOIN mst_company    c  ON c.company_id    = e.company_id
+       LEFT JOIN mst_department d  ON d.department_id = e.department_id
+       LEFT JOIN mst_job_level  jl ON jl.job_level_id = e.job_level_id
+       LEFT JOIN mst_position   p  ON p.position_id   = e.position_id
        WHERE e.email = ? AND e.is_deleted = 0
        LIMIT 1`,
       [user.email]
@@ -158,8 +139,8 @@ export async function me(req, res) {
     res.json({
       user: {
         ...user,
-        employee: empRows[0] || null
-      }
+        employee: empRows[0] || null,
+      },
     });
   } catch (error) {
     console.error("Me error:", error);
