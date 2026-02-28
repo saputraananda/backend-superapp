@@ -8,6 +8,7 @@ import {
   createTask, updateTask,
   uploadEvidence, listEvidence, deleteEvidence,
   listTaskComments, addTaskComment,
+  listEmployees,
 } from "../controllers/pmController.js";
 
 const router = express.Router();
@@ -39,5 +40,8 @@ router.delete("/tasks/:taskId/evidence/:evidenceId", deleteEvidence);
 // Comments
 router.get   ("/tasks/:taskId/comments",         listTaskComments);
 router.post  ("/tasks/:taskId/comments",         addTaskComment);
+
+// Employees (for PIC dropdown)
+router.get   ("/employees",                      listEmployees);
 
 export default router;
