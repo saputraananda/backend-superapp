@@ -1,8 +1,8 @@
 // src/controllers/pmController.js
-import { pool, safeQuery } from "../db/pool.js";
-import fs   from "fs";
-import path from "path";
 import { fileURLToPath } from "url";
+import path from "path";
+import fs from "fs";
+import db from "../db/pool.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -10,632 +10,890 @@ const __dirname  = path.dirname(__filename);
 const EVIDENCE_URL_PREFIX = "/assets/evidence";
 const EVIDENCE_DISK_DIR   = path.join(__dirname, "..", "assets", "evidence");
 
-// ─── Job Level Constants (sesuai DB) ──────────────────────────────────────────
-const JOB_LEVEL = {
-  DIREKTUR:   1,   // bisa semua
-  SUPERVISOR: 2,   // bisa create semester, monthly, task + set assignees
-  STAFF:      3,   // hanya bisa create task (self PIC only)
-};
+const JOB_LEVEL = { DIREKTUR: 1, SUPERVISOR: 2, STAFF: 3 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 async function getSessionEmployee(req) {
-  if (!req.session?.employeeId) return null;
-  const [rows] = await safeQuery(
-    `SELECT employee_id, full_name, email, job_level_id
-     FROM mst_employee
-     WHERE employee_id = ? AND is_deleted = 0
-     LIMIT 1`,
-    [req.session.employeeId]
+  const empId = req.session?.employeeId;
+  if (!empId) return null;
+  const [rows] = await db.query(
+    "SELECT e.*, jl.job_level_id FROM mst_employee e LEFT JOIN mst_job_level jl ON e.job_level_id = jl.job_level_id WHERE e.employee_id = ?",
+    [empId]
   );
   return rows[0] || null;
 }
 
 function requireAuth(req, res) {
-  if (!req.session?.userId) {
-    res.status(401).json({ message: "Unauthorized" });
-    return false;
-  }
   if (!req.session?.employeeId) {
-    res.status(403).json({ message: "Employee session not found" });
+    res.status(401).json({ message: "Unauthorized" });
     return false;
   }
   return true;
 }
 
-// Semakin kecil angka = semakin tinggi level (1=Direktur, 2=Supervisor, 3=Staff)
-// "minLevel" artinya: job_level_id harus <= angka ini
-function requireMinJobLevel(employee, maxLevelId) {
-  return Number(employee?.job_level_id || 99) <= Number(maxLevelId);
-}
-
-// Shorthand helpers
-function isDirektur(employee)   { return Number(employee?.job_level_id) === JOB_LEVEL.DIREKTUR; }
-function isSupervisorUp(employee) { return requireMinJobLevel(employee, JOB_LEVEL.SUPERVISOR); } // level 1 & 2
-function isStaffUp(employee)    { return requireMinJobLevel(employee, JOB_LEVEL.STAFF); }       // semua level
+function isDirektur(employee)     { return employee?.job_level_id <= JOB_LEVEL.DIREKTUR; }
+function isSupervisorUp(employee) { return employee?.job_level_id <= JOB_LEVEL.SUPERVISOR; }
+function isStaffUp(employee)      { return employee?.job_level_id <= JOB_LEVEL.STAFF; }
 
 // ─── PROJECT ──────────────────────────────────────────────────────────────────
 export async function listProjects(req, res) {
+  if (!requireAuth(req, res)) return;
   try {
-    if (!requireAuth(req, res)) return;
-    const [rows] = await safeQuery(
-      `SELECT p.id, p.title, p.\`desc\`,
-              p.requestor_employee_id, p.created_at, p.updated_at,
+    const [rows] = await db.query(
+      `SELECT p.id, p.title, p.\`desc\`, p.requestor_employee_id,
+              p.is_deleted, p.created_at, p.updated_at,
               e.full_name AS requestor_name
        FROM tr_pm_project p
-       LEFT JOIN mst_employee e ON e.employee_id = p.requestor_employee_id AND e.is_deleted = 0
+       LEFT JOIN mst_employee e ON p.requestor_employee_id = e.employee_id
+       WHERE p.is_deleted = 0
        ORDER BY p.created_at DESC`
     );
     res.json({ data: rows });
-  } catch (err) {
-    console.error("listProjects error:", err);
-    res.status(500).json({ message: err.message });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
   }
 }
 
 export async function createProject(req, res) {
+  if (!requireAuth(req, res)) return;
+  const emp = await getSessionEmployee(req);
+  if (!isDirektur(emp)) return res.status(403).json({ message: "Hanya Direktur yang bisa membuat project" });
+
+  const { title, desc } = req.body;
+  if (!title?.trim()) return res.status(400).json({ message: "Title wajib diisi" });
+
   try {
-    if (!requireAuth(req, res)) return;
-    const employee = await getSessionEmployee(req);
-
-    // ✅ Hanya Direktur (level 1) yang bisa buat annual project
-    if (!isDirektur(employee)) {
-      return res.status(403).json({ message: "Hanya Direktur yang bisa membuat annual project" });
-    }
-
-    const { title, desc } = req.body;
-    if (!title?.trim()) return res.status(400).json({ message: "title is required" });
-
-    const [result] = await safeQuery(
-      `INSERT INTO tr_pm_project (title, \`desc\`, requestor_employee_id) VALUES (?, ?, ?)`,
-      [title.trim(), desc || null, employee.employee_id]
+    const [r] = await db.query(
+      "INSERT INTO tr_pm_project (title, `desc`, requestor_employee_id) VALUES (?, ?, ?)",
+      [title.trim(), desc?.trim() || null, emp.employee_id]
     );
-    res.status(201).json({ message: "Project created", id: result.insertId });
-  } catch (err) {
-    console.error("createProject error:", err);
-    res.status(500).json({ message: err.message });
+    res.status(201).json({ id: r.insertId, title, desc });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
   }
 }
 
 export async function getProjectDetail(req, res) {
+  if (!requireAuth(req, res)) return;
   try {
-    if (!requireAuth(req, res)) return;
-    const { projectId } = req.params;
-    const [[project]] = await safeQuery(
-      `SELECT p.id, p.title, p.\`desc\`,
-              p.requestor_employee_id, p.created_at, p.updated_at,
+    const [projRows] = await db.query(
+      `SELECT p.id, p.title, p.\`desc\`, p.requestor_employee_id,
+              p.created_at, p.updated_at,
               e.full_name AS requestor_name
        FROM tr_pm_project p
-       LEFT JOIN mst_employee e ON e.employee_id = p.requestor_employee_id AND e.is_deleted = 0
-       WHERE p.id = ? LIMIT 1`,
-      [projectId]
+       LEFT JOIN mst_employee e ON p.requestor_employee_id = e.employee_id
+       WHERE p.id = ? AND p.is_deleted = 0`,
+      [req.params.projectId]
     );
-    if (!project) return res.status(404).json({ message: "Project not found" });
+    if (!projRows[0]) return res.status(404).json({ message: "Project tidak ditemukan" });
 
-    const [semesters] = await safeQuery(
+    const project = {
+      id:                    projRows[0].id,
+      title:                 projRows[0].title,
+      desc:                  projRows[0].desc,
+      requestor_employee_id: projRows[0].requestor_employee_id,
+      requestor_name:        projRows[0].requestor_name,
+      created_at:            projRows[0].created_at,
+      updated_at:            projRows[0].updated_at,
+    };
+
+    // tr_pm_semester: kolom FK = id_project
+    const [semRows] = await db.query(
       `SELECT s.id, s.id_project, s.semester, s.title, s.\`desc\`,
-              s.requestor_employee_id, s.created_at, s.updated_at,
-              e.full_name AS requestor_name
+              s.requestor_employee_id, e.full_name AS requestor_name,
+              s.created_at, s.updated_at
        FROM tr_pm_semester s
-       LEFT JOIN mst_employee e ON e.employee_id = s.requestor_employee_id AND e.is_deleted = 0
-       WHERE s.id_project = ?
+       LEFT JOIN mst_employee e ON s.requestor_employee_id = e.employee_id
+       WHERE s.id_project = ? AND s.is_deleted = 0
        ORDER BY s.semester ASC, s.created_at DESC`,
+      [req.params.projectId]
+    );
+
+    res.json({ project, semesters: semRows });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+export async function updateProject(req, res) {
+  if (!requireAuth(req, res)) return;
+  const emp = await getSessionEmployee(req);
+  const { projectId } = req.params;
+
+  try {
+    const [rows] = await db.query(
+      "SELECT * FROM tr_pm_project WHERE id = ? AND is_deleted = 0",
       [projectId]
     );
-    res.json({ project, semesters });
-  } catch (err) {
-    console.error("getProjectDetail error:", err);
-    res.status(500).json({ message: err.message });
+    if (!rows[0]) return res.status(404).json({ message: "Project tidak ditemukan" });
+    if (rows[0].requestor_employee_id !== emp.employee_id && !isDirektur(emp)) {
+      return res.status(403).json({ message: "Hanya creator atau Direktur yang bisa edit" });
+    }
+
+    const { title, desc } = req.body;
+    if (!title?.trim()) return res.status(400).json({ message: "Title wajib diisi" });
+
+    await db.query(
+      "UPDATE tr_pm_project SET title=?, `desc`=?, updated_at=NOW() WHERE id=?",
+      [title.trim(), desc?.trim() || null, projectId]
+    );
+    res.json({ message: "Project berhasil diupdate" });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+export async function deleteProject(req, res) {
+  if (!requireAuth(req, res)) return;
+  const emp = await getSessionEmployee(req);
+  const { projectId } = req.params;
+
+  try {
+    const [rows] = await db.query(
+      "SELECT * FROM tr_pm_project WHERE id = ? AND is_deleted = 0",
+      [projectId]
+    );
+    if (!rows[0]) return res.status(404).json({ message: "Project tidak ditemukan" });
+    if (rows[0].requestor_employee_id !== emp.employee_id && !isDirektur(emp)) {
+      return res.status(403).json({ message: "Hanya creator atau Direktur yang bisa hapus" });
+    }
+
+    await db.query(
+      "UPDATE tr_pm_project SET is_deleted=1, updated_at=NOW() WHERE id=?",
+      [projectId]
+    );
+    res.json({ message: "Project berhasil dihapus" });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
   }
 }
 
 // ─── SEMESTER ─────────────────────────────────────────────────────────────────
-export async function createSemester(req, res) {
-  const conn = await pool.getConnection();
+// tr_pm_semester: FK ke project = id_project
+export async function listSemesters(req, res) {
+  if (!requireAuth(req, res)) return;
   try {
-    if (!requireAuth(req, res)) return;
-    const employee = await getSessionEmployee(req);
-
-    //  Direktur (1) & Supervisor (2) bisa buat semester
-    if (!isSupervisorUp(employee)) {
-      return res.status(403).json({ message: "Hanya Supervisor+ yang bisa membuat semester project" });
-    }
-
-    const { projectId } = req.params;
-    const { semester, title, desc } = req.body;
-    const sem = Number(semester);
-    if (![1, 2].includes(sem))  return res.status(400).json({ message: "semester must be 1 or 2" });
-    if (!title?.trim())          return res.status(400).json({ message: "title is required" });
-
-    await conn.beginTransaction();
-    const [[exists]] = await conn.query(
-      `SELECT COUNT(*) AS cnt FROM tr_pm_semester
-       WHERE id_project = ? AND semester = ? AND requestor_employee_id = ?`,
-      [projectId, sem, employee.employee_id]
+    const [rows] = await db.query(
+      `SELECT s.id, s.id_project, s.semester, s.title, s.\`desc\`,
+              s.requestor_employee_id, e.full_name AS requestor_name,
+              s.created_at, s.updated_at
+       FROM tr_pm_semester s
+       LEFT JOIN mst_employee e ON s.requestor_employee_id = e.employee_id
+       WHERE s.id_project = ? AND s.is_deleted = 0
+       ORDER BY s.semester ASC, s.created_at DESC`,
+      [req.params.projectId]
     );
-    if (exists.cnt >= 1) {
-      await conn.rollback();
-      return res.status(409).json({ message: "Anda sudah membuat semester ini untuk project ini" });
-    }
-    const [ins] = await conn.query(
-      `INSERT INTO tr_pm_semester (id_project, semester, title, \`desc\`, requestor_employee_id)
-       VALUES (?, ?, ?, ?, ?)`,
-      [projectId, sem, title.trim(), desc || null, employee.employee_id]
-    );
-    await conn.commit();
-    res.status(201).json({ message: "Semester created", id: ins.insertId });
-  } catch (err) {
-    await conn.rollback();
-    console.error("createSemester error:", err);
-    res.status(500).json({ message: err.message });
-  } finally {
-    conn.release();
+    res.json({ data: rows });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
   }
 }
 
-export async function listSemesters(req, res) {
+export async function createSemester(req, res) {
+  if (!requireAuth(req, res)) return;
+  const emp = await getSessionEmployee(req);
+  if (!isSupervisorUp(emp)) return res.status(403).json({ message: "Forbidden" });
+
+  const { semester, title, desc } = req.body;
+  if (!title?.trim()) return res.status(400).json({ message: "Title wajib diisi" });
+  if (!semester) return res.status(400).json({ message: "Semester wajib dipilih" });
+
   try {
-    if (!requireAuth(req, res)) return;
-    const { projectId } = req.params;
-    const [rows] = await safeQuery(
-      `SELECT s.id, s.id_project, s.semester, s.title, s.\`desc\`,
-              s.requestor_employee_id, s.created_at, s.updated_at,
-              e.full_name AS requestor_name
-       FROM tr_pm_semester s
-       LEFT JOIN mst_employee e ON e.employee_id = s.requestor_employee_id AND e.is_deleted = 0
-       WHERE s.id_project = ?
-       ORDER BY s.semester ASC, s.created_at DESC`,
-      [projectId]
+    // id_project sebagai FK
+    const [r] = await db.query(
+      "INSERT INTO tr_pm_semester (id_project, semester, title, `desc`, requestor_employee_id) VALUES (?,?,?,?,?)",
+      [req.params.projectId, semester, title.trim(), desc?.trim() || null, emp.employee_id]
     );
-    res.json({ data: rows });
-  } catch (err) {
-    console.error("listSemesters error:", err);
-    res.status(500).json({ message: err.message });
+    res.status(201).json({ id: r.insertId, semester, title });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
   }
 }
 
 export async function getSemesterDetail(req, res) {
+  if (!requireAuth(req, res)) return;
   try {
-    if (!requireAuth(req, res)) return;
-    const { semesterId } = req.params;
-    const [[semester]] = await safeQuery(
+    const [rows] = await db.query(
       `SELECT s.id, s.id_project, s.semester, s.title, s.\`desc\`,
-              s.requestor_employee_id, s.created_at, s.updated_at,
-              e.full_name AS requestor_name
+              s.requestor_employee_id, e.full_name AS requestor_name,
+              s.created_at, s.updated_at
        FROM tr_pm_semester s
-       LEFT JOIN mst_employee e ON e.employee_id = s.requestor_employee_id AND e.is_deleted = 0
-       WHERE s.id = ? LIMIT 1`,
+       LEFT JOIN mst_employee e ON s.requestor_employee_id = e.employee_id
+       WHERE s.id = ? AND s.is_deleted = 0`,
+      [req.params.semesterId]
+    );
+    if (!rows[0]) return res.status(404).json({ message: "Semester tidak ditemukan" });
+    res.json({ data: rows[0] });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+export async function updateSemester(req, res) {
+  if (!requireAuth(req, res)) return;
+  const emp = await getSessionEmployee(req);
+  const { semesterId } = req.params;
+
+  try {
+    const [rows] = await db.query(
+      "SELECT * FROM tr_pm_semester WHERE id = ? AND is_deleted = 0",
       [semesterId]
     );
-    if (!semester) return res.status(404).json({ message: "Semester not found" });
-    res.json({ data: semester });
-  } catch (err) {
-    console.error("getSemesterDetail error:", err);
-    res.status(500).json({ message: err.message });
+    if (!rows[0]) return res.status(404).json({ message: "Semester tidak ditemukan" });
+    if (rows[0].requestor_employee_id !== emp.employee_id && !isDirektur(emp)) {
+      return res.status(403).json({ message: "Hanya creator atau Direktur yang bisa edit" });
+    }
+
+    const { semester, title, desc } = req.body;
+    if (!title?.trim()) return res.status(400).json({ message: "Title wajib diisi" });
+
+    await db.query(
+      "UPDATE tr_pm_semester SET semester=?, title=?, `desc`=?, updated_at=NOW() WHERE id=?",
+      [semester, title.trim(), desc?.trim() || null, semesterId]
+    );
+    res.json({ message: "Semester berhasil diupdate" });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+export async function deleteSemester(req, res) {
+  if (!requireAuth(req, res)) return;
+  const emp = await getSessionEmployee(req);
+  const { semesterId } = req.params;
+
+  try {
+    const [rows] = await db.query(
+      "SELECT * FROM tr_pm_semester WHERE id = ? AND is_deleted = 0",
+      [semesterId]
+    );
+    if (!rows[0]) return res.status(404).json({ message: "Semester tidak ditemukan" });
+    if (rows[0].requestor_employee_id !== emp.employee_id && !isDirektur(emp)) {
+      return res.status(403).json({ message: "Hanya creator atau Direktur yang bisa hapus" });
+    }
+
+    await db.query(
+      "UPDATE tr_pm_semester SET is_deleted=1, updated_at=NOW() WHERE id=?",
+      [semesterId]
+    );
+    res.json({ message: "Semester berhasil dihapus" });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
   }
 }
 
 // ─── MONTHLY ──────────────────────────────────────────────────────────────────
-export async function createMonthly(req, res) {
+// tr_pm_monthly: FK ke semester = id_semester, FK ke project = id_project
+export async function listMonthlyBySemester(req, res) {
+  if (!requireAuth(req, res)) return;
   try {
-    if (!requireAuth(req, res)) return;
-    const employee = await getSessionEmployee(req);
-
-    // ✅ Direktur (1) & Supervisor (2) bisa buat monthly
-    if (!isSupervisorUp(employee)) {
-      return res.status(403).json({ message: "Hanya Supervisor+ yang bisa membuat monthly project" });
-    }
-
-    const { semesterId } = req.params;
-    const { projectId, month, title, desc } = req.body;
-    const m = Number(month);
-    if (!(m >= 1 && m <= 12)) return res.status(400).json({ message: "month must be 1..12" });
-    if (!title?.trim())        return res.status(400).json({ message: "title is required" });
-    if (!projectId)            return res.status(400).json({ message: "projectId is required" });
-
-    const [[sem]] = await safeQuery(
-      `SELECT id, id_project, semester FROM tr_pm_semester WHERE id = ? LIMIT 1`,
-      [semesterId]
+    const [rows] = await db.query(
+      `SELECT m.id, m.id_project, m.id_semester, m.month, m.title, m.\`desc\`,
+              m.requestor_employee_id, e.full_name AS requestor_name,
+              m.created_at, m.updated_at
+       FROM tr_pm_monthly m
+       LEFT JOIN mst_employee e ON m.requestor_employee_id = e.employee_id
+       WHERE m.id_semester = ? AND m.is_deleted = 0
+       ORDER BY m.month ASC, m.created_at DESC`,
+      [req.params.semesterId]
     );
-    if (!sem) return res.status(404).json({ message: "Semester not found" });
-
-    const [ins] = await safeQuery(
-      `INSERT INTO tr_pm_monthly (id_project, id_semester, \`month\`, title, \`desc\`, requestor_employee_id)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [projectId, semesterId, m, title.trim(), desc || null, employee.employee_id]
-    );
-    res.status(201).json({ message: "Monthly created", id: ins.insertId });
-  } catch (err) {
-    console.error("createMonthly error:", err);
-    res.status(500).json({ message: err.message });
+    res.json({ data: rows });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
   }
 }
 
-export async function listMonthlyBySemester(req, res) {
+export async function createMonthly(req, res) {
+  if (!requireAuth(req, res)) return;
+  const emp = await getSessionEmployee(req);
+  if (!isSupervisorUp(emp)) return res.status(403).json({ message: "Forbidden" });
+
+  const { month, title, desc } = req.body;
+  if (!title?.trim()) return res.status(400).json({ message: "Title wajib diisi" });
+  if (!month) return res.status(400).json({ message: "Month wajib dipilih" });
+
   try {
-    if (!requireAuth(req, res)) return;
-    const { semesterId } = req.params;
-    const [rows] = await safeQuery(
-      `SELECT m.id, m.id_project, m.id_semester, m.\`month\`, m.title, m.\`desc\`,
-              m.requestor_employee_id, m.created_at, m.updated_at,
-              e.full_name AS requestor_name
-       FROM tr_pm_monthly m
-       LEFT JOIN mst_employee e ON e.employee_id = m.requestor_employee_id AND e.is_deleted = 0
-       WHERE m.id_semester = ?
-       ORDER BY m.\`month\` ASC`,
-      [semesterId]
+    // Ambil id_project dari semester
+    const [semRows] = await db.query(
+      "SELECT id_project FROM tr_pm_semester WHERE id = ? AND is_deleted = 0",
+      [req.params.semesterId]
     );
-    res.json({ data: rows });
-  } catch (err) {
-    console.error("listMonthlyBySemester error:", err);
-    res.status(500).json({ message: err.message });
+    if (!semRows[0]) return res.status(404).json({ message: "Semester tidak ditemukan" });
+
+    const [r] = await db.query(
+      "INSERT INTO tr_pm_monthly (id_project, id_semester, month, title, `desc`, requestor_employee_id) VALUES (?,?,?,?,?,?)",
+      [semRows[0].id_project, req.params.semesterId, month, title.trim(), desc?.trim() || null, emp.employee_id]
+    );
+    res.status(201).json({ id: r.insertId, month, title });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
   }
 }
 
 export async function getMonthlyDetail(req, res) {
+  if (!requireAuth(req, res)) return;
   try {
-    if (!requireAuth(req, res)) return;
-    const { monthlyId } = req.params;
-    const [[monthly]] = await safeQuery(
-      `SELECT m.id, m.id_semester, m.month, m.title, m.\`desc\`,
-              m.requestor_employee_id, m.created_at, m.updated_at,
-              e.full_name AS requestor_name
+    const [rows] = await db.query(
+      `SELECT m.id, m.id_project, m.id_semester, m.month, m.title, m.\`desc\`,
+              m.requestor_employee_id, e.full_name AS requestor_name,
+              m.created_at, m.updated_at
        FROM tr_pm_monthly m
-       LEFT JOIN mst_employee e ON e.employee_id = m.requestor_employee_id AND e.is_deleted = 0
-       WHERE m.id = ? LIMIT 1`,
+       LEFT JOIN mst_employee e ON m.requestor_employee_id = e.employee_id
+       WHERE m.id = ? AND m.is_deleted = 0`,
+      [req.params.monthlyId]
+    );
+    if (!rows[0]) return res.status(404).json({ message: "Monthly tidak ditemukan" });
+    res.json({ data: rows[0] });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+export async function updateMonthly(req, res) {
+  if (!requireAuth(req, res)) return;
+  const emp = await getSessionEmployee(req);
+  const { monthlyId } = req.params;
+
+  try {
+    const [rows] = await db.query(
+      "SELECT * FROM tr_pm_monthly WHERE id = ? AND is_deleted = 0",
       [monthlyId]
     );
-    if (!monthly) return res.status(404).json({ message: "Monthly not found" });
-
-    const [tasks] = await safeQuery(
-      `SELECT
-         t.id, t.id_monthly, t.title, t.\`desc\`, t.status, t.priority,
-         t.startdate, t.enddate, t.evidance, t.evidance_path,
-         t.owner_employee_id, t.pic_employee_id, t.created_at, t.updated_at,
-         owner.full_name AS owner_name, owner.email AS owner_email,
-         pic.full_name   AS pic_name,   pic.email   AS pic_email
-       FROM tr_pm_task t
-       LEFT JOIN mst_employee owner ON owner.employee_id = t.owner_employee_id AND owner.is_deleted = 0
-       LEFT JOIN mst_employee pic   ON pic.employee_id   = t.pic_employee_id   AND pic.is_deleted   = 0
-       WHERE t.id_monthly = ?
-       ORDER BY t.created_at ASC`,
-      [monthlyId]
-    );
-
-    const taskIds = tasks.map((t) => t.id);
-    let evidenceMap = {};
-    if (taskIds.length) {
-      const [evRows] = await safeQuery(
-        `SELECT id, task_id, file_name, file_path, file_type, file_size, uploaded_by, created_at
-         FROM tr_pm_task_evidence
-         WHERE task_id IN (?)
-         ORDER BY created_at ASC`,
-        [taskIds]
-      );
-      for (const ev of evRows) {
-        if (!evidenceMap[ev.task_id]) evidenceMap[ev.task_id] = [];
-        evidenceMap[ev.task_id].push(ev);
-      }
+    if (!rows[0]) return res.status(404).json({ message: "Monthly tidak ditemukan" });
+    if (rows[0].requestor_employee_id !== emp.employee_id && !isDirektur(emp)) {
+      return res.status(403).json({ message: "Hanya creator atau Direktur yang bisa edit" });
     }
 
-    res.json({
-      monthly,
-      tasks: tasks.map((t) => ({ ...t, evidence_files: evidenceMap[t.id] || [] })),
-    });
-  } catch (err) {
-    console.error("getMonthlyDetail error:", err);
-    res.status(500).json({ message: err.message });
+    const { month, title, desc } = req.body;
+    if (!title?.trim()) return res.status(400).json({ message: "Title wajib diisi" });
+
+    await db.query(
+      "UPDATE tr_pm_monthly SET month=?, title=?, `desc`=?, updated_at=NOW() WHERE id=?",
+      [month, title.trim(), desc?.trim() || null, monthlyId]
+    );
+    res.json({ message: "Monthly berhasil diupdate" });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+export async function deleteMonthly(req, res) {
+  if (!requireAuth(req, res)) return;
+  const emp = await getSessionEmployee(req);
+  const { monthlyId } = req.params;
+
+  try {
+    const [rows] = await db.query(
+      "SELECT * FROM tr_pm_monthly WHERE id = ? AND is_deleted = 0",
+      [monthlyId]
+    );
+    if (!rows[0]) return res.status(404).json({ message: "Monthly tidak ditemukan" });
+    if (rows[0].requestor_employee_id !== emp.employee_id && !isDirektur(emp)) {
+      return res.status(403).json({ message: "Hanya creator atau Direktur yang bisa hapus" });
+    }
+
+    await db.query(
+      "UPDATE tr_pm_monthly SET is_deleted=1, updated_at=NOW() WHERE id=?",
+      [monthlyId]
+    );
+    res.json({ message: "Monthly berhasil dihapus" });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
   }
 }
 
 // ─── TASKS ────────────────────────────────────────────────────────────────────
+// tr_pm_task: FK ke monthly = id_monthly, owner = owner_employee_id,
+//             desc = desc, startdate/enddate (bukan start_date/due_date),
+//             tidak ada requestor_employee_id → pakai owner_employee_id
 export async function createTask(req, res) {
-  const conn = await pool.getConnection();
+  if (!requireAuth(req, res)) return;
+  const emp = await getSessionEmployee(req);
+  const { monthlyId } = req.params;
+  const { title, desc, startdate, enddate, priority, status, assignee_ids, link } = req.body;
+
+  if (!title?.trim()) return res.status(400).json({ message: "Title wajib diisi" });
+
   try {
-    if (!requireAuth(req, res)) return;
-    const employee = await getSessionEmployee(req);
+    const [monthRows] = await db.query(
+      "SELECT * FROM tr_pm_monthly WHERE id = ? AND is_deleted = 0",
+      [monthlyId]
+    );
+    if (!monthRows[0]) return res.status(404).json({ message: "Monthly tidak ditemukan" });
+    const monthly = monthRows[0];
 
-    // ✅ Semua level bisa buat task
-    if (!employee) {
-      return res.status(403).json({ message: "Employee tidak ditemukan" });
+    let finalAssignees = [];
+    if (!isSupervisorUp(emp)) {
+      const extra = Array.isArray(assignee_ids)
+        ? assignee_ids.map(Number).filter((id) => id !== emp.employee_id)
+        : [];
+      finalAssignees = [emp.employee_id, ...extra];
+    } else {
+      finalAssignees = Array.isArray(assignee_ids)
+        ? assignee_ids.map(Number)
+        : assignee_ids ? [Number(assignee_ids)] : [];
     }
 
-    const { monthlyId } = req.params;
-    const { title, desc, startdate, enddate, status, priority, pic_employee_id, evidance, assignees } = req.body;
-    if (!title?.trim()) return res.status(400).json({ message: "title is required" });
+    // PIC = assignee pertama, atau emp sendiri
+    const picId = finalAssignees[0] ?? emp.employee_id;
 
-    await conn.beginTransaction();
-
-    let picId = pic_employee_id ?? null;
-
-    // ✅ Staff (job_level_id = 3) hanya bisa assign diri sendiri sebagai PIC
-    if (Number(employee.job_level_id) === JOB_LEVEL.STAFF) {
-      if (picId && Number(picId) !== Number(employee.employee_id)) {
-        await conn.rollback();
-        return res.status(403).json({ message: "Staff tidak bisa assign PIC ke orang lain" });
-      }
-      if (!picId) picId = employee.employee_id;
-    }
-
-    const [ins] = await conn.query(
+    const [r] = await db.query(
       `INSERT INTO tr_pm_task
-       (id_monthly, title, \`desc\`, startdate, enddate, owner_employee_id, pic_employee_id, status, priority, evidance)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id_monthly, title, \`desc\`, startdate, enddate, priority, status,
+        owner_employee_id, pic_employee_id, link)
+       VALUES (?,?,?,?,?,?,?,?,?,?)`,
       [
-        monthlyId, title.trim(), desc || null,
+        monthlyId, title.trim(), desc?.trim() || null,
         startdate || null, enddate || null,
-        employee.employee_id, picId,
-        status || "assigned", priority || "medium",
-        evidance || null,
+        priority || "medium", status || "assigned",
+        emp.employee_id, picId, link?.trim() || null,
       ]
     );
+    const taskId = r.insertId;
 
-    // ✅ Hanya Direktur (1) & Supervisor (2) yang bisa set assignees list
-    if (Array.isArray(assignees) && assignees.length) {
-      if (!isSupervisorUp(employee)) {
-        await conn.rollback();
-        return res.status(403).json({ message: "Hanya Supervisor+ yang bisa set assignees" });
-      }
-      for (const a of assignees) {
-        await conn.query(
-          `INSERT IGNORE INTO tr_pm_task_assignee (task_id, employee_id, role) VALUES (?, ?, ?)`,
-          [ins.insertId, a.employee_id, a.role || "pic"]
+    // Insert assignees dengan role
+    if (finalAssignees.length > 0) {
+      const vals = finalAssignees.map((eid, idx) => [taskId, eid, idx === 0 ? "pic" : "co_pic"]);
+      await db.query(
+        "INSERT IGNORE INTO tr_pm_task_assignee (task_id, employee_id, role) VALUES ?",
+        [vals]
+      );
+    }
+
+    // Notif ke supervisor (owner monthly) jika yang create adalah staff
+    if (!isSupervisorUp(emp) && monthly.requestor_employee_id && monthly.requestor_employee_id !== emp.employee_id) {
+      await db.query(
+        `INSERT INTO tr_pm_task_notif (task_id, recipient_employee_id, sender_employee_id, message)
+         VALUES (?, ?, ?, ?)`,
+        [taskId, monthly.requestor_employee_id, emp.employee_id,
+         `${emp.full_name} menambahkan task baru: "${title.trim()}"`]
+      );
+    }
+
+    // Notif ke assignee yang bukan creator
+    for (const eid of finalAssignees) {
+      if (eid !== emp.employee_id) {
+        await db.query(
+          `INSERT INTO tr_pm_task_notif (task_id, recipient_employee_id, sender_employee_id, message)
+           VALUES (?, ?, ?, ?)`,
+          [taskId, eid, emp.employee_id,
+           `${emp.full_name} menugaskan task "${title.trim()}" kepada Anda`]
         );
       }
     }
 
-    await conn.commit();
-    res.status(201).json({ message: "Task created", id: ins.insertId });
-  } catch (err) {
-    await conn.rollback();
-    console.error("createTask error:", err);
-    res.status(500).json({ message: err.message });
-  } finally {
-    conn.release();
+    res.status(201).json({ id: taskId, title });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
   }
 }
 
 export async function updateTask(req, res) {
+  if (!requireAuth(req, res)) return;
+  const emp = await getSessionEmployee(req);
+  const { taskId } = req.params;
+  const { title, desc, startdate, enddate, priority, status, assignee_ids, link } = req.body;
+
   try {
-    if (!requireAuth(req, res)) return;
-    const { taskId } = req.params;
-    const employee = await getSessionEmployee(req);
+    const [rows] = await db.query(
+      "SELECT * FROM tr_pm_task WHERE id = ? AND is_deleted = 0",
+      [taskId]
+    );
+    if (!rows[0]) return res.status(404).json({ message: "Task tidak ditemukan" });
+    const oldTask = rows[0];
+    const oldStatus = oldTask.status;
 
-    const [[task]] = await safeQuery(`SELECT * FROM tr_pm_task WHERE id = ? LIMIT 1`, [taskId]);
-    if (!task) return res.status(404).json({ message: "Task not found" });
+    await db.query(
+      `UPDATE tr_pm_task
+       SET title=?, \`desc\`=?, startdate=?, enddate=?, priority=?, status=?, link=?, updated_at=NOW()
+       WHERE id=?`,
+      [
+        title?.trim(), desc?.trim() || null,
+        startdate || null, enddate || null,
+        priority, status, link?.trim() || null,
+        taskId,
+      ]
+    );
 
-    const isSupUp  = isSupervisorUp(employee);   // Direktur & Supervisor
-    const isOwner  = task.owner_employee_id === employee.employee_id;
-    const isPic    = task.pic_employee_id   === employee.employee_id;
+    if (assignee_ids !== undefined) {
+      const [oldAssigneeRows] = await db.query(
+        "SELECT employee_id FROM tr_pm_task_assignee WHERE task_id = ?", [taskId]
+      );
+      const oldAssigneeSet = new Set(oldAssigneeRows.map((a) => a.employee_id));
 
-    if (!isSupUp && !isOwner && !isPic) {
-      return res.status(403).json({ message: "Tidak punya akses update task ini" });
-    }
+      await db.query("DELETE FROM tr_pm_task_assignee WHERE task_id = ?", [taskId]);
 
-    const { title, desc, status, priority, startdate, enddate, evidance, pic_employee_id } = req.body;
+      let finalAssignees = [];
+      if (!isSupervisorUp(emp)) {
+        const extra = Array.isArray(assignee_ids)
+          ? assignee_ids.map(Number).filter((id) => id !== emp.employee_id)
+          : [];
+        finalAssignees = [emp.employee_id, ...extra];
+      } else {
+        finalAssignees = Array.isArray(assignee_ids)
+          ? assignee_ids.map(Number)
+          : assignee_ids ? [Number(assignee_ids)] : [];
+      }
 
-    const validStatus = [
-      "assigned", "in_progress", "on_hold",
-      "submitted_for_review", "revision_required", "approved", "completed",
-    ];
-    if (status && !validStatus.includes(status)) {
-      return res.status(400).json({ message: "Status tidak valid" });
-    }
+      if (finalAssignees.length > 0) {
+        const vals = finalAssignees.map((eid, idx) => [taskId, eid, idx === 0 ? "pic" : "co_pic"]);
+        await db.query(
+          "INSERT IGNORE INTO tr_pm_task_assignee (task_id, employee_id, role) VALUES ?",
+          [vals]
+        );
 
-    const fields = [];
-    const vals   = [];
+        // Update pic_employee_id di task
+        await db.query(
+          "UPDATE tr_pm_task SET pic_employee_id=? WHERE id=?",
+          [finalAssignees[0], taskId]
+        );
+      }
 
-    // Staff yang hanya sebagai PIC (bukan owner, bukan Supervisor+)
-    // hanya boleh update status & evidance
-    if (isPic && !isOwner && !isSupUp) {
-      if (status   !== undefined) { fields.push("status = ?");   vals.push(status); }
-      if (evidance !== undefined) { fields.push("evidance = ?"); vals.push(evidance || null); }
-    } else {
-      // Owner atau Supervisor+ bisa update semua
-      if (title    !== undefined) { fields.push("title = ?");          vals.push(title?.trim() || task.title); }
-      if (desc     !== undefined) { fields.push("`desc` = ?");         vals.push(desc || null); }
-      if (status   !== undefined) { fields.push("status = ?");         vals.push(status); }
-      if (priority !== undefined) { fields.push("priority = ?");       vals.push(priority); }
-      if (startdate!== undefined) { fields.push("startdate = ?");      vals.push(startdate || null); }
-      if (enddate  !== undefined) { fields.push("enddate = ?");        vals.push(enddate || null); }
-      if (evidance !== undefined) { fields.push("evidance = ?");       vals.push(evidance || null); }
-      // Hanya Direktur & Supervisor yang bisa ganti PIC
-      if (pic_employee_id !== undefined && isSupUp) {
-        fields.push("pic_employee_id = ?");
-        vals.push(pic_employee_id || null);
+      // Notif ke assignee baru
+      for (const eid of finalAssignees) {
+        if (eid !== emp.employee_id && !oldAssigneeSet.has(eid)) {
+          await db.query(
+            `INSERT INTO tr_pm_task_notif (task_id, recipient_employee_id, sender_employee_id, message)
+             VALUES (?, ?, ?, ?)`,
+            [taskId, eid, emp.employee_id,
+             `${emp.full_name} menugaskan task "${title?.trim()}" kepada Anda`]
+          );
+        }
       }
     }
 
-    if (!fields.length) return res.status(400).json({ message: "Tidak ada field yang diupdate" });
+    // Notif status change ke monthly owner
+    if (status && status !== oldStatus) {
+      const [monthRows] = await db.query(
+        "SELECT requestor_employee_id FROM tr_pm_monthly WHERE id = ? AND is_deleted = 0",
+        [oldTask.id_monthly]
+      );
+      if (monthRows[0] && monthRows[0].requestor_employee_id !== emp.employee_id) {
+        await db.query(
+          `INSERT INTO tr_pm_task_notif (task_id, recipient_employee_id, sender_employee_id, message)
+           VALUES (?, ?, ?, ?)`,
+          [taskId, monthRows[0].requestor_employee_id, emp.employee_id,
+           `${emp.full_name} mengubah status task "${title?.trim()}" menjadi "${status}"`]
+        );
+      }
+    }
 
-    fields.push("updated_at = NOW()");
-    vals.push(taskId);
-
-    await safeQuery(`UPDATE tr_pm_task SET ${fields.join(", ")} WHERE id = ?`, vals);
-
-    const [[updated]] = await safeQuery(
-      `SELECT t.*, owner.full_name AS owner_name, pic.full_name AS pic_name
-       FROM tr_pm_task t
-       LEFT JOIN mst_employee owner ON owner.employee_id = t.owner_employee_id AND owner.is_deleted = 0
-       LEFT JOIN mst_employee pic   ON pic.employee_id   = t.pic_employee_id   AND pic.is_deleted   = 0
-       WHERE t.id = ? LIMIT 1`,
-      [taskId]
-    );
-
-    const [evidenceFiles] = await safeQuery(
-      `SELECT id, task_id, file_name, file_path, file_type, file_size, uploaded_by, created_at
-       FROM tr_pm_task_evidence WHERE task_id = ? ORDER BY created_at ASC`,
-      [taskId]
-    );
-
-    res.json({ message: "Task updated", task: { ...updated, evidence_files: evidenceFiles } });
-  } catch (err) {
-    console.error("updateTask error:", err);
-    res.status(500).json({ message: err.message });
+    res.json({ message: "Task berhasil diupdate" });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
   }
 }
 
-// ─── EVIDENCE ─────────────────────────────────────────────────────────────────
-export async function uploadEvidence(req, res) {
+export async function deleteTask(req, res) {
+  if (!requireAuth(req, res)) return;
+  const emp = await getSessionEmployee(req);
+  const { taskId } = req.params;
+
   try {
-    if (!requireAuth(req, res)) return;
-    const employee = await getSessionEmployee(req);
-    if (!employee) return res.status(403).json({ message: "Employee not found" });
+    const [rows] = await db.query(
+      "SELECT * FROM tr_pm_task WHERE id = ? AND is_deleted = 0",
+      [taskId]
+    );
+    if (!rows[0]) return res.status(404).json({ message: "Task tidak ditemukan" });
 
-    const { taskId } = req.params;
-    const [[task]] = await safeQuery(`SELECT id FROM tr_pm_task WHERE id = ? LIMIT 1`, [taskId]);
-    if (!task) return res.status(404).json({ message: "Task not found" });
-
-    const files = req.files;
-    if (!files || files.length === 0) {
-      return res.status(400).json({ message: "Tidak ada file yang diupload" });
+    // owner_employee_id sebagai pemilik task
+    if (rows[0].owner_employee_id !== emp.employee_id && !isSupervisorUp(emp)) {
+      return res.status(403).json({ message: "Kamu tidak punya akses hapus task ini, hubungi owner" });
     }
 
-    const inserted = [];
-    for (const file of files) {
-      const filePath = `${EVIDENCE_URL_PREFIX}/${file.filename}`;
-      const [ins] = await safeQuery(
-        `INSERT INTO tr_pm_task_evidence (task_id, file_name, file_path, file_type, file_size, uploaded_by)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [taskId, file.originalname, filePath, file.mimetype, file.size, employee.employee_id]
+    await db.query(
+      "UPDATE tr_pm_task SET is_deleted=1, updated_at=NOW() WHERE id=?",
+      [taskId]
+    );
+    res.json({ message: "Task berhasil dihapus" });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+export async function getMonthlyTasksWithAssignees(req, res) {
+  if (!requireAuth(req, res)) return;
+  const { monthlyId } = req.params;
+
+  try {
+    const [rawTasks] = await db.query(
+      `SELECT t.id, t.id_monthly, t.title, t.\`desc\`,
+              t.startdate, t.enddate, t.priority, t.status, t.link,
+              t.evidance, t.evidance_path,
+              t.owner_employee_id, t.pic_employee_id,
+              eo.full_name AS owner_name, eo.email AS owner_email,
+              ep.full_name AS pic_name, ep.email AS pic_email,
+              t.created_at, t.updated_at
+       FROM tr_pm_task t
+       LEFT JOIN mst_employee eo ON t.owner_employee_id = eo.employee_id
+       LEFT JOIN mst_employee ep ON t.pic_employee_id = ep.employee_id
+       WHERE t.id_monthly = ? AND t.is_deleted = 0
+       ORDER BY t.created_at DESC`,
+      [monthlyId]
+    );
+
+    const tasks = rawTasks.map(t => ({ ...t, assignees: [], evidence_files: [] }));
+
+    if (tasks.length > 0) {
+      const taskIds = tasks.map((t) => t.id);
+
+      // tr_pm_task_assignee: kolom role ada
+      const [assignees] = await db.query(
+        `SELECT ta.task_id, ta.role, e.employee_id, e.full_name, e.email
+         FROM tr_pm_task_assignee ta
+         JOIN mst_employee e ON ta.employee_id = e.employee_id
+         WHERE ta.task_id IN (?)`,
+        [taskIds]
       );
-      inserted.push({
-        id:          ins.insertId,
-        task_id:     Number(taskId),
-        file_name:   file.originalname,
-        file_path:   filePath,
-        file_type:   file.mimetype,
-        file_size:   file.size,
-        uploaded_by: employee.employee_id,
+
+      // tr_pm_task_evidence: tidak ada is_deleted di schema
+      let evidences = [];
+      try {
+        const [evRows] = await db.query(
+          `SELECT id, task_id, file_name, file_path, file_type, file_size, uploaded_by, created_at
+           FROM tr_pm_task_evidence
+           WHERE task_id IN (?)
+           ORDER BY created_at DESC`,
+          [taskIds]
+        );
+        evidences = evRows;
+      } catch (_) {
+        // tabel evidence mungkin belum ada
+      }
+
+      const assigneeMap = {};
+      assignees.forEach((a) => {
+        if (!assigneeMap[a.task_id]) assigneeMap[a.task_id] = [];
+        assigneeMap[a.task_id].push({
+          employee_id: a.employee_id,
+          full_name:   a.full_name,
+          email:       a.email,
+          role:        a.role,
+        });
+      });
+
+      const evidenceMap = {};
+      evidences.forEach((ev) => {
+        if (!evidenceMap[ev.task_id]) evidenceMap[ev.task_id] = [];
+        evidenceMap[ev.task_id].push(ev);
+      });
+
+      tasks.forEach((t) => {
+        t.assignees      = assigneeMap[t.id] || [];
+        t.evidence_files = evidenceMap[t.id] || [];
       });
     }
 
-    res.status(201).json({ message: "Evidence uploaded", data: inserted });
-  } catch (err) {
-    console.error("uploadEvidence error:", err);
-    res.status(500).json({ message: err.message });
-  }
-}
-
-export async function listEvidence(req, res) {
-  try {
-    if (!requireAuth(req, res)) return;
-    const { taskId } = req.params;
-    const [rows] = await safeQuery(
-      `SELECT id, task_id, file_name, file_path, file_type, file_size, uploaded_by, created_at
-       FROM tr_pm_task_evidence WHERE task_id = ? ORDER BY created_at ASC`,
-      [taskId]
-    );
-    res.json({ data: rows });
-  } catch (err) {
-    console.error("listEvidence error:", err);
-    res.status(500).json({ message: err.message });
-  }
-}
-
-export async function deleteEvidence(req, res) {
-  try {
-    if (!requireAuth(req, res)) return;
-    const employee = await getSessionEmployee(req);
-    const { taskId, evidenceId } = req.params;
-
-    const [[ev]] = await safeQuery(
-      `SELECT * FROM tr_pm_task_evidence WHERE id = ? AND task_id = ? LIMIT 1`,
-      [evidenceId, taskId]
-    );
-    if (!ev) return res.status(404).json({ message: "Evidence not found" });
-
-    const [[task]] = await safeQuery(
-      `SELECT owner_employee_id FROM tr_pm_task WHERE id = ? LIMIT 1`, [taskId]
-    );
-
-    const isSupUp    = isSupervisorUp(employee);
-    const isUploader = ev.uploaded_by          === employee.employee_id;
-    const isOwner    = task?.owner_employee_id  === employee.employee_id;
-
-    if (!isSupUp && !isUploader && !isOwner) {
-      return res.status(403).json({ message: "Tidak punya akses hapus evidence ini" });
-    }
-
-    const diskPath = path.join(EVIDENCE_DISK_DIR, path.basename(ev.file_path));
-    if (fs.existsSync(diskPath)) fs.unlinkSync(diskPath);
-
-    await safeQuery(`DELETE FROM tr_pm_task_evidence WHERE id = ?`, [evidenceId]);
-    res.json({ message: "Evidence deleted" });
-  } catch (err) {
-    console.error("deleteEvidence error:", err);
-    res.status(500).json({ message: err.message });
+    res.json({ data: tasks });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
   }
 }
 
 // ─── COMMENTS ─────────────────────────────────────────────────────────────────
-export async function listTaskComments(req, res) {
+// tr_pm_task_comment: kolom FK = id_task, kolom isi = comment (bukan content)
+export async function listComments(req, res) {
+  if (!requireAuth(req, res)) return;
+  const { taskId } = req.params;
   try {
-    if (!requireAuth(req, res)) return;
-    const { taskId } = req.params;
-    const [rows] = await safeQuery(
-      `SELECT c.id, c.id_task, c.employee_id, c.comment, c.created_at,
-              e.full_name AS employee_name, e.email AS employee_email
+    const [rows] = await db.query(
+      `SELECT c.id, c.id_task, c.comment, c.created_at,
+              e.employee_id, e.full_name, e.email
        FROM tr_pm_task_comment c
-       LEFT JOIN mst_employee e ON e.employee_id = c.employee_id AND e.is_deleted = 0
+       LEFT JOIN mst_employee e ON c.employee_id = e.employee_id
        WHERE c.id_task = ?
        ORDER BY c.created_at ASC`,
       [taskId]
     );
     res.json({ data: rows });
-  } catch (err) {
-    console.error("listTaskComments error:", err);
-    res.status(500).json({ message: err.message });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
   }
 }
 
-export async function addTaskComment(req, res) {
+export async function addComment(req, res) {
+  if (!requireAuth(req, res)) return;
+  const emp = await getSessionEmployee(req);
+  const { taskId } = req.params;
+  const { comment } = req.body;
+  if (!comment?.trim()) return res.status(400).json({ message: "Comment kosong" });
+
   try {
-    if (!requireAuth(req, res)) return;
-    const employee = await getSessionEmployee(req);
-    if (!employee) return res.status(403).json({ message: "Employee not found" });
+    const [taskRows] = await db.query(
+      `SELECT t.*, m.requestor_employee_id AS monthly_owner
+       FROM tr_pm_task t
+       LEFT JOIN tr_pm_monthly m ON t.id_monthly = m.id
+       WHERE t.id = ?`,
+      [taskId]
+    );
+    const task = taskRows[0];
 
-    const { taskId } = req.params;
-    const { comment } = req.body;
-    if (!comment?.trim()) return res.status(400).json({ message: "Comment tidak boleh kosong" });
-
-    const [[task]] = await safeQuery(`SELECT id FROM tr_pm_task WHERE id = ? LIMIT 1`, [taskId]);
-    if (!task) return res.status(404).json({ message: "Task not found" });
-
-    const [ins] = await safeQuery(
-      `INSERT INTO tr_pm_task_comment (id_task, employee_id, comment) VALUES (?, ?, ?)`,
-      [taskId, employee.employee_id, comment.trim()]
+    // Kolom: id_task, comment, employee_id
+    const [r] = await db.query(
+      "INSERT INTO tr_pm_task_comment (id_task, employee_id, comment) VALUES (?,?,?)",
+      [taskId, emp.employee_id, comment.trim()]
     );
 
-    const [[newComment]] = await safeQuery(
-      `SELECT c.id, c.id_task, c.employee_id, c.comment, c.created_at,
-              e.full_name AS employee_name, e.email AS employee_email
-       FROM tr_pm_task_comment c
-       LEFT JOIN mst_employee e ON e.employee_id = c.employee_id AND e.is_deleted = 0
-       WHERE c.id = ? LIMIT 1`,
-      [ins.insertId]
-    );
+    if (task) {
+      const notifRecipients = new Set();
+      if (task.monthly_owner && task.monthly_owner !== emp.employee_id)
+        notifRecipients.add(task.monthly_owner);
+      // owner_employee_id sebagai pemilik task
+      if (task.owner_employee_id && task.owner_employee_id !== emp.employee_id)
+        notifRecipients.add(task.owner_employee_id);
 
-    res.status(201).json({ message: "Comment added", data: newComment });
-  } catch (err) {
-    console.error("addTaskComment error:", err);
-    res.status(500).json({ message: err.message });
+      const [assigneeRows] = await db.query(
+        "SELECT employee_id FROM tr_pm_task_assignee WHERE task_id = ?", [taskId]
+      );
+      assigneeRows.forEach((a) => {
+        if (a.employee_id !== emp.employee_id) notifRecipients.add(a.employee_id);
+      });
+
+      for (const recipientId of notifRecipients) {
+        await db.query(
+          `INSERT INTO tr_pm_task_notif (task_id, recipient_employee_id, sender_employee_id, message)
+           VALUES (?, ?, ?, ?)`,
+          [
+            taskId, recipientId, emp.employee_id,
+            `${emp.full_name} mengomentari task "${task.title}": "${
+              comment.trim().substring(0, 80)
+            }${comment.trim().length > 80 ? "..." : ""}"`
+          ]
+        );
+      }
+    }
+
+    res.status(201).json({ id: r.insertId, comment });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
   }
 }
 
+// ─── EVIDENCE ─────────────────────────────────────────────────────────────────
+// tr_pm_task_evidence: tidak ada is_deleted di schema
+export async function uploadEvidence(req, res) {
+  if (!requireAuth(req, res)) return;
+  const { taskId } = req.params;
+
+  try {
+    const [taskRows] = await db.query(
+      "SELECT * FROM tr_pm_task WHERE id = ? AND is_deleted = 0", [taskId]
+    );
+    if (!taskRows[0]) return res.status(404).json({ message: "Task tidak ditemukan" });
+    if (!req.files || req.files.length === 0)
+      return res.status(400).json({ message: "Tidak ada file yang diupload" });
+
+    const uploaded = [];
+    for (const file of req.files) {
+      const filePath = `${EVIDENCE_URL_PREFIX}/${file.filename}`;
+      const [r] = await db.query(
+        `INSERT INTO tr_pm_task_evidence
+         (task_id, file_name, file_path, file_type, file_size, uploaded_by)
+         VALUES (?,?,?,?,?,?)`,
+        [taskId, file.originalname, filePath, file.mimetype, file.size, req.session.employeeId]
+      );
+      uploaded.push({
+        id:        r.insertId,
+        file_name: file.originalname,
+        file_path: filePath,
+        file_type: file.mimetype,
+        file_size: file.size,
+      });
+    }
+
+    res.status(201).json({ data: uploaded });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+export async function deleteEvidence(req, res) {
+  if (!requireAuth(req, res)) return;
+  const { evidenceId } = req.params;
+
+  try {
+    const [rows] = await db.query(
+      "SELECT * FROM tr_pm_task_evidence WHERE id = ?", [evidenceId]
+    );
+    if (!rows[0]) return res.status(404).json({ message: "Evidence tidak ditemukan" });
+
+    // Hapus file fisik
+    const diskPath = path.join(EVIDENCE_DISK_DIR, path.basename(rows[0].file_path));
+    if (fs.existsSync(diskPath)) fs.unlinkSync(diskPath);
+
+    // Hard delete karena tidak ada kolom is_deleted di tabel ini
+    await db.query("DELETE FROM tr_pm_task_evidence WHERE id=?", [evidenceId]);
+    res.json({ message: "Evidence berhasil dihapus" });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+// ─── EMPLOYEES ────────────────────────────────────────────────────────────────
 export async function listEmployees(req, res) {
+  if (!requireAuth(req, res)) return;
   try {
-    if (!requireAuth(req, res)) return;
-    const [rows] = await safeQuery(
-      `SELECT employee_id, full_name, email, job_level_id
-       FROM mst_employee
-       WHERE is_deleted = 0
-         AND job_level_id != ?
-       ORDER BY full_name ASC`,
-      [JOB_LEVEL.DIREKTUR]
+    const [rows] = await db.query(
+      `SELECT e.employee_id, e.full_name, e.email, jl.job_level_name
+       FROM mst_employee e
+       LEFT JOIN mst_job_level jl ON e.job_level_id = jl.job_level_id
+       WHERE e.is_deleted = 0 and e.exit_date IS NULL
+       ORDER BY e.full_name ASC`
     );
     res.json({ data: rows });
-  } catch (err) {
-    console.error("listEmployees error:", err);
-    res.status(500).json({ message: err.message });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+// ─── NOTIFICATIONS ────────────────────────────────────────────────────────────
+export async function listNotifications(req, res) {
+  if (!requireAuth(req, res)) return;
+  const empId = req.session.employeeId;
+  try {
+    const [rows] = await db.query(
+      `SELECT n.id, n.task_id, n.message, n.is_read, n.created_at,
+              t.title AS task_title,
+              e.full_name AS sender_name
+       FROM tr_pm_task_notif n
+       LEFT JOIN tr_pm_task t ON n.task_id = t.id
+       LEFT JOIN mst_employee e ON n.sender_employee_id = e.employee_id
+       WHERE n.recipient_employee_id = ?
+       ORDER BY n.created_at DESC
+       LIMIT 50`,
+      [empId]
+    );
+    res.json({ data: rows });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+export async function markNotifRead(req, res) {
+  if (!requireAuth(req, res)) return;
+  const empId = req.session.employeeId;
+  const { notifId } = req.params;
+  try {
+    await db.query(
+      "UPDATE tr_pm_task_notif SET is_read=1 WHERE id=? AND recipient_employee_id=?",
+      [notifId, empId]
+    );
+    res.json({ message: "Notif ditandai sudah dibaca" });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+export async function markAllNotifRead(req, res) {
+  if (!requireAuth(req, res)) return;
+  const empId = req.session.employeeId;
+  try {
+    await db.query(
+      "UPDATE tr_pm_task_notif SET is_read=1 WHERE recipient_employee_id=? AND is_read=0",
+      [empId]
+    );
+    res.json({ message: "Semua notif ditandai sudah dibaca" });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
   }
 }
