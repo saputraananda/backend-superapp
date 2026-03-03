@@ -6,7 +6,7 @@ const router = express.Router();
 
 // REGISTER
 export async function register(req, res) {
-  const { name, full_name, email, password } = req.body;
+  const { name, full_name, email, password, username } = req.body;
 
   const finalFullName = full_name ?? name;
   if (!finalFullName) return res.status(400).json({ message: "Full name is required" });
@@ -19,10 +19,18 @@ export async function register(req, res) {
       return res.status(409).json({ message: "Email already registered" });
     }
 
+    // Cek username jika diberikan
+    if (username) {
+      const [existUsername] = await safeQuery(`SELECT id FROM users WHERE username = ?`, [username]);
+      if (existUsername.length > 0) {
+        return res.status(409).json({ message: "Username already taken" });
+      }
+    }
+
     const password_hash = await bcrypt.hash(password, 10);
     await safeQuery(
-      `INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, ?)`,
-      [finalFullName, email, password_hash, "employee"]
+      `INSERT INTO users (name, email, username, password_hash, role) VALUES (?, ?, ?, ?, ?)`,
+      [finalFullName, email, username || null, password_hash, "employee"]
     );
 
     await safeQuery(
@@ -39,37 +47,46 @@ export async function register(req, res) {
 
 // LOGIN
 export async function login(req, res) {
-  const { email, password } = req.body;
+  const { email, password, identifier } = req.body;
+
+  // identifier bisa email atau username
+  const loginIdentifier = identifier || email;
+
+  if (!loginIdentifier) {
+    return res.status(400).json({ message: "Email atau username wajib diisi" });
+  }
 
   try {
+    // Cari user berdasarkan email ATAU username
     const [rows] = await safeQuery(
-      `SELECT * FROM users WHERE email = ?`,
-      [email]
+      `SELECT * FROM users WHERE email = ? OR username = ? LIMIT 1`,
+      [loginIdentifier, loginIdentifier]
     );
 
     if (rows.length === 0) {
-      return res.status(401).json({ message: "Invalid email or password" });
+      return res.status(401).json({ message: "Email/username atau password salah" });
     }
 
     const user = rows[0];
     if (!user.password_hash) {
-      return res.status(401).json({ message: "Invalid email or password" });
+      return res.status(401).json({ message: "Email/username atau password salah" });
     }
 
     const isMatch = await bcrypt.compare(password, user.password_hash);
     if (!isMatch) {
-      return res.status(401).json({ message: "Invalid email or password" });
+      return res.status(401).json({ message: "Email/username atau password salah" });
     }
 
     const [empRows] = await safeQuery(
       `SELECT * FROM mst_employee WHERE email = ? AND is_deleted = 0`,
-      [email]
+      [user.email]
     );
 
     const employee = empRows[0] || null;
 
     req.session.userId       = user.id;
     req.session.userEmail    = user.email;
+    req.session.userName     = user.username;
     req.session.userRole     = user.role;
 
     if (employee) {
@@ -83,6 +100,7 @@ export async function login(req, res) {
         id:       user.id,
         name:     user.name,
         email:    user.email,
+        username: user.username,
         role:     user.role,
         employee: employee,
       },
@@ -109,7 +127,7 @@ export async function me(req, res) {
 
   try {
     const [rows] = await safeQuery(
-      "SELECT id, name, email, role FROM users WHERE id = ?",
+      "SELECT id, name, email, username, role FROM users WHERE id = ?",
       [req.session.userId]
     );
 
@@ -118,6 +136,11 @@ export async function me(req, res) {
     }
 
     const user = rows[0];
+
+    // Sync session username kalau belum ada
+    if (!req.session.userName && user.username) {
+      req.session.userName = user.username;
+    }
 
     const [empRows] = await safeQuery(
       `SELECT 

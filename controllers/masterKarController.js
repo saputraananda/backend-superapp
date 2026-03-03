@@ -82,14 +82,16 @@ export const listEmployees = async (req, res) => {
       conditions.push("e.contract_end_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY)");
     }
     if (search) {
-      conditions.push("(e.full_name LIKE ? OR e.email LIKE ? OR e.ktp_number LIKE ?)");
-      params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+      conditions.push("(e.full_name LIKE ? OR e.email LIKE ? OR e.ktp_number LIKE ? OR u.username LIKE ?)");
+      params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
     }
 
     const where = "WHERE " + conditions.join(" AND ");
 
     const [[{ total }]] = await safeQuery(
-      `SELECT COUNT(*) as total FROM mst_employee e ${where}`, params
+      `SELECT COUNT(*) as total FROM mst_employee e
+       LEFT JOIN users u ON u.email = e.email
+       ${where}`, params
     );
 
     const [rows] = await safeQuery(
@@ -104,9 +106,12 @@ export const listEmployees = async (req, res) => {
         e.bank_account_number, e.bpjs_health_number,
         e.bpjs_employment_number, e.npwp_number,
         e.emergency_contact, e.notes, e.ktp_path,
+        e.employee_code,
+        u.username,
         c.company_name, d.department_name, p.position_name,
         es.employment_status_name, j.job_level_name
        FROM mst_employee e
+       LEFT JOIN users                 u  ON u.email              = e.email
        LEFT JOIN mst_company           c  ON e.company_id          = c.company_id
        LEFT JOIN mst_department        d  ON e.department_id       = d.department_id
        LEFT JOIN mst_position          p  ON e.position_id         = p.position_id
@@ -131,10 +136,12 @@ export const getEmployee = async (req, res) => {
     const { id } = req.params;
     const [rows] = await safeQuery(
       `SELECT e.*,
+        u.username,
         c.company_name, d.department_name, p.position_name,
         j.job_level_name, es.employment_status_name,
         ed.education_level_name, r.religion_name, b.bank_name
        FROM mst_employee e
+       LEFT JOIN users                 u  ON u.email              = e.email
        LEFT JOIN mst_company           c  ON e.company_id          = c.company_id
        LEFT JOIN mst_department        d  ON e.department_id       = d.department_id
        LEFT JOIN mst_position          p  ON e.position_id         = p.position_id
@@ -165,6 +172,7 @@ export const updateEmployee = async (req, res) => {
       exit_date, exit_reason, education_level_id, school_name, religion_id,
       marital_status, bpjs_health_number, bpjs_employment_number, npwp_number,
       bank_id, bank_account_number, emergency_contact, notes, employee_code,
+      username, // ← tambah
     } = req.body;
 
     if (!employee_code?.trim()) {
@@ -177,6 +185,20 @@ export const updateEmployee = async (req, res) => {
     );
     if (existing) {
       return res.status(400).json({ message: "Nomor Induk Karyawan sudah digunakan oleh karyawan lain." });
+    }
+
+    // ← Cek username unik jika diisi
+    if (username?.trim()) {
+      const [[emp]] = await safeQuery(
+        "SELECT email FROM mst_employee WHERE employee_id = ? AND is_deleted = 0", [id]
+      );
+      const [[existUsername]] = await safeQuery(
+        "SELECT id FROM users WHERE username = ? AND email != ?",
+        [username.trim(), emp?.email ?? ""]
+      );
+      if (existUsername) {
+        return res.status(400).json({ message: "Username sudah digunakan oleh pengguna lain." });
+      }
     }
 
     await safeQuery(
@@ -201,6 +223,19 @@ export const updateEmployee = async (req, res) => {
         bank_id, bank_account_number, emergency_contact, notes, employee_code, id,
       ]
     );
+
+    // ← Update username di tabel users
+    if (typeof username === "string") {
+      const [[emp]] = await safeQuery(
+        "SELECT email FROM mst_employee WHERE employee_id = ? AND is_deleted = 0", [id]
+      );
+      if (emp?.email) {
+        await safeQuery(
+          "UPDATE users SET username = ? WHERE email = ?",
+          [username.trim() || null, emp.email]
+        );
+      }
+    }
 
     res.json({ message: "Data karyawan berhasil diperbarui." });
   } catch (err) {
