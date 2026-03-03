@@ -173,7 +173,7 @@ app.use("/hr", masterKarRoutes);
 // Static assets (DEV vs PROD)
 // =========================
 const STATIC_DEV_BASE = path.join(__dirname, "assets");
-const STATIC_PROD_BASE = process.env.UPLOAD_BASE_DIR || "/home/u42073163/storage/assets";
+const STATIC_PROD_BASE = process.env.UPLOAD_BASE_DIR || "/home/u420573163/storage/assets";
 const ASSETS_BASE = isProd ? STATIC_PROD_BASE : STATIC_DEV_BASE;
 
 app.use("/assets/evidence", express.static(path.join(ASSETS_BASE, "evidence")));
