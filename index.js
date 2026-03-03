@@ -1,4 +1,4 @@
-// server.js (ESM)
+// index.js (ESM)
 
 import fs from "fs";
 import path from "path";
@@ -72,29 +72,33 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
 // =========================
-// CORS
+// CORS (stabil + preflight)
 // =========================
 const allowedOrigins = (process.env.CORS_ORIGIN || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 
-app.use(
-  cors({
-    origin: function (origin, cb) {
-      // Allow requests with no origin (Postman, mobile apps, server-to-server)
-      if (!origin) return cb(null, true);
+const corsOptions = {
+  origin: function (origin, cb) {
+    // Allow requests with no origin (Postman, mobile apps, server-to-server)
+    if (!origin) return cb(null, true);
 
-      // Allow all if not specified (dev)
-      if (allowedOrigins.length === 0) return cb(null, true);
+    // Allow all if not specified (dev)
+    if (allowedOrigins.length === 0) return cb(null, true);
 
-      if (allowedOrigins.includes(origin)) return cb(null, true);
+    if (allowedOrigins.includes(origin)) return cb(null, true);
 
-      return cb(new Error("Not allowed by CORS"));
-    },
-    credentials: true,
-  })
-);
+    console.log("❌ CORS blocked origin:", origin, "allowed:", allowedOrigins);
+    return cb(new Error("Not allowed by CORS"));
+  },
+  credentials: true,
+  preflightContinue: false,
+  optionsSuccessStatus: 204,
+};
+
+app.use(cors(corsOptions));
+app.options(/.*/, cors(corsOptions));
 
 // =========================
 // Session store (MySQL)
@@ -106,7 +110,7 @@ const sessionStore = new MySQLStoreSession(
     clearExpired: true,
     checkExpirationInterval: 900000, // 15 min
     expiration: 7200000, // 2 hours
-    // Lebih aman: jangan auto create table di production (sering bikin masalah permission/hang)
+    // Lebih aman: jangan auto create table di production
     createDatabaseTable: isProd ? false : true,
     schema: {
       tableName: "sessions",
@@ -120,13 +124,11 @@ const sessionStore = new MySQLStoreSession(
   pool
 );
 
-// Event handler yang valid
 sessionStore.on("error", (err) => {
   console.error("[SessionStore] Error (server tetap jalan):", err?.code ?? err?.message ?? err);
 });
 
 sessionStore.on("connect", () => {
-  // Tidak semua versi emit "connect", tapi aman kalau ada
   console.log("✅ MySQL session store connected");
 });
 
@@ -214,12 +216,12 @@ app.use((err, req, res, next) => {
 // =========================
 // Start server
 // =========================
-app.listen(PORT, () => {
+app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ API running on port ${PORT}`);
   console.log(`📍 Environment: ${process.env.NODE_ENV}`);
   console.log(`🌐 CORS Origins: ${allowedOrigins.join(", ") || "All"}`);
 
-  // Ping DB setiap 30 detik (sesuai punyamu)
+  // Ping DB setiap 30 detik
   startDbPing(30_000);
 });
 
