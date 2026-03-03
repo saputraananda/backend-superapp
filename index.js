@@ -158,6 +158,7 @@ app.get("/health", (req, res) => {
     status: "OK",
     message: "API berjalan normal",
     environment: process.env.NODE_ENV ?? "undefined",
+    UPLOAD_BASE_DIR: process.env.UPLOAD_BASE_DIR,
     timestamp: new Date().toISOString(),
   });
 });
