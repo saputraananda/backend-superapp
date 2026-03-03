@@ -16,7 +16,7 @@ const DEFAULT_DEV_BASE = path.join(__dirname, "..", "assets");
 
 // PROD: simpan di luar repo biar gak kehapus saat deploy
 // Bisa di-override via ENV: UPLOAD_BASE_DIR
-const DEFAULT_PROD_BASE = process.env.UPLOAD_BASE_DIR || "/home/u42073163/storage/assets";
+const DEFAULT_PROD_BASE = process.env.UPLOAD_BASE_DIR || "/home/u420573163/storage/assets";
 
 // Base final
 const BASE_DIR = isProd ? DEFAULT_PROD_BASE : DEFAULT_DEV_BASE;
