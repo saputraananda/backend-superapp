@@ -36,7 +36,9 @@ if (fs.existsSync(path.join(process.cwd(), envFile))) {
 } else {
   // 2) Fallback: load default .env jika ada, atau rely on Hostinger panel env
   dotenv.config();
-  console.log(`ℹ️ Env file ${envFile} not found. Using default dotenv (if any) + process env from panel.`);
+  console.log(
+    `ℹ️ Env file ${envFile} not found. Using default dotenv (if any) + process env from panel.`
+  );
 }
 
 console.log("🚀 Starting AloraSuperApp API...");
@@ -45,7 +47,9 @@ console.log("🚀 Starting AloraSuperApp API...");
 // Validate required env
 // =========================
 const requiredEnv = ["DB_HOST", "DB_USER", "DB_PASS", "DB_NAME", "SESSION_SECRET"];
-const missingEnv = requiredEnv.filter((key) => !process.env[key] || String(process.env[key]).trim() === "");
+const missingEnv = requiredEnv.filter(
+  (key) => !process.env[key] || String(process.env[key]).trim() === ""
+);
 
 if (missingEnv.length > 0) {
   console.error("❌ Missing required environment variables:", missingEnv);
@@ -163,11 +167,17 @@ app.use("/satisfaction", satisfactionRoutes);
 app.use("/api/pm", pmRoutes);
 app.use("/hr", masterKarRoutes);
 
-// Static assets
-app.use("/assets/evidence", express.static(path.join(__dirname, "assets", "evidence")));
-app.use("/assets/avatars", express.static(path.join(__dirname, "assets", "avatars")));
-app.use("/assets/documents", express.static(path.join(__dirname, "assets", "documents")));
-app.use("/assets", express.static(path.join(__dirname, "assets")));
+// =========================
+// Static assets (DEV vs PROD)
+// =========================
+const STATIC_DEV_BASE = path.join(__dirname, "assets");
+const STATIC_PROD_BASE = process.env.UPLOAD_BASE_DIR || "/home/u42073163/storage/assets";
+const ASSETS_BASE = isProd ? STATIC_PROD_BASE : STATIC_DEV_BASE;
+
+app.use("/assets/evidence", express.static(path.join(ASSETS_BASE, "evidence")));
+app.use("/assets/avatars", express.static(path.join(ASSETS_BASE, "avatars")));
+app.use("/assets/documents", express.static(path.join(ASSETS_BASE, "documents")));
+app.use("/assets", express.static(ASSETS_BASE));
 
 // 404
 app.use((req, res) => {
