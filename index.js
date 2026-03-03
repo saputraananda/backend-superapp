@@ -163,6 +163,18 @@ app.get("/health", (req, res) => {
   });
 });
 
+app.get("/debug-file-exists", (req, res) => {
+  const rel = req.query.p; // contoh: avatars/1772513491320_rysl4m.jpeg
+  if (!rel) return res.status(400).json({ error: "missing ?p=" });
+
+  const full = path.join(ASSETS_BASE, rel);
+  res.json({
+    ASSETS_BASE,
+    fullPath: full,
+    exists: fs.existsSync(full),
+  });
+});
+
 app.use("/auth", authRoutes);
 app.use("/apps", appRoutes);
 app.use("/employees", employeeRoutes);
