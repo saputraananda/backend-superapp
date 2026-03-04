@@ -11,6 +11,7 @@ const DB_CONFIG = {
   waitForConnections: true,
   connectionLimit:    10,
   queueLimit:         0,
+  dateStrings:      true, // Pastikan DATE/TIME dikembalikan sebagai string, bukan JS Date (agar tidak kena timezone shift)
 
   // ── Cegah ETIMEDOUT ──
   connectTimeout:          10_000,

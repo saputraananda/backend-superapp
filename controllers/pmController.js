@@ -35,6 +35,20 @@ function isDirektur(employee)     { return employee?.job_level_id <= JOB_LEVEL.D
 function isSupervisorUp(employee) { return employee?.job_level_id <= JOB_LEVEL.SUPERVISOR; }
 function isStaffUp(employee)      { return employee?.job_level_id <= JOB_LEVEL.STAFF; }
 
+function sanitizeDate(val) {
+  if (!val) return null;
+  const s = String(val).trim();
+
+  // ✅ Sudah format YYYY-MM-DD → simpan langsung sebagai string
+  // MySQL DATE column tidak butuh waktu
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+
+  // ✅ Ada T → ambil date part saja, JANGAN biarkan MySQL konversi timezone
+  if (s.includes("T")) return s.slice(0, 10);
+
+  return null;
+}
+
 // ─── PROJECT ──────────────────────────────────────────────────────────────────
 export async function listProjects(req, res) {
   if (!requireAuth(req, res)) return;
@@ -444,7 +458,7 @@ export async function createTask(req, res) {
        VALUES (?,?,?,?,?,?,?,?,?,?)`,
       [
         monthlyId, title.trim(), desc?.trim() || null,
-        startdate || null, enddate || null,
+        sanitizeDate(startdate), sanitizeDate(enddate),
         priority || "medium", status || "assigned",
         emp.employee_id, picId, link?.trim() || null,
       ]
@@ -500,21 +514,29 @@ export async function updateTask(req, res) {
       [taskId]
     );
     if (!rows[0]) return res.status(404).json({ message: "Task tidak ditemukan" });
-    const oldTask = rows[0];
+    const oldTask   = rows[0];
     const oldStatus = oldTask.status;
+
+    // ✅ Merge dengan data lama — jika field tidak dikirim, pakai nilai lama
+    const finalTitle    = title      !== undefined ? title?.trim()          : oldTask.title;
+    const finalDesc     = desc       !== undefined ? desc?.trim() || null   : oldTask.desc;
+    const finalStart    = startdate  !== undefined ? sanitizeDate(startdate): oldTask.startdate;
+    const finalEnd      = enddate    !== undefined ? sanitizeDate(enddate)  : oldTask.enddate;
+    const finalStatus   = status     !== undefined ? status                 : oldTask.status;
+    const finalPriority = priority   !== undefined ? priority               : oldTask.priority;
+    const finalLink     = link       !== undefined ? link?.trim() || null   : oldTask.link;
+
+    // Validasi title tidak boleh null/kosong
+    if (!finalTitle) return res.status(400).json({ message: "Title wajib diisi" });
 
     await db.query(
       `UPDATE tr_pm_task
        SET title=?, \`desc\`=?, startdate=?, enddate=?, priority=?, status=?, link=?, updated_at=NOW()
        WHERE id=?`,
-      [
-        title?.trim(), desc?.trim() || null,
-        startdate || null, enddate || null,
-        priority, status, link?.trim() || null,
-        taskId,
-      ]
+      [finalTitle, finalDesc, finalStart, finalEnd, finalPriority, finalStatus, finalLink, taskId]
     );
 
+    // ✅ Update assignees HANYA jika assignee_ids dikirim (tidak undefined)
     if (assignee_ids !== undefined) {
       const [oldAssigneeRows] = await db.query(
         "SELECT employee_id FROM tr_pm_task_assignee WHERE task_id = ?", [taskId]
@@ -541,8 +563,6 @@ export async function updateTask(req, res) {
           "INSERT IGNORE INTO tr_pm_task_assignee (task_id, employee_id, role) VALUES ?",
           [vals]
         );
-
-        // Update pic_employee_id di task
         await db.query(
           "UPDATE tr_pm_task SET pic_employee_id=? WHERE id=?",
           [finalAssignees[0], taskId]
@@ -556,14 +576,14 @@ export async function updateTask(req, res) {
             `INSERT INTO tr_pm_task_notif (task_id, recipient_employee_id, sender_employee_id, message)
              VALUES (?, ?, ?, ?)`,
             [taskId, eid, emp.employee_id,
-             `${emp.full_name} menugaskan task "${title?.trim()}" kepada Anda`]
+             `${emp.full_name} menugaskan task "${finalTitle}" kepada Anda`]
           );
         }
       }
     }
 
-    // Notif status change ke monthly owner
-    if (status && status !== oldStatus) {
+    // ✅ Notif status change — hanya jika status benar-benar berubah
+    if (finalStatus !== oldStatus) {
       const [monthRows] = await db.query(
         "SELECT requestor_employee_id FROM tr_pm_monthly WHERE id = ? AND is_deleted = 0",
         [oldTask.id_monthly]
@@ -573,13 +593,14 @@ export async function updateTask(req, res) {
           `INSERT INTO tr_pm_task_notif (task_id, recipient_employee_id, sender_employee_id, message)
            VALUES (?, ?, ?, ?)`,
           [taskId, monthRows[0].requestor_employee_id, emp.employee_id,
-           `${emp.full_name} mengubah status task "${title?.trim()}" menjadi "${status}"`]
+           `${emp.full_name} mengubah status task "${finalTitle}" menjadi "${finalStatus}"`]
         );
       }
     }
 
     res.json({ message: "Task berhasil diupdate" });
   } catch (e) {
+    console.error("[updateTask]", e);
     res.status(500).json({ message: e.message });
   }
 }
@@ -771,60 +792,84 @@ export async function addComment(req, res) {
 
 // ─── EVIDENCE ─────────────────────────────────────────────────────────────────
 // tr_pm_task_evidence: tidak ada is_deleted di schema
-export async function uploadEvidence(req, res) {
-  if (!requireAuth(req, res)) return;
+export async function listEvidence(req, res) {
+  const employee = await getSessionEmployee(req);
+  if (!employee) return res.status(401).json({ message: "Unauthorized" });
+
   const { taskId } = req.params;
+  try {
+    const [rows] = await db.query(
+      `SELECT e.id, e.task_id, e.file_name, e.file_path,
+              e.file_type, e.file_size, e.uploaded_by, e.created_at,
+              emp.full_name AS uploader_name
+       FROM tr_pm_task_evidence e
+       LEFT JOIN mst_employee emp ON e.uploaded_by = emp.employee_id
+       WHERE e.task_id = ?
+       ORDER BY e.created_at DESC`,
+      [taskId]
+    );
+    res.json({ data: rows });
+  } catch (e) {
+    console.error("[listEvidence]", e);
+    res.status(500).json({ message: e.message });
+  }
+}
+
+export async function uploadEvidence(req, res) {
+  const employee = await getSessionEmployee(req);
+  if (!employee) return res.status(401).json({ message: "Unauthorized" });
+
+  const { taskId } = req.params;
+  const uploadedFiles = req.files || [];
+
+  if (!uploadedFiles.length)
+    return res.status(400).json({ message: "Tidak ada file yang diupload" });
 
   try {
-    const [taskRows] = await db.query(
-      "SELECT * FROM tr_pm_task WHERE id = ? AND is_deleted = 0", [taskId]
-    );
-    if (!taskRows[0]) return res.status(404).json({ message: "Task tidak ditemukan" });
-    if (!req.files || req.files.length === 0)
-      return res.status(400).json({ message: "Tidak ada file yang diupload" });
-
-    const uploaded = [];
-    for (const file of req.files) {
+    const inserted = [];
+    for (const file of uploadedFiles) {
       const filePath = `${EVIDENCE_URL_PREFIX}/${file.filename}`;
       const [r] = await db.query(
         `INSERT INTO tr_pm_task_evidence
          (task_id, file_name, file_path, file_type, file_size, uploaded_by)
          VALUES (?,?,?,?,?,?)`,
-        [taskId, file.originalname, filePath, file.mimetype, file.size, req.session.employeeId]
+        [taskId, file.originalname, filePath, file.mimetype, file.size, employee.employee_id]
       );
-      uploaded.push({
+      inserted.push({
         id:        r.insertId,
+        task_id:   taskId,
         file_name: file.originalname,
         file_path: filePath,
         file_type: file.mimetype,
         file_size: file.size,
       });
     }
-
-    res.status(201).json({ data: uploaded });
+    res.status(201).json({ data: inserted });
   } catch (e) {
+    console.error("[uploadEvidence]", e);
     res.status(500).json({ message: e.message });
   }
 }
 
 export async function deleteEvidence(req, res) {
-  if (!requireAuth(req, res)) return;
-  const { evidenceId } = req.params;
+  const employee = await getSessionEmployee(req);
+  if (!employee) return res.status(401).json({ message: "Unauthorized" });
 
+  const { evidenceId } = req.params;
   try {
-    const [rows] = await db.query(
+    const [[row]] = await db.query(
       "SELECT * FROM tr_pm_task_evidence WHERE id = ?", [evidenceId]
     );
-    if (!rows[0]) return res.status(404).json({ message: "Evidence tidak ditemukan" });
+    if (!row) return res.status(404).json({ message: "File tidak ditemukan" });
 
     // Hapus file fisik
-    const diskPath = path.join(EVIDENCE_DISK_DIR, path.basename(rows[0].file_path));
-    if (fs.existsSync(diskPath)) fs.unlinkSync(diskPath);
+    const diskPath = path.join(EVIDENCE_DISK_DIR, path.basename(row.file_path));
+    fs.unlink(diskPath, () => {});
 
-    // Hard delete karena tidak ada kolom is_deleted di tabel ini
-    await db.query("DELETE FROM tr_pm_task_evidence WHERE id=?", [evidenceId]);
-    res.json({ message: "Evidence berhasil dihapus" });
+    await db.query("DELETE FROM tr_pm_task_evidence WHERE id = ?", [evidenceId]);
+    res.json({ message: "File berhasil dihapus" });
   } catch (e) {
+    console.error("[deleteEvidence]", e);
     res.status(500).json({ message: e.message });
   }
 }
