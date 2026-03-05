@@ -942,3 +942,38 @@ export async function markAllNotifRead(req, res) {
     res.status(500).json({ message: e.message });
   }
 }
+
+export async function deleteNotif(req, res) {
+  if (!requireAuth(req, res)) return;
+  const empId = req.session.employeeId;
+  const { notifId } = req.params;
+  try {
+    const [rows] = await db.query(
+      "SELECT id FROM tr_pm_task_notif WHERE id = ? AND recipient_employee_id = ?",
+      [notifId, empId]
+    );
+    if (!rows[0]) return res.status(404).json({ message: "Notifikasi tidak ditemukan" });
+
+    await db.query(
+      "DELETE FROM tr_pm_task_notif WHERE id = ? AND recipient_employee_id = ?",
+      [notifId, empId]
+    );
+    res.json({ message: "Notifikasi berhasil dihapus" });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+export async function deleteAllNotif(req, res) {
+  if (!requireAuth(req, res)) return;
+  const empId = req.session.employeeId;
+  try {
+    await db.query(
+      "DELETE FROM tr_pm_task_notif WHERE recipient_employee_id = ?",
+      [empId]
+    );
+    res.json({ message: "Semua notifikasi berhasil dihapus" });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}

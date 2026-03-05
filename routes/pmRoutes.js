@@ -18,6 +18,7 @@ import {
   listEmployees,
   // Notifications
   listNotifications, markNotifRead, markAllNotifRead,
+  deleteNotif, deleteAllNotif, // ← TAMBAH
 } from "../controllers/pmController.js";
 
 const router = express.Router();
@@ -62,8 +63,10 @@ router.delete("/evidence/:evidenceId",    deleteEvidence);
 router.get("/employees", listEmployees);
 
 // ── Notifications ─────────────────────────────────────────────────────────
-router.get("/notifications",              listNotifications);
+router.get("/notifications",                 listNotifications);
 router.patch("/notifications/:notifId/read", markNotifRead);
-router.patch("/notifications/read-all",   markAllNotifRead);
+router.patch("/notifications/read-all",      markAllNotifRead);
+router.delete("/notifications/:notifId",     deleteNotif);    // ← TAMBAH
+router.delete("/notifications",              deleteAllNotif); // ← TAMBAH
 
 export default router;
