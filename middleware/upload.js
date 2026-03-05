@@ -34,8 +34,11 @@ const AVATAR_DIR = path.join(BASE_DIR, "avatars");
 // Folder: <BASE>/documents/
 const DOCUMENT_DIR = path.join(BASE_DIR, "documents");
 
+// Folder: <BASE>/daily_evidence/
+const DAILY_EVIDENCE_DIR = path.join(BASE_DIR, "daily_evidence");
+
 // Buat folder kalau belum ada
-[UPLOAD_DIR, AVATAR_DIR, DOCUMENT_DIR].forEach((dir) => {
+[UPLOAD_DIR, AVATAR_DIR, DOCUMENT_DIR, DAILY_EVIDENCE_DIR].forEach((dir) => {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
@@ -76,6 +79,22 @@ const documentStorage = multer.diskStorage({
     const ext = path.extname(file.originalname);
     const unique = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     cb(null, `${unique}${ext}`);
+  },
+});
+
+// =========================
+// Storage untuk daily evidence (semua tipe, 20 MB)
+// =========================
+const dailyEvidenceStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, DAILY_EVIDENCE_DIR),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    const baseName = path
+      .basename(file.originalname, ext)
+      .replace(/[^a-zA-Z0-9_\-]/g, "_")
+      .slice(0, 60);
+    const unique = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    cb(null, `${baseName}_${unique}${ext}`);
   },
 });
 
@@ -137,4 +156,13 @@ export const uploadDocument = multer({
   storage: documentStorage,
   fileFilter: documentFilter,
   limits: { fileSize: 10 * 1024 * 1024 },
+});
+
+// =========================
+// Upload daily evidence (semua tipe, 20 MB)
+// =========================
+export const uploadDailyEvidence = multer({
+  storage: dailyEvidenceStorage,
+  fileFilter: (_req, file, cb) => cb(null, true), // semua tipe file
+  limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB per file
 });

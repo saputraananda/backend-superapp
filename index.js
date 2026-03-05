@@ -19,6 +19,8 @@ import employeeRoutes from "./routes/employeeRoutes.js";
 import satisfactionRoutes from "./routes/satisfactionRoutes.js";
 import pmRoutes from "./routes/pmRoutes.js";
 import masterKarRoutes from "./routes/masterKarRoutes.js";
+import dailyTaskRoutes from "./routes/dailyTaskRoutes.js"; // ← tambah ini
+import broadcastRoutes from "./routes/broadcastRoutes.js"; // ← tambah
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -67,8 +69,17 @@ const PORT = Number(process.env.PORT) || 3000;
 
 app.set("trust proxy", 1);
 
-app.use(express.json({ limit: "2mb" }));
-app.use(express.urlencoded({ extended: true }));
+// ⚠️ Skip body-parser untuk multipart (biarkan multer handle)
+app.use((req, res, next) => {
+  const contentType = req.headers["content-type"] || "";
+  if (contentType.includes("multipart/form-data")) {
+    return next();
+  }
+  express.json({ limit: "2mb" })(req, res, () => {
+    express.urlencoded({ extended: true })(req, res, next);
+  });
+});
+
 app.use(cookieParser());
 
 // =========================
@@ -151,6 +162,19 @@ app.use(
 );
 
 // =========================
+// Static assets (DEV vs PROD)
+// =========================
+const STATIC_DEV_BASE = path.join(__dirname, "assets");
+const STATIC_PROD_BASE = process.env.UPLOAD_BASE_DIR || "/home/u420573163/storage/assets";
+const ASSETS_BASE = isProd ? STATIC_PROD_BASE : STATIC_DEV_BASE; // ← define dulu
+
+app.use("/assets/evidence",       express.static(path.join(ASSETS_BASE, "evidence")));
+app.use("/assets/avatars",        express.static(path.join(ASSETS_BASE, "avatars")));
+app.use("/assets/documents",      express.static(path.join(ASSETS_BASE, "documents")));
+app.use("/assets/daily_evidence", express.static(path.join(ASSETS_BASE, "daily_evidence")));
+app.use("/assets",                express.static(ASSETS_BASE));
+
+// =========================
 // Routes
 // =========================
 app.get("/health", (req, res) => {
@@ -164,7 +188,7 @@ app.get("/health", (req, res) => {
 });
 
 app.get("/debug-file-exists", (req, res) => {
-  const rel = req.query.p; // contoh: avatars/1772513491320_rysl4m.jpeg
+  const rel = req.query.p;
   if (!rel) return res.status(400).json({ error: "missing ?p=" });
 
   const full = path.join(ASSETS_BASE, rel);
@@ -175,31 +199,18 @@ app.get("/debug-file-exists", (req, res) => {
   });
 });
 
-app.use("/auth", authRoutes);
-app.use("/apps", appRoutes);
-app.use("/employees", employeeRoutes);
-app.use("/satisfaction", satisfactionRoutes);
-app.use("/api/pm", pmRoutes);
-app.use("/hr", masterKarRoutes);
-
-// =========================
-// Static assets (DEV vs PROD)
-// =========================
-const STATIC_DEV_BASE = path.join(__dirname, "assets");
-const STATIC_PROD_BASE = process.env.UPLOAD_BASE_DIR || "/home/u420573163/storage/assets";
-const ASSETS_BASE = isProd ? STATIC_PROD_BASE : STATIC_DEV_BASE;
-
-app.use("/assets/evidence", express.static(path.join(ASSETS_BASE, "evidence")));
-app.use("/assets/avatars", express.static(path.join(ASSETS_BASE, "avatars")));
-app.use("/assets/documents", express.static(path.join(ASSETS_BASE, "documents")));
-app.use("/assets", express.static(ASSETS_BASE));
+app.use("/auth",        authRoutes);
+app.use("/apps",        appRoutes);
+app.use("/employees",   employeeRoutes);
+app.use("/satisfaction",satisfactionRoutes);
+app.use("/api/pm",      pmRoutes);
+app.use("/hr",          masterKarRoutes);
+app.use("/daily-tasks", dailyTaskRoutes);
+app.use("/broadcast", broadcastRoutes);
 
 // 404
 app.use((req, res) => {
-  res.status(404).json({
-    message: "Endpoint not found",
-    path: req.path,
-  });
+  res.status(404).json({ message: "Endpoint not found", path: req.path });
 });
 
 // =========================
