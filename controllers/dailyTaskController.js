@@ -4,7 +4,7 @@ import { safeQuery } from "../db/pool.js";
 
 const isProd = process.env.NODE_ENV === "production";
 const ASSETS_BASE = isProd
-  ? process.env.UPLOAD_BASE_DIR || "/home/u420573163/storage/assets"
+  ? process.env.UPLOAD_BASE_DIR || "/home/u420573163/domains/api.waschenalora.com/storage/assets/"
   : path.join(process.cwd(), "assets");
 
 // ─── GET ALL TASKS ───────────────────────────────────────────────────────────
