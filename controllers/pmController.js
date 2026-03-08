@@ -899,6 +899,7 @@ export async function listNotifications(req, res) {
     const [rows] = await db.query(
       `SELECT n.id, n.task_id, n.message, n.is_read, n.created_at,
               t.title AS task_title,
+              t.id_monthly AS monthly_id,
               e.full_name AS sender_name
        FROM tr_pm_task_notif n
        LEFT JOIN tr_pm_task t ON n.task_id = t.id
