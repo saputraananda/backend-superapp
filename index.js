@@ -19,8 +19,10 @@ import employeeRoutes from "./routes/employeeRoutes.js";
 import satisfactionRoutes from "./routes/satisfactionRoutes.js";
 import pmRoutes from "./routes/pmRoutes.js";
 import masterKarRoutes from "./routes/masterKarRoutes.js";
-import dailyTaskRoutes from "./routes/dailyTaskRoutes.js"; // ← tambah ini
-import broadcastRoutes from "./routes/broadcastRoutes.js"; // ← tambah
+import dailyTaskRoutes from "./routes/dailyTaskRoutes.js"; 
+import broadcastRoutes from "./routes/broadcastRoutes.js"; 
+import addUserRoutes from "./routes/addUserRoutes.js";
+import addMenuRoutes from "./routes/addMenuRoutes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -207,6 +209,8 @@ app.use("/api/pm",      pmRoutes);
 app.use("/hr",          masterKarRoutes);
 app.use("/daily-tasks", dailyTaskRoutes);
 app.use("/broadcast", broadcastRoutes);
+app.use("/users",     addUserRoutes);
+app.use("/menus",     addMenuRoutes);   // ← tambah
 
 // 404
 app.use((req, res) => {
