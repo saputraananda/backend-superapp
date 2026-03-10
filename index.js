@@ -23,6 +23,7 @@ import dailyTaskRoutes from "./routes/dailyTaskRoutes.js";
 import broadcastRoutes from "./routes/broadcastRoutes.js"; 
 import addUserRoutes from "./routes/addUserRoutes.js";
 import addMenuRoutes from "./routes/addMenuRoutes.js";
+import asetRoutes from "./routes/asetRoutes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -175,6 +176,7 @@ app.use("/assets/avatars",        express.static(path.join(ASSETS_BASE, "avatars
 app.use("/assets/documents",      express.static(path.join(ASSETS_BASE, "documents")));
 app.use("/assets/daily_evidence", express.static(path.join(ASSETS_BASE, "daily_evidence")));
 app.use("/assets",                express.static(ASSETS_BASE));
+app.use("/assets/aset_photos", express.static(path.join(ASSETS_BASE, "aset_photos")));
 
 // =========================
 // Routes
@@ -210,7 +212,8 @@ app.use("/hr",          masterKarRoutes);
 app.use("/daily-tasks", dailyTaskRoutes);
 app.use("/broadcast", broadcastRoutes);
 app.use("/users",     addUserRoutes);
-app.use("/menus",     addMenuRoutes);   // ← tambah
+app.use("/menus",     addMenuRoutes);
+app.use("/aset", asetRoutes);
 
 // 404
 app.use((req, res) => {
