@@ -1,10 +1,10 @@
 import express from "express";
 import { requireAuth } from "../middleware/auth.js";
-import { getApps } from "../controllers/appController.js"; // ← Import controller
+import { getApps, getSalesStats } from "../controllers/appController.js";
 
 const router = express.Router();
 
-// Ganti handler langsung dengan controller
-router.get("/", requireAuth, getApps); // ← Pakai controller yang sudah ada filter role
+router.get("/", requireAuth, getApps);
+router.get("/smartlink/sales-stats", requireAuth, getSalesStats); // ← NEW
 
 export default router;

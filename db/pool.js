@@ -2,27 +2,46 @@ import mysql from "mysql2/promise";
 import dotenv from "dotenv";
 dotenv.config();
 
-const DB_CONFIG = {
-  host:               process.env.DB_HOST,
-  port:               Number(process.env.DB_PORT) || 3306,
-  user:               process.env.DB_USER,
-  password:           process.env.DB_PASS,
-  database:           process.env.DB_NAME,
+// ═══════════════════════════════════════════════════════════════════════════
+// CONFIG MAIN DB (waschen / waschen_prod)
+// ═══════════════════════════════════════════════════════════════════════════
+const MAIN_DB_CONFIG = {
+  host: process.env.DB_HOST,
+  port: Number(process.env.DB_PORT) || 3306,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASS,
+  database: process.env.DB_NAME,
   waitForConnections: true,
-  connectionLimit:    10,
-  queueLimit:         0,
-  dateStrings:      true, // Pastikan DATE/TIME dikembalikan sebagai string, bukan JS Date (agar tidak kena timezone shift)
-
-  // ── Cegah ETIMEDOUT ──
-  connectTimeout:          10_000,
-  enableKeepAlive:         true,
-  keepAliveInitialDelay:   10_000,
-
-  // ── Cegah koneksi stale / pool closed ──
-  idleTimeout:             60_000,
+  connectionLimit: 10,
+  queueLimit: 0,
+  dateStrings: true,
+  connectTimeout: 10_000,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 10_000,
+  idleTimeout: 60_000,
 };
 
-let pool = mysql.createPool(DB_CONFIG);
+// ═══════════════════════════════════════════════════════════════════════════
+// CONFIG SMARTLINK DB (waschen_smartlink)
+// ═══════════════════════════════════════════════════════════════════════════
+const SMARTLINK_DB_CONFIG = {
+  host: process.env.DB_HOST_SMARTLINK || process.env.DB_HOST,
+  port: Number(process.env.DB_PORT_SMARTLINK || process.env.DB_PORT) || 3306,
+  user: process.env.DB_USER_SMARTLINK || process.env.DB_USER,
+  password: process.env.DB_PASS_SMARTLINK || process.env.DB_PASS,
+  database: process.env.DB_NAME_SMARTLINK,
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0,
+  dateStrings: true,
+  connectTimeout: 10_000,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 10_000,
+  idleTimeout: 60_000,
+};
+
+let mainPool = mysql.createPool(MAIN_DB_CONFIG);
+let smartlinkPool = mysql.createPool(SMARTLINK_DB_CONFIG);
 
 const RECONNECT_CODES = [
   "ETIMEDOUT",
@@ -33,8 +52,12 @@ const RECONNECT_CODES = [
   "ER_SERVER_GONE_ERROR",
 ];
 
-export async function safeQuery(sql, params) {
+// ═══════════════════════════════════════════════════════════════════════════
+// Helper untuk safe query dengan auto-reconnect
+// ═══════════════════════════════════════════════════════════════════════════
+async function runSafeQuery(getPoolFn, config, sql, params) {
   try {
+    const pool = getPoolFn();
     return await pool.query(sql, params);
   } catch (err) {
     const shouldRetry =
@@ -44,26 +67,55 @@ export async function safeQuery(sql, params) {
 
     if (shouldRetry) {
       console.warn(`[DB] Koneksi terputus (${err.code ?? err.message}), reconnecting...`);
-      await pool.end().catch(() => {});
-      pool = mysql.createPool(DB_CONFIG);
+      const oldPool = getPoolFn();
+      await oldPool.end().catch(() => {});
+      
+      // Recreate pool
+      const newPool = mysql.createPool(config);
+      
+      // Update reference
+      if (config === MAIN_DB_CONFIG) {
+        mainPool = newPool;
+      } else {
+        smartlinkPool = newPool;
+      }
+      
       console.info("[DB] Pool baru berhasil dibuat, retry query...");
-      return await pool.query(sql, params);
+      return await newPool.query(sql, params);
     }
 
     throw err;
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// EXPORT: safeQuery untuk DB utama
+// ═══════════════════════════════════════════════════════════════════════════
+export function safeQuery(sql, params) {
+  return runSafeQuery(() => mainPool, MAIN_DB_CONFIG, sql, params);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EXPORT: safeSmartlinkQuery untuk DB smartlink
+// ═══════════════════════════════════════════════════════════════════════════
+export function safeSmartlinkQuery(sql, params) {
+  return runSafeQuery(() => smartlinkPool, SMARTLINK_DB_CONFIG, sql, params);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DB Ping untuk keep-alive (opsional)
+// ═══════════════════════════════════════════════════════════════════════════
 export function startDbPing(intervalMs = 30_000) {
   setInterval(async () => {
     try {
-      await pool.query("SELECT 1");
+      await mainPool.query("SELECT 1");
+      await smartlinkPool.query("SELECT 1");
     } catch (err) {
       console.warn("[DB Ping] Gagal:", err.code ?? err.message);
     }
   }, intervalMs);
-  console.info(`[DB Ping] Aktif, interval ${intervalMs / 1000}s`);
+  console.info(`[DB Ping] Aktif untuk main + smartlink, interval ${intervalMs / 1000}s`);
 }
 
-export { pool };
-export default pool;
+export { mainPool as pool, mainPool, smartlinkPool };
+export default mainPool;
