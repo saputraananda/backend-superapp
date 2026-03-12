@@ -354,6 +354,18 @@ export const submitAset = async (req, res) => {
   if (!employeeId) return res.status(401).json({ message: "Session employee tidak ditemukan" });
 
   try {
+    const [empRows] = await safeQuery(
+      "SELECT job_level_id FROM mst_employee WHERE employee_id = ? AND is_deleted = 0",
+      [employeeId]
+    );
+    if (empRows.length === 0 || Number(empRows[0].job_level_id) < 3) {
+      return res.status(403).json({ message: "Hanya Staff yang dapat mengajukan approval" });
+    }
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+
+  try {
     const [rows] = await safeQuery(
       "SELECT id, approval_status FROM mst_aset WHERE id = ? AND is_deleted = 0", [id]
     );

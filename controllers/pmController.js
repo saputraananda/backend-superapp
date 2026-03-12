@@ -71,7 +71,7 @@ export async function listProjects(req, res) {
 export async function createProject(req, res) {
   if (!requireAuth(req, res)) return;
   const emp = await getSessionEmployee(req);
-  if (!isDirektur(emp)) return res.status(403).json({ message: "Hanya Direktur yang bisa membuat project" });
+  if (!isSupervisorUp(emp)) return res.status(403).json({ message: "Hanya Direktur & Supervisor yang bisa membuat project" });
 
   const { title, desc } = req.body;
   if (!title?.trim()) return res.status(400).json({ message: "Title wajib diisi" });
