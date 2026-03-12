@@ -5,10 +5,10 @@ import fs from "fs";
 import db from "../db/pool.js";
 
 const __filename = fileURLToPath(import.meta.url);
-const __dirname  = path.dirname(__filename);
+const __dirname = path.dirname(__filename);
 
 const EVIDENCE_URL_PREFIX = "/assets/evidence";
-const EVIDENCE_DISK_DIR   = path.join(__dirname, "..", "assets", "evidence");
+const EVIDENCE_DISK_DIR = path.join(__dirname, "..", "assets", "evidence");
 
 const JOB_LEVEL = { DIREKTUR: 1, SUPERVISOR: 2, STAFF: 3 };
 
@@ -31,9 +31,9 @@ function requireAuth(req, res) {
   return true;
 }
 
-function isDirektur(employee)     { return employee?.job_level_id <= JOB_LEVEL.DIREKTUR; }
+function isDirektur(employee) { return employee?.job_level_id <= JOB_LEVEL.DIREKTUR; }
 function isSupervisorUp(employee) { return employee?.job_level_id <= JOB_LEVEL.SUPERVISOR; }
-function isStaffUp(employee)      { return employee?.job_level_id <= JOB_LEVEL.STAFF; }
+function isStaffUp(employee) { return employee?.job_level_id <= JOB_LEVEL.STAFF; }
 
 function sanitizeDate(val) {
   if (!val) return null;
@@ -53,14 +53,17 @@ function sanitizeDate(val) {
 export async function listProjects(req, res) {
   if (!requireAuth(req, res)) return;
   try {
+    // Ganti query listProjects menjadi:
     const [rows] = await db.query(
       `SELECT p.id, p.title, p.\`desc\`, p.requestor_employee_id,
-              p.is_deleted, p.created_at, p.updated_at,
-              e.full_name AS requestor_name
-       FROM tr_pm_project p
-       LEFT JOIN mst_employee e ON p.requestor_employee_id = e.employee_id
-       WHERE p.is_deleted = 0
-       ORDER BY p.created_at DESC`
+          p.company_id, p.created_at, p.updated_at,
+          e.full_name AS requestor_name,
+          c.company_name
+   FROM tr_pm_project p
+   LEFT JOIN mst_employee e ON p.requestor_employee_id = e.employee_id
+   LEFT JOIN mst_company  c ON c.company_id = p.company_id
+   WHERE p.is_deleted = 0
+   ORDER BY p.created_at DESC`
     );
     res.json({ data: rows });
   } catch (e) {
@@ -73,15 +76,18 @@ export async function createProject(req, res) {
   const emp = await getSessionEmployee(req);
   if (!isSupervisorUp(emp)) return res.status(403).json({ message: "Hanya Direktur & Supervisor yang bisa membuat project" });
 
-  const { title, desc } = req.body;
+  const { title, desc, company_id } = req.body;
   if (!title?.trim()) return res.status(400).json({ message: "Title wajib diisi" });
+
+  // Fallback: jika tidak dipilih, pakai company si pembuat
+  const finalCompanyId = company_id ? Number(company_id) : (emp.company_id || null);
 
   try {
     const [r] = await db.query(
-      "INSERT INTO tr_pm_project (title, `desc`, requestor_employee_id) VALUES (?, ?, ?)",
-      [title.trim(), desc?.trim() || null, emp.employee_id]
+      "INSERT INTO tr_pm_project (title, `desc`, company_id, requestor_employee_id) VALUES (?, ?, ?, ?)",
+      [title.trim(), desc?.trim() || null, finalCompanyId, emp.employee_id]
     );
-    res.status(201).json({ id: r.insertId, title, desc });
+    res.status(201).json({ id: r.insertId, title, desc, company_id: finalCompanyId });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
@@ -92,23 +98,27 @@ export async function getProjectDetail(req, res) {
   try {
     const [projRows] = await db.query(
       `SELECT p.id, p.title, p.\`desc\`, p.requestor_employee_id,
-              p.created_at, p.updated_at,
-              e.full_name AS requestor_name
-       FROM tr_pm_project p
-       LEFT JOIN mst_employee e ON p.requestor_employee_id = e.employee_id
-       WHERE p.id = ? AND p.is_deleted = 0`,
+          p.company_id, p.created_at, p.updated_at,
+          e.full_name AS requestor_name,
+          c.company_name
+   FROM tr_pm_project p
+   LEFT JOIN mst_employee e ON p.requestor_employee_id = e.employee_id
+   LEFT JOIN mst_company  c ON c.company_id = p.company_id
+   WHERE p.id = ? AND p.is_deleted = 0`,
       [req.params.projectId]
     );
     if (!projRows[0]) return res.status(404).json({ message: "Project tidak ditemukan" });
 
     const project = {
-      id:                    projRows[0].id,
-      title:                 projRows[0].title,
-      desc:                  projRows[0].desc,
+      id: projRows[0].id,
+      title: projRows[0].title,
+      desc: projRows[0].desc,
       requestor_employee_id: projRows[0].requestor_employee_id,
-      requestor_name:        projRows[0].requestor_name,
-      created_at:            projRows[0].created_at,
-      updated_at:            projRows[0].updated_at,
+      requestor_name: projRows[0].requestor_name,
+      company_id:   projRows[0].company_id,
+      company_name: projRows[0].company_name,
+      created_at: projRows[0].created_at,
+      updated_at: projRows[0].updated_at,
     };
 
     // tr_pm_semester: kolom FK = id_project
@@ -480,7 +490,7 @@ export async function createTask(req, res) {
         `INSERT INTO tr_pm_task_notif (task_id, recipient_employee_id, sender_employee_id, message)
          VALUES (?, ?, ?, ?)`,
         [taskId, monthly.requestor_employee_id, emp.employee_id,
-         `${emp.full_name} menambahkan task baru: "${title.trim()}"`]
+          `${emp.full_name} menambahkan task baru: "${title.trim()}"`]
       );
     }
 
@@ -491,7 +501,7 @@ export async function createTask(req, res) {
           `INSERT INTO tr_pm_task_notif (task_id, recipient_employee_id, sender_employee_id, message)
            VALUES (?, ?, ?, ?)`,
           [taskId, eid, emp.employee_id,
-           `${emp.full_name} menugaskan task "${title.trim()}" kepada Anda`]
+            `${emp.full_name} menugaskan task "${title.trim()}" kepada Anda`]
         );
       }
     }
@@ -514,17 +524,17 @@ export async function updateTask(req, res) {
       [taskId]
     );
     if (!rows[0]) return res.status(404).json({ message: "Task tidak ditemukan" });
-    const oldTask   = rows[0];
+    const oldTask = rows[0];
     const oldStatus = oldTask.status;
 
     // ✅ Merge dengan data lama — jika field tidak dikirim, pakai nilai lama
-    const finalTitle    = title      !== undefined ? title?.trim()          : oldTask.title;
-    const finalDesc     = desc       !== undefined ? desc?.trim() || null   : oldTask.desc;
-    const finalStart    = startdate  !== undefined ? sanitizeDate(startdate): oldTask.startdate;
-    const finalEnd      = enddate    !== undefined ? sanitizeDate(enddate)  : oldTask.enddate;
-    const finalStatus   = status     !== undefined ? status                 : oldTask.status;
-    const finalPriority = priority   !== undefined ? priority               : oldTask.priority;
-    const finalLink     = link       !== undefined ? link?.trim() || null   : oldTask.link;
+    const finalTitle = title !== undefined ? title?.trim() : oldTask.title;
+    const finalDesc = desc !== undefined ? desc?.trim() || null : oldTask.desc;
+    const finalStart = startdate !== undefined ? sanitizeDate(startdate) : oldTask.startdate;
+    const finalEnd = enddate !== undefined ? sanitizeDate(enddate) : oldTask.enddate;
+    const finalStatus = status !== undefined ? status : oldTask.status;
+    const finalPriority = priority !== undefined ? priority : oldTask.priority;
+    const finalLink = link !== undefined ? link?.trim() || null : oldTask.link;
 
     // Validasi title tidak boleh null/kosong
     if (!finalTitle) return res.status(400).json({ message: "Title wajib diisi" });
@@ -576,7 +586,7 @@ export async function updateTask(req, res) {
             `INSERT INTO tr_pm_task_notif (task_id, recipient_employee_id, sender_employee_id, message)
              VALUES (?, ?, ?, ?)`,
             [taskId, eid, emp.employee_id,
-             `${emp.full_name} menugaskan task "${finalTitle}" kepada Anda`]
+              `${emp.full_name} menugaskan task "${finalTitle}" kepada Anda`]
           );
         }
       }
@@ -593,7 +603,7 @@ export async function updateTask(req, res) {
           `INSERT INTO tr_pm_task_notif (task_id, recipient_employee_id, sender_employee_id, message)
            VALUES (?, ?, ?, ?)`,
           [taskId, monthRows[0].requestor_employee_id, emp.employee_id,
-           `${emp.full_name} mengubah status task "${finalTitle}" menjadi "${finalStatus}"`]
+            `${emp.full_name} mengubah status task "${finalTitle}" menjadi "${finalStatus}"`]
         );
       }
     }
@@ -687,9 +697,9 @@ export async function getMonthlyTasksWithAssignees(req, res) {
         if (!assigneeMap[a.task_id]) assigneeMap[a.task_id] = [];
         assigneeMap[a.task_id].push({
           employee_id: a.employee_id,
-          full_name:   a.full_name,
-          email:       a.email,
-          role:        a.role,
+          full_name: a.full_name,
+          email: a.email,
+          role: a.role,
         });
       });
 
@@ -700,7 +710,7 @@ export async function getMonthlyTasksWithAssignees(req, res) {
       });
 
       tasks.forEach((t) => {
-        t.assignees      = assigneeMap[t.id] || [];
+        t.assignees = assigneeMap[t.id] || [];
         t.evidence_files = evidenceMap[t.id] || [];
       });
     }
@@ -776,8 +786,7 @@ export async function addComment(req, res) {
            VALUES (?, ?, ?, ?)`,
           [
             taskId, recipientId, emp.employee_id,
-            `${emp.full_name} mengomentari task "${task.title}": "${
-              comment.trim().substring(0, 80)
+            `${emp.full_name} mengomentari task "${task.title}": "${comment.trim().substring(0, 80)
             }${comment.trim().length > 80 ? "..." : ""}"`
           ]
         );
@@ -836,8 +845,8 @@ export async function uploadEvidence(req, res) {
         [taskId, file.originalname, filePath, file.mimetype, file.size, employee.employee_id]
       );
       inserted.push({
-        id:        r.insertId,
-        task_id:   taskId,
+        id: r.insertId,
+        task_id: taskId,
         file_name: file.originalname,
         file_path: filePath,
         file_type: file.mimetype,
@@ -864,7 +873,7 @@ export async function deleteEvidence(req, res) {
 
     // Hapus file fisik
     const diskPath = path.join(EVIDENCE_DISK_DIR, path.basename(row.file_path));
-    fs.unlink(diskPath, () => {});
+    fs.unlink(diskPath, () => { });
 
     await db.query("DELETE FROM tr_pm_task_evidence WHERE id = ?", [evidenceId]);
     res.json({ message: "File berhasil dihapus" });
@@ -974,6 +983,18 @@ export async function deleteAllNotif(req, res) {
       [empId]
     );
     res.json({ message: "Semua notifikasi berhasil dihapus" });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+export async function listCompanies(req, res) {
+  if (!requireAuth(req, res)) return;
+  try {
+    const [rows] = await db.query(
+      "SELECT company_id, company_name FROM mst_company WHERE is_active = 1 ORDER BY company_name"
+    );
+    res.json({ data: rows });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }

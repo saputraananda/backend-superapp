@@ -19,6 +19,8 @@ import {
   // Notifications
   listNotifications, markNotifRead, markAllNotifRead,
   deleteNotif, deleteAllNotif, // ← TAMBAH
+  // Companies
+  listCompanies
 } from "../controllers/pmController.js";
 
 const router = express.Router();
@@ -68,5 +70,8 @@ router.patch("/notifications/:notifId/read", markNotifRead);
 router.patch("/notifications/read-all",      markAllNotifRead);
 router.delete("/notifications/:notifId",     deleteNotif);    // ← TAMBAH
 router.delete("/notifications",              deleteAllNotif); // ← TAMBAH
+
+// ── Companies ─────────────────────────────────────────────────────────────
+router.get("/companies", listCompanies);
 
 export default router;
