@@ -10,8 +10,10 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import session from "express-session";
 import MySQLStore from "express-mysql-session";
+import cron from "node-cron";
 
 import { pool, startDbPing } from "./db/pool.js";
+import { sendWaDailyProgressBlast } from "./utils/waNotify.js";
 
 import authRoutes from "./routes/auth/authRoutes.js";
 import appRoutes from "./routes/appRoutes.js";
@@ -19,8 +21,8 @@ import employeeRoutes from "./routes/employeeRoutes.js";
 import satisfactionRoutes from "./routes/satisfactionRoutes.js";
 import pmRoutes from "./routes/pmRoutes.js";
 import masterKarRoutes from "./routes/masterKarRoutes.js";
-import dailyTaskRoutes from "./routes/dailyTaskRoutes.js"; 
-import broadcastRoutes from "./routes/broadcastRoutes.js"; 
+import dailyTaskRoutes from "./routes/dailyTaskRoutes.js";
+import broadcastRoutes from "./routes/broadcastRoutes.js";
 import addUserRoutes from "./routes/addUserRoutes.js";
 import addMenuRoutes from "./routes/addMenuRoutes.js";
 import asetRoutes from "./routes/asetRoutes.js";
@@ -171,11 +173,11 @@ const STATIC_DEV_BASE = path.join(__dirname, "assets");
 const STATIC_PROD_BASE = process.env.UPLOAD_BASE_DIR || "/home/u420573163/domains/api.waschenalora.com/storage/assets/";
 const ASSETS_BASE = isProd ? STATIC_PROD_BASE : STATIC_DEV_BASE; // ← define dulu
 
-app.use("/assets/evidence",       express.static(path.join(ASSETS_BASE, "evidence")));
-app.use("/assets/avatars",        express.static(path.join(ASSETS_BASE, "avatars")));
-app.use("/assets/documents",      express.static(path.join(ASSETS_BASE, "documents")));
+app.use("/assets/evidence", express.static(path.join(ASSETS_BASE, "evidence")));
+app.use("/assets/avatars", express.static(path.join(ASSETS_BASE, "avatars")));
+app.use("/assets/documents", express.static(path.join(ASSETS_BASE, "documents")));
 app.use("/assets/daily_evidence", express.static(path.join(ASSETS_BASE, "daily_evidence")));
-app.use("/assets",                express.static(ASSETS_BASE));
+app.use("/assets", express.static(ASSETS_BASE));
 app.use("/assets/aset_photos", express.static(path.join(ASSETS_BASE, "aset_photos")));
 
 // =========================
@@ -203,16 +205,27 @@ app.get("/debug-file-exists", (req, res) => {
   });
 });
 
-app.use("/auth",        authRoutes);
-app.use("/apps",        appRoutes);
-app.use("/employees",   employeeRoutes);
-app.use("/satisfaction",satisfactionRoutes);
-app.use("/api/pm",      pmRoutes);
-app.use("/hr",          masterKarRoutes);
+// ─── TEST ONLY: hapus setelah testing ────────────────────────────
+app.get("/test-wa-blast", async (req, res) => {
+  try {
+    await sendWaDailyProgressBlast();
+    res.json({ message: "Blast test dikirim ke semua karyawan" });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
+
+app.use("/auth", authRoutes);
+app.use("/apps", appRoutes);
+app.use("/employees", employeeRoutes);
+app.use("/satisfaction", satisfactionRoutes);
+app.use("/api/pm", pmRoutes);
+app.use("/hr", masterKarRoutes);
 app.use("/daily-tasks", dailyTaskRoutes);
 app.use("/broadcast", broadcastRoutes);
-app.use("/users",     addUserRoutes);
-app.use("/menus",     addMenuRoutes);
+app.use("/users", addUserRoutes);
+app.use("/menus", addMenuRoutes);
 app.use("/aset", asetRoutes);
 
 // 404
@@ -254,6 +267,14 @@ app.listen(PORT, "0.0.0.0", () => {
 
   // Ping DB setiap 30 detik
   startDbPing(30_000);
+
+  // ─── Daily blast 15:30 WIB (UTC+7 = 08:30 UTC) ───────────────
+  // cron.schedule("30 8 * * *", async () => {
+  //   console.log("[CRON] Menjalankan blast progress task pukul 15:30...");
+  //   await sendWaDailyProgressBlast();
+  // }, { timezone: "Asia/Jakarta" });
+
+  // console.log("⏰ Cron: blast WA harian terjadwal pukul 15:30 WIB");
 });
 
 // =========================
@@ -273,3 +294,4 @@ async function shutdown(signal) {
 
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
+
