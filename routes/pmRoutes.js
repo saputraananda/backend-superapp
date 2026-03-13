@@ -13,7 +13,7 @@ import {
   // Comments
   listComments, addComment,
   // Evidence
-  listEvidence, uploadEvidence, deleteEvidence,
+  listEvidence, uploadEvidence, deleteEvidence, addEvidenceLink,
   // Employees
   listEmployees,
   // Notifications
@@ -58,6 +58,7 @@ router.post("/tasks/:taskId/comments", addComment);
 
 // ── Evidence ──────────────────────────────────────────────────────────────
 router.get   ("/tasks/:taskId/evidence",  listEvidence);
+router.post  ("/tasks/:taskId/evidence/link", addEvidenceLink);
 router.post  ("/tasks/:taskId/evidence",  upload.array("files", 20), uploadEvidence);
 router.delete("/evidence/:evidenceId",    deleteEvidence);
 

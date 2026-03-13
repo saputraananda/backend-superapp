@@ -3,6 +3,7 @@ import { fileURLToPath } from "url";
 import path from "path";
 import fs from "fs";
 import db from "../db/pool.js";
+import { sendWaTaskNotif } from "../utils/waNotify.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -434,7 +435,7 @@ export async function createTask(req, res) {
   if (!requireAuth(req, res)) return;
   const emp = await getSessionEmployee(req);
   const { monthlyId } = req.params;
-  const { title, desc, startdate, enddate, priority, status, assignee_ids, link } = req.body;
+  const { title, desc, startdate, enddate, priority, status, assignee_ids } = req.body;
 
   if (!title?.trim()) return res.status(400).json({ message: "Title wajib diisi" });
 
@@ -464,13 +465,13 @@ export async function createTask(req, res) {
     const [r] = await db.query(
       `INSERT INTO tr_pm_task
        (id_monthly, title, \`desc\`, startdate, enddate, priority, status,
-        owner_employee_id, pic_employee_id, link)
-       VALUES (?,?,?,?,?,?,?,?,?,?)`,
+        owner_employee_id, pic_employee_id)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
       [
         monthlyId, title.trim(), desc?.trim() || null,
         sanitizeDate(startdate), sanitizeDate(enddate),
         priority || "medium", status || "assigned",
-        emp.employee_id, picId, link?.trim() || null,
+        emp.employee_id, picId,
       ]
     );
     const taskId = r.insertId;
@@ -506,6 +507,16 @@ export async function createTask(req, res) {
       }
     }
 
+    await sendWaTaskNotif({
+      assigneeIds: finalAssignees.filter(eid => eid !== emp.employee_id),
+      taskTitle: title.trim(),
+      monthlyTitle: monthly.title,
+      creatorName: emp.full_name,
+      startdate: sanitizeDate(startdate),
+      enddate: sanitizeDate(enddate),
+      monthlyId: monthlyId,
+    });
+
     res.status(201).json({ id: taskId, title });
   } catch (e) {
     res.status(500).json({ message: e.message });
@@ -516,7 +527,7 @@ export async function updateTask(req, res) {
   if (!requireAuth(req, res)) return;
   const emp = await getSessionEmployee(req);
   const { taskId } = req.params;
-  const { title, desc, startdate, enddate, priority, status, assignee_ids, link } = req.body;
+  const { title, desc, startdate, enddate, priority, status, assignee_ids } = req.body;
 
   try {
     const [rows] = await db.query(
@@ -534,16 +545,15 @@ export async function updateTask(req, res) {
     const finalEnd = enddate !== undefined ? sanitizeDate(enddate) : oldTask.enddate;
     const finalStatus = status !== undefined ? status : oldTask.status;
     const finalPriority = priority !== undefined ? priority : oldTask.priority;
-    const finalLink = link !== undefined ? link?.trim() || null : oldTask.link;
 
     // Validasi title tidak boleh null/kosong
     if (!finalTitle) return res.status(400).json({ message: "Title wajib diisi" });
 
     await db.query(
       `UPDATE tr_pm_task
-       SET title=?, \`desc\`=?, startdate=?, enddate=?, priority=?, status=?, link=?, updated_at=NOW()
+       SET title=?, \`desc\`=?, startdate=?, enddate=?, priority=?, status=?, updated_at=NOW()
        WHERE id=?`,
-      [finalTitle, finalDesc, finalStart, finalEnd, finalPriority, finalStatus, finalLink, taskId]
+      [finalTitle, finalDesc, finalStart, finalEnd, finalPriority, finalStatus, taskId]
     );
 
     // ✅ Update assignees HANYA jika assignee_ids dikirim (tidak undefined)
@@ -649,7 +659,7 @@ export async function getMonthlyTasksWithAssignees(req, res) {
   try {
     const [rawTasks] = await db.query(
       `SELECT t.id, t.id_monthly, t.title, t.\`desc\`,
-              t.startdate, t.enddate, t.priority, t.status, t.link,
+              t.startdate, t.enddate, t.priority, t.status,
               t.evidance, t.evidance_path,
               t.owner_employee_id, t.pic_employee_id,
               eo.full_name AS owner_name, eo.email AS owner_email,
@@ -746,7 +756,7 @@ export async function addComment(req, res) {
   if (!requireAuth(req, res)) return;
   const emp = await getSessionEmployee(req);
   const { taskId } = req.params;
-  const { comment } = req.body;
+  const { comment, mentioned_ids } = req.body;  // ← tambah mentioned_ids
   if (!comment?.trim()) return res.status(400).json({ message: "Comment kosong" });
 
   try {
@@ -759,7 +769,6 @@ export async function addComment(req, res) {
     );
     const task = taskRows[0];
 
-    // Kolom: id_task, comment, employee_id
     const [r] = await db.query(
       "INSERT INTO tr_pm_task_comment (id_task, employee_id, comment) VALUES (?,?,?)",
       [taskId, emp.employee_id, comment.trim()]
@@ -769,7 +778,6 @@ export async function addComment(req, res) {
       const notifRecipients = new Set();
       if (task.monthly_owner && task.monthly_owner !== emp.employee_id)
         notifRecipients.add(task.monthly_owner);
-      // owner_employee_id sebagai pemilik task
       if (task.owner_employee_id && task.owner_employee_id !== emp.employee_id)
         notifRecipients.add(task.owner_employee_id);
 
@@ -780,16 +788,38 @@ export async function addComment(req, res) {
         if (a.employee_id !== emp.employee_id) notifRecipients.add(a.employee_id);
       });
 
+      // Notif comment_added ke recipients biasa
       for (const recipientId of notifRecipients) {
         await db.query(
-          `INSERT INTO tr_pm_task_notif (task_id, recipient_employee_id, sender_employee_id, message)
-           VALUES (?, ?, ?, ?)`,
-          [
-            taskId, recipientId, emp.employee_id,
-            `${emp.full_name} mengomentari task "${task.title}": "${comment.trim().substring(0, 80)
-            }${comment.trim().length > 80 ? "..." : ""}"`
-          ]
+          `INSERT INTO tr_pm_task_notif (task_id, recipient_employee_id, sender_employee_id, message, type)
+           VALUES (?, ?, ?, ?, ?)`,
+          [taskId, recipientId, emp.employee_id,
+            `${emp.full_name} mengomentari task "${task.title}": "${comment.trim().substring(0, 80)}${comment.trim().length > 80 ? "..." : ""}"`,
+            'comment_added']  // ← tambah type
         );
+      }
+
+      // ─── Notif @mention ───────────────────────────────────────
+      if (Array.isArray(mentioned_ids) && mentioned_ids.length > 0) {
+        const validIds = mentioned_ids
+          .map(Number)
+          .filter((id) => !isNaN(id) && id !== emp.employee_id);
+
+        for (const mentionedId of validIds) {
+          // Jika belum dapat notif comment_added, kirim notif mention
+          if (!notifRecipients.has(mentionedId)) {
+            await db.query(
+              `INSERT INTO tr_pm_task_notif (task_id, recipient_employee_id, sender_employee_id, message, type)
+               VALUES (?, ?, ?, ?, ?)`,
+              [taskId, mentionedId, emp.employee_id,
+                `${emp.full_name} menyebut Anda dalam komentar di task "${task.title}": "${comment.trim().substring(0, 60)}${comment.trim().length > 60 ? "..." : ""}"`,
+                'mentioned']
+            );
+          } else {
+            // Sudah dapat notif, upgrade jadi mention (opsional: bisa skip)
+            // Atau biarkan saja karena sudah dapat notif
+          }
+        }
       }
     }
 
@@ -872,8 +902,10 @@ export async function deleteEvidence(req, res) {
     if (!row) return res.status(404).json({ message: "File tidak ditemukan" });
 
     // Hapus file fisik
-    const diskPath = path.join(EVIDENCE_DISK_DIR, path.basename(row.file_path));
-    fs.unlink(diskPath, () => { });
+    if (row.file_type !== "link") {
+      const diskPath = path.join(EVIDENCE_DISK_DIR, path.basename(row.file_path));
+      fs.unlink(diskPath, () => { });
+    }
 
     await db.query("DELETE FROM tr_pm_task_evidence WHERE id = ?", [evidenceId]);
     res.json({ message: "File berhasil dihapus" });
@@ -906,16 +938,16 @@ export async function listNotifications(req, res) {
   const empId = req.session.employeeId;
   try {
     const [rows] = await db.query(
-      `SELECT n.id, n.task_id, n.message, n.is_read, n.created_at,
-              t.title AS task_title,
-              t.id_monthly AS monthly_id,
-              e.full_name AS sender_name
-       FROM tr_pm_task_notif n
-       LEFT JOIN tr_pm_task t ON n.task_id = t.id
-       LEFT JOIN mst_employee e ON n.sender_employee_id = e.employee_id
-       WHERE n.recipient_employee_id = ?
-       ORDER BY n.created_at DESC
-       LIMIT 50`,
+      `SELECT n.id, n.task_id, n.type, n.message, n.is_read, n.created_at,
+          t.title AS task_title,
+          t.id_monthly AS monthly_id,
+          e.full_name AS sender_name
+      FROM tr_pm_task_notif n
+      LEFT JOIN tr_pm_task t ON n.task_id = t.id
+      LEFT JOIN mst_employee e ON n.sender_employee_id = e.employee_id
+      WHERE n.recipient_employee_id = ?
+      ORDER BY n.created_at DESC
+      LIMIT 50`,
       [empId]
     );
     res.json({ data: rows });
@@ -996,6 +1028,39 @@ export async function listCompanies(req, res) {
     );
     res.json({ data: rows });
   } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+export async function addEvidenceLink(req, res) {
+  const employee = await getSessionEmployee(req);
+  if (!employee) return res.status(401).json({ message: "Unauthorized" });
+
+  const { taskId } = req.params;
+  const { url, label } = req.body;
+
+  if (!url?.trim()) return res.status(400).json({ message: "URL wajib diisi" });
+
+  try {
+    const displayName = label?.trim() || url.trim();
+    const [r] = await db.query(
+      `INSERT INTO tr_pm_task_evidence
+       (task_id, file_name, file_path, file_type, file_size, uploaded_by)
+       VALUES (?,?,?,?,?,?)`,
+      [taskId, displayName, url.trim(), "link", 0, employee.employee_id]
+    );
+    res.status(201).json({
+      data: {
+        id: r.insertId,
+        task_id: taskId,
+        file_name: displayName,
+        file_path: url.trim(),
+        file_type: "link",
+        file_size: 0,
+      },
+    });
+  } catch (e) {
+    console.error("[addEvidenceLink]", e);
     res.status(500).json({ message: e.message });
   }
 }
