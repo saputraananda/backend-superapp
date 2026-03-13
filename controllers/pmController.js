@@ -115,7 +115,7 @@ export async function getProjectDetail(req, res) {
       desc: projRows[0].desc,
       requestor_employee_id: projRows[0].requestor_employee_id,
       requestor_name: projRows[0].requestor_name,
-      company_id:   projRows[0].company_id,
+      company_id: projRows[0].company_id,
       company_name: projRows[0].company_name,
       created_at: projRows[0].created_at,
       updated_at: projRows[0].updated_at,
@@ -154,12 +154,12 @@ export async function updateProject(req, res) {
       return res.status(403).json({ message: "Hanya creator atau Direktur yang bisa edit" });
     }
 
-    const { title, desc } = req.body;
+    const { title, desc, company_id } = req.body;
     if (!title?.trim()) return res.status(400).json({ message: "Title wajib diisi" });
 
     await db.query(
-      "UPDATE tr_pm_project SET title=?, `desc`=?, updated_at=NOW() WHERE id=?",
-      [title.trim(), desc?.trim() || null, projectId]
+      "UPDATE tr_pm_project SET title=?, `desc`=?, company_id=?, updated_at=NOW() WHERE id=?",
+      [title.trim(), desc?.trim() || null, company_id || null, projectId]
     );
     res.json({ message: "Project berhasil diupdate" });
   } catch (e) {
