@@ -10,17 +10,17 @@ const ASSETS_BASE = isProd
 // ─── GET ALL TASKS ───────────────────────────────────────────────────────────
 export const getTasks = async (req, res) => {
   try {
+    const userId = req.session?.userId;
+    if (!userId) return res.status(401).json({ message: "Unauthorized" });
+
     const [tasks] = await safeQuery(
-      `SELECT 
+      `SELECT
         t.id,
         t.title,
         t.description,
         t.department_id,
-        d.department_name,        
-        t.link_url,
-        t.is_recurring,
-        t.recur_type,
-        t.recur_day,
+        d.department_name,
+        t.is_public,
         t.creator_id,
         u.name AS creator_name,
         u.avatar AS creator_avatar,
@@ -30,15 +30,19 @@ export const getTasks = async (req, res) => {
       LEFT JOIN mst_department d ON d.department_id = t.department_id
       LEFT JOIN users u ON u.id = t.creator_id
       WHERE t.deleted_at IS NULL
+        AND (t.is_public = 1 OR t.creator_id = ?)
       ORDER BY t.created_at DESC
       LIMIT 50`,
-      []
+      [userId]
     );
 
     const taskIds = tasks.map((t) => t.id);
     let evidenceMap = {};
+    let linksMap = {};
+
     if (taskIds.length > 0) {
       const placeholders = taskIds.map(() => "?").join(",");
+
       const [evidences] = await safeQuery(
         `SELECT id, task_id, file_name, file_path, file_type, file_size, uploaded_at
          FROM tr_daily_evidence
@@ -49,11 +53,21 @@ export const getTasks = async (req, res) => {
         if (!evidenceMap[ev.task_id]) evidenceMap[ev.task_id] = [];
         evidenceMap[ev.task_id].push(ev);
       });
+
+      const [links] = await safeQuery(
+        `SELECT id, task_id, url, label FROM tr_daily_task_links WHERE task_id IN (${placeholders})`,
+        taskIds
+      );
+      links.forEach((l) => {
+        if (!linksMap[l.task_id]) linksMap[l.task_id] = [];
+        linksMap[l.task_id].push(l);
+      });
     }
 
     const result = tasks.map((t) => ({
       ...t,
       evidences: evidenceMap[t.id] || [],
+      links: linksMap[t.id] || [],
     }));
 
     return res.json({ tasks: result });
@@ -69,40 +83,40 @@ export const createTask = async (req, res) => {
     const userId = req.session?.userId;
     if (!userId) return res.status(401).json({ message: "Unauthorized" });
 
-    // req.body sudah di-parse oleh multer (multipart/form-data)
-    const {
-      title,
-      description,
-      department_id,
-      link_url,
-      is_recurring,
-      recur_type,
-      recur_day,
-    } = req.body;
+    const { title, description, department_id, is_public, links } = req.body;
 
     if (!title?.trim()) {
       return res.status(400).json({ message: "Title wajib diisi" });
     }
 
-    const recurring = is_recurring === "1" || is_recurring === true;
+    const publicFlag = is_public === "0" ? 0 : 1; // default public
 
     const [result] = await safeQuery(
-      `INSERT INTO tr_daily_task 
-        (title, description, department_id, link_url, is_recurring, recur_type, recur_day, creator_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tr_daily_task
+        (title, description, department_id, is_public, creator_id)
+       VALUES (?, ?, ?, ?, ?)`,
       [
         title.trim(),
         description || null,
         department_id || null,
-        link_url?.trim() || null,
-        recurring ? 1 : 0,
-        recurring ? (recur_type || null) : null,
-        recurring && recur_type === "weekly" ? (recur_day ?? null) : null,
+        publicFlag,
         userId,
       ]
     );
 
     const taskId = result.insertId;
+
+    // Simpan links
+    let parsedLinks = [];
+    try { if (links) parsedLinks = JSON.parse(links); } catch {}
+    for (const link of parsedLinks) {
+      if (link.url?.trim()) {
+        await safeQuery(
+          `INSERT INTO tr_daily_task_links (task_id, url, label) VALUES (?, ?, ?)`,
+          [taskId, link.url.trim(), link.label?.trim() || null]
+        );
+      }
+    }
 
     // Simpan evidence
     if (req.files && req.files.length > 0) {
@@ -116,12 +130,8 @@ export const createTask = async (req, res) => {
       }
     }
 
-    // Return task lengkap dengan join department
     const [newTaskRows] = await safeQuery(
-      `SELECT t.*, 
-              u.name AS creator_name, 
-              u.avatar AS creator_avatar,
-              d.department_name
+      `SELECT t.*, u.name AS creator_name, u.avatar AS creator_avatar, d.department_name
        FROM tr_daily_task t
        LEFT JOIN users u ON u.id = t.creator_id
        LEFT JOIN mst_department d ON d.department_id = t.department_id
@@ -130,13 +140,15 @@ export const createTask = async (req, res) => {
     );
 
     const [evidences] = await safeQuery(
-      `SELECT * FROM tr_daily_evidence WHERE task_id = ?`,
-      [taskId]
+      `SELECT * FROM tr_daily_evidence WHERE task_id = ?`, [taskId]
+    );
+    const [savedLinks] = await safeQuery(
+      `SELECT id, task_id, url, label FROM tr_daily_task_links WHERE task_id = ?`, [taskId]
     );
 
     return res.status(201).json({
       message: "Task berhasil dibuat",
-      task: { ...newTaskRows[0], evidences },
+      task: { ...newTaskRows[0], evidences, links: savedLinks },
     });
   } catch (err) {
     console.error("[dailyTask] createTask error:", err);
@@ -153,8 +165,7 @@ export const updateTask = async (req, res) => {
     const { id } = req.params;
 
     const [rows] = await safeQuery(
-      `SELECT creator_id FROM tr_daily_task WHERE id = ? AND deleted_at IS NULL`,
-      [id]
+      `SELECT creator_id FROM tr_daily_task WHERE id = ? AND deleted_at IS NULL`, [id]
     );
     if (rows.length === 0) return res.status(404).json({ message: "Task tidak ditemukan" });
 
@@ -164,38 +175,19 @@ export const updateTask = async (req, res) => {
       return res.status(403).json({ message: "Tidak punya akses edit task ini" });
     }
 
-    const {
-      title,
-      description,
-      department_id,
-      link_url,
-      is_recurring,
-      recur_type,
-      recur_day,
-      deleted_evidence_ids,
-    } = req.body;
+    const { title, description, department_id, is_public, links, deleted_evidence_ids } = req.body;
 
     if (!title?.trim()) {
       return res.status(400).json({ message: "Title wajib diisi" });
     }
 
-    const recurring = is_recurring === "1" || is_recurring === true;
+    const publicFlag = is_public === "0" ? 0 : 1;
 
     await safeQuery(
       `UPDATE tr_daily_task SET
-        title = ?, description = ?, department_id = ?, link_url = ?,
-        is_recurring = ?, recur_type = ?, recur_day = ?
+        title = ?, description = ?, department_id = ?, is_public = ?
        WHERE id = ?`,
-      [
-        title.trim(),
-        description || null,
-        department_id || null,
-        link_url?.trim() || null,
-        recurring ? 1 : 0,
-        recurring ? (recur_type || null) : null,
-        recurring && recur_type === "weekly" ? (recur_day ?? null) : null,
-        id,
-      ]
+      [title.trim(), description || null, department_id || null, publicFlag, id]
     );
 
     // Hapus evidence yang diminta
@@ -236,26 +228,37 @@ export const updateTask = async (req, res) => {
       }
     }
 
+    // Replace semua links (hapus lama, insert baru)
+    await safeQuery(`DELETE FROM tr_daily_task_links WHERE task_id = ?`, [id]);
+    let parsedLinks = [];
+    try { if (links) parsedLinks = JSON.parse(links); } catch {}
+    for (const link of parsedLinks) {
+      if (link.url?.trim()) {
+        await safeQuery(
+          `INSERT INTO tr_daily_task_links (task_id, url, label) VALUES (?, ?, ?)`,
+          [id, link.url.trim(), link.label?.trim() || null]
+        );
+      }
+    }
+
     const [updated] = await safeQuery(
-      `SELECT t.*, 
-              u.name AS creator_name, 
-              u.avatar AS creator_avatar,
-              d.department_name
+      `SELECT t.*, u.name AS creator_name, u.avatar AS creator_avatar, d.department_name
        FROM tr_daily_task t
        LEFT JOIN users u ON u.id = t.creator_id
        LEFT JOIN mst_department d ON d.department_id = t.department_id
        WHERE t.id = ?`,
       [id]
     );
-
     const [evidences] = await safeQuery(
-      `SELECT * FROM tr_daily_evidence WHERE task_id = ?`,
-      [id]
+      `SELECT * FROM tr_daily_evidence WHERE task_id = ?`, [id]
+    );
+    const [savedLinks] = await safeQuery(
+      `SELECT id, task_id, url, label FROM tr_daily_task_links WHERE task_id = ?`, [id]
     );
 
     return res.json({
       message: "Task berhasil diupdate",
-      task: { ...updated[0], evidences },
+      task: { ...updated[0], evidences, links: savedLinks },
     });
   } catch (err) {
     console.error("[dailyTask] updateTask error:", err);
@@ -272,8 +275,7 @@ export const deleteTask = async (req, res) => {
     const { id } = req.params;
 
     const [rows] = await safeQuery(
-      `SELECT creator_id FROM tr_daily_task WHERE id = ? AND deleted_at IS NULL`,
-      [id]
+      `SELECT creator_id FROM tr_daily_task WHERE id = ? AND deleted_at IS NULL`, [id]
     );
     if (rows.length === 0) return res.status(404).json({ message: "Task tidak ditemukan" });
 
@@ -296,9 +298,7 @@ export const deleteTask = async (req, res) => {
 export const getDepartments = async (_req, res) => {
   try {
     const [rows] = await safeQuery(
-      `SELECT department_id, department_name
-       FROM mst_department 
-       ORDER BY department_name ASC`,
+      `SELECT department_id, department_name FROM mst_department ORDER BY department_name ASC`,
       []
     );
     return res.json({ departments: rows });
