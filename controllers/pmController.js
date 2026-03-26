@@ -3,7 +3,7 @@ import { fileURLToPath } from "url";
 import path from "path";
 import fs from "fs";
 import db from "../db/pool.js";
-import { sendWaTaskNotif } from "../utils/waNotify.js";
+import { sendWaTaskNotif, sendWaSimpleNotif } from "../utils/waNotify.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -618,6 +618,49 @@ export async function updateTask(req, res) {
       }
     }
 
+    // WA Notif singkat ke assignee
+    try {
+      const [aRows] = await db.query(
+        "SELECT employee_id FROM tr_pm_task_assignee WHERE task_id = ?", [taskId]
+      );
+      const notifIds = aRows.map(a => a.employee_id).filter(eid => eid !== emp.employee_id);
+      if (notifIds.length > 0) {
+        const changes = [];
+        if (title !== undefined && finalTitle !== oldTask.title)
+          changes.push(`• Judul: _"${oldTask.title}"_ → _"${finalTitle}"_`);
+        if (status !== undefined && finalStatus !== oldStatus)
+          changes.push(`• Status: ${oldStatus} → *${finalStatus}*`);
+        if (priority !== undefined && finalPriority !== oldTask.priority)
+          changes.push(`• Prioritas: ${oldTask.priority} → *${finalPriority}*`);
+        if (startdate !== undefined && String(finalStart) !== String(oldTask.startdate))
+          changes.push(`• Tanggal Mulai: *${finalStart || "-"}*`);
+        if (enddate !== undefined && String(finalEnd) !== String(oldTask.enddate))
+          changes.push(`• Due Date: *${finalEnd || "-"}*`);
+
+        const changeInfo = changes.length > 0 ? changes.join("\n") : "• Detail task diperbarui";
+
+        await sendWaSimpleNotif({
+          recipientIds: notifIds,
+          message: [
+            `✏️ *Task Kamu Diperbarui!*`,
+            `━━━━━━━━━━━━━━━`,
+            ``,
+            `📌 *${finalTitle}*`,
+            ``,
+            `📝 *Perubahan:*`,
+            changeInfo,
+            ``,
+            `👤 Oleh: ${emp.full_name || "Supervisor"}`,
+            ``,
+            `Mohon dicek yaa perubahannya 🙏`,
+            ``,
+            `Salam,`,
+            `_minbot Alora_ 🤖`,
+          ].join("\n"),
+        });
+      }
+    } catch { /* tetap lanjut */ }
+
     res.json({ message: "Task berhasil diupdate" });
   } catch (e) {
     console.error("[updateTask]", e);
@@ -641,6 +684,32 @@ export async function deleteTask(req, res) {
     if (rows[0].owner_employee_id !== emp.employee_id && !isSupervisorUp(emp)) {
       return res.status(403).json({ message: "Kamu tidak punya akses hapus task ini, hubungi owner" });
     }
+
+    // WA Notif singkat ke assignee
+    try {
+      const [aRows] = await db.query(
+        "SELECT employee_id FROM tr_pm_task_assignee WHERE task_id = ?", [taskId]
+      );
+      const notifIds = aRows.map(a => a.employee_id).filter(eid => eid !== emp.employee_id);
+      if (notifIds.length > 0) {
+        await sendWaSimpleNotif({
+          recipientIds: notifIds,
+          message: [
+            `🗑️ *Task Kamu Dihapus*`,
+            `━━━━━━━━━━━━━━━`,
+            ``,
+            `📌 *${rows[0].title}*`,
+            ``,
+            `👤 Dihapus oleh: ${emp.full_name || "Supervisor"}`,
+            ``,
+            `Anda tidak perlu mengerjakannya yaa 😊`,
+            ``,
+            `Salam,`,
+            `_minbot Alora_ 🤖`,
+          ].join("\n"),
+        });
+      }
+    } catch { /* tetap lanjut */ }
 
     await db.query(
       "UPDATE tr_pm_task SET is_deleted=1, updated_at=NOW() WHERE id=?",

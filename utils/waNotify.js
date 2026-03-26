@@ -85,6 +85,28 @@ export async function sendWaTaskNotif({
     }
 }
 
+export async function sendWaSimpleNotif({ recipientIds, message }) {
+    const url = process.env.WAHA_URL;
+    const apiKey = process.env.WAHA_API_KEY;
+    const session = process.env.WAHA_SESSION_TESTING;
+
+    if (!url || !apiKey || !session) return;
+
+    for (const empId of recipientIds) {
+        const chatId = chatIds[String(empId)];
+        if (!chatId) continue;
+        try {
+            await fetch(`${url}/api/sendText`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "X-Api-Key": apiKey },
+                body: JSON.stringify({ session, chatId, text: message }),
+            });
+        } catch (err) {
+            console.error(`[WA Notif] Gagal kirim ke empId ${empId}:`, err.message);
+        }
+    }
+}
+
 /**
  * Blast harian 15:30 — rekap progress task bulan ini per karyawan
  */
