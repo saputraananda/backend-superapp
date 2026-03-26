@@ -40,8 +40,28 @@ const SMARTLINK_DB_CONFIG = {
   idleTimeout: 60_000,
 };
 
+// ═══════════════════════════════════════════════════════════════════════════
+// CONFIG CLEANOX DB (cleanox_smartlink)
+// ═══════════════════════════════════════════════════════════════════════════
+const CLEANOX_DB_CONFIG = {
+  host: process.env.DB_HOST_CLEANOX || process.env.DB_HOST,
+  port: Number(process.env.DB_PORT_CLEANOX || process.env.DB_PORT) || 3306,
+  user: process.env.DB_USER_CLEANOX || process.env.DB_USER,
+  password: process.env.DB_PASS_CLEANOX || process.env.DB_PASS,
+  database: process.env.DB_NAME_CLEANOX,
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0,
+  dateStrings: true,
+  connectTimeout: 10_000,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 10_000,
+  idleTimeout: 60_000,
+};
+
 let mainPool = mysql.createPool(MAIN_DB_CONFIG);
 let smartlinkPool = mysql.createPool(SMARTLINK_DB_CONFIG);
+let cleanoxPool = mysql.createPool(CLEANOX_DB_CONFIG);
 
 const RECONNECT_CODES = [
   "ETIMEDOUT",
@@ -76,8 +96,10 @@ async function runSafeQuery(getPoolFn, config, sql, params) {
       // Update reference
       if (config === MAIN_DB_CONFIG) {
         mainPool = newPool;
-      } else {
+      } else if (config === SMARTLINK_DB_CONFIG) {
         smartlinkPool = newPool;
+      } else {
+        cleanoxPool = newPool;
       }
       
       console.info("[DB] Pool baru berhasil dibuat, retry query...");
@@ -102,6 +124,12 @@ export function safeSmartlinkQuery(sql, params) {
   return runSafeQuery(() => smartlinkPool, SMARTLINK_DB_CONFIG, sql, params);
 }
 
+// EXPORT: safeCleanoxQuery untuk DB cleanox
+// ═══════════════════════════════════════════════════════════════════════════
+export function safeCleanoxQuery(sql, params) {
+  return runSafeQuery(() => cleanoxPool, CLEANOX_DB_CONFIG, sql, params);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // DB Ping untuk keep-alive (opsional)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -110,12 +138,13 @@ export function startDbPing(intervalMs = 30_000) {
     try {
       await mainPool.query("SELECT 1");
       await smartlinkPool.query("SELECT 1");
+      await cleanoxPool.query("SELECT 1");
     } catch (err) {
       console.warn("[DB Ping] Gagal:", err.code ?? err.message);
     }
   }, intervalMs);
-  console.info(`[DB Ping] Aktif untuk main + smartlink, interval ${intervalMs / 1000}s`);
+  console.info(`[DB Ping] Aktif untuk main + smartlink + cleanox, interval ${intervalMs / 1000}s`);
 }
 
-export { mainPool as pool, mainPool, smartlinkPool };
+export { mainPool as pool, mainPool, smartlinkPool, cleanoxPool };
 export default mainPool;

@@ -162,8 +162,8 @@ export const getSalesStats = async (req, res) => {
     const percentage = totalTarget > 0 ? Math.round((totalActual / totalTarget) * 100) : 0;
 
     // ✨ TAMBAHKAN: AVG persen_gap untuk growth
-    const avgPersenGap = rows.length > 0 
-      ? rows.reduce((sum, row) => sum + (Number(row.persen_gap) || 0), 0) / rows.length 
+    const avgPersenGap = rows.length > 0
+      ? rows.reduce((sum, row) => sum + (Number(row.persen_gap) || 0), 0) / rows.length
       : 0;
 
     res.json({
@@ -184,6 +184,112 @@ export const getSalesStats = async (req, res) => {
     res.status(500).json({
       success: false,
       message: error.message || "Gagal mengambil data sales",
+    });
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// NEW: Get Customer Target dari Smartlink DB
+// ═══════════════════════════════════════════════════════════════════════════
+export const getCustomerTargets = async (req, res) => {
+  try {
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const pad = (n) => String(n).padStart(2, "0");
+    const obsStart = `${currentYear}-01-26`;
+    const obsEnd = `${currentYear}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+
+    const [targetRows] = await safeSmartlinkQuery(
+      "SELECT jumlah FROM target_customer WHERE tahun = ?",
+      [currentYear]
+    );
+    const targetCustomer = targetRows.length > 0 ? Number(targetRows[0].jumlah) : 0;
+
+    const [existingRows] = await safeSmartlinkQuery(
+      "SELECT jumlah FROM target_customer WHERE tahun = ?",
+      [currentYear - 1]
+    );
+    const existingCustomer = existingRows.length > 0 ? Number(existingRows[0].jumlah) : 0;
+
+    const sql = `
+      WITH cust AS (
+        SELECT
+          CONCAT_WS('|',
+            LOWER(TRIM(nama)) COLLATE utf8mb4_unicode_ci,
+            REGEXP_REPLACE(nomor_telpon,'[^0-9]','') COLLATE utf8mb4_unicode_ci
+          ) AS customer_key,
+          CASE
+            WHEN DATE(terdaftar_sejak) BETWEEN ? AND ?
+            THEN 'Pelanggan Baru'
+            ELSE 'Pelanggan Lama'
+          END AS status_pelanggan
+        FROM customer
+        WHERE nama NOT LIKE '%haji%'
+          AND nama NOT LIKE '%tni%'
+          AND nama NOT LIKE '%dumm%'
+          AND nama NOT LIKE '%tes%'
+          AND DATE(terdaftar_sejak) <= ?
+      ),
+      txn_big AS (
+        SELECT DISTINCT
+          CONCAT_WS('|',
+            LOWER(TRIM(customer_nama)) COLLATE utf8mb4_unicode_ci,
+            REGEXP_REPLACE(customer_telepon,'[^0-9]','') COLLATE utf8mb4_unicode_ci
+          ) AS customer_key
+        FROM rekap_transaksi_reguler r
+        WHERE DATE(r.tgl_terima) BETWEEN ? AND ?
+          AND r.nama_item NOT LIKE '%haji%'
+      ),
+      txn_after_cutoff AS (
+        SELECT DISTINCT
+          CONCAT_WS('|',
+            LOWER(TRIM(customer_nama)) COLLATE utf8mb4_unicode_ci,
+            REGEXP_REPLACE(customer_telepon,'[^0-9]','') COLLATE utf8mb4_unicode_ci
+          ) AS customer_key
+        FROM rekap_transaksi_reguler r
+        WHERE DATE(r.tgl_terima) >= ?
+          AND r.nama_item NOT LIKE '%haji%'
+      ),
+      final AS (
+        SELECT
+          c.status_pelanggan,
+          CASE WHEN tb.customer_key IS NOT NULL THEN 1 ELSE 0 END AS aktif_periode_besar
+        FROM cust c
+        LEFT JOIN txn_big tb ON c.customer_key = tb.customer_key
+        LEFT JOIN txn_after_cutoff ta ON c.customer_key = ta.customer_key
+      )
+      SELECT
+        SUM(status_pelanggan='Pelanggan Baru' AND aktif_periode_besar=1) AS new_customer_transaksi
+      FROM final
+    `;
+
+    const [rows] = await safeSmartlinkQuery(sql, [
+      obsStart, obsEnd, // cust: terdaftar_sejak BETWEEN
+      obsEnd,           // cust: terdaftar_sejak <=
+      obsStart, obsEnd, // txn_big: tgl_terima BETWEEN
+      obsStart,         // txn_after_cutoff: tgl_terima >=
+    ]);
+
+    const newCustomerTransaksi = rows.length > 0 ? Number(rows[0].new_customer_transaksi) || 0 : 0;
+    const actualCustomer = existingCustomer + newCustomerTransaksi;
+    const percentage = targetCustomer > 0 ? Math.round((actualCustomer / targetCustomer) * 100) : 0;
+
+    res.json({
+      success: true,
+      data: {
+        actual_customer: actualCustomer,
+        target_customer: targetCustomer,
+        percentage,
+        obs_start: obsStart,
+        obs_end: obsEnd,
+        year: currentYear,
+      },
+    });
+  } catch (error) {
+    console.error("[getCustomerTargets] Error:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message || "Gagal mengambil data customer",
     });
   }
 };

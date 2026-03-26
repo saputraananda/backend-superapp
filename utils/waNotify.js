@@ -22,7 +22,7 @@ export async function sendWaTaskNotif({
 }) {
     const url = process.env.WAHA_URL;
     const apiKey = process.env.WAHA_API_KEY;
-    const session = process.env.WAHA_SESSION;
+    const session = process.env.WAHA_SESSION_TESTING;
 
     if (!url || !apiKey || !session) return;
 
@@ -91,7 +91,7 @@ export async function sendWaTaskNotif({
 export async function sendWaDailyProgressBlast({ testEmpId = null } = {}) {
     const url = process.env.WAHA_URL;
     const apiKey = process.env.WAHA_API_KEY;
-    const session = process.env.WAHA_SESSION;
+    const session = process.env.WAHA_SESSION_TESTING;
 
     if (!url || !apiKey || !session) {
         console.log("[WA Blast] WAHA env tidak dikonfigurasi, dilewati.");
