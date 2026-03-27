@@ -27,6 +27,7 @@ import addUserRoutes from "./routes/addUserRoutes.js";
 import addMenuRoutes from "./routes/addMenuRoutes.js";
 import asetRoutes from "./routes/asetRoutes.js";
 import targetWaschenRoutes from "./routes/targetWaschenRoutes.js";
+import salesRoutes from "./routes/salesRoutes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -216,7 +217,6 @@ app.get("/test-wa-blast", async (req, res) => {
   }
 });
 
-
 app.use("/auth", authRoutes);
 app.use("/apps", appRoutes);
 app.use("/employees", employeeRoutes);
@@ -229,6 +229,7 @@ app.use("/users", addUserRoutes);
 app.use("/menus", addMenuRoutes);
 app.use("/aset", asetRoutes);
 app.use("/target-waschen", targetWaschenRoutes);
+app.use("/sales", salesRoutes);
 
 // 404
 app.use((req, res) => {
