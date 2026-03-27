@@ -26,6 +26,7 @@ import broadcastRoutes from "./routes/broadcastRoutes.js";
 import addUserRoutes from "./routes/addUserRoutes.js";
 import addMenuRoutes from "./routes/addMenuRoutes.js";
 import asetRoutes from "./routes/asetRoutes.js";
+import targetWaschenRoutes from "./routes/targetWaschenRoutes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -227,6 +228,7 @@ app.use("/broadcast", broadcastRoutes);
 app.use("/users", addUserRoutes);
 app.use("/menus", addMenuRoutes);
 app.use("/aset", asetRoutes);
+app.use("/target-waschen", targetWaschenRoutes);
 
 // 404
 app.use((req, res) => {
