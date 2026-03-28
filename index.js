@@ -29,6 +29,8 @@ import asetRoutes from "./routes/asetRoutes.js";
 import targetWaschenRoutes from "./routes/targetWaschenRoutes.js";
 import salesRoutes from "./routes/salesRoutes.js";
 
+import { sendIdulFitriBlastCleanoxProd } from "./utils/waBlastCustomerProd.js";
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -212,6 +214,15 @@ app.get("/test-wa-blast", async (req, res) => {
   try {
     await sendWaDailyProgressBlast();
     res.json({ message: "Blast test dikirim ke semua karyawan" });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
+app.get("/test-wa-blast-cleanox-prod", async (req, res) => {
+  try {
+    const result = await sendIdulFitriBlastCleanoxProd();
+    res.json({ message: "Blast Cleanox Prod selesai", result });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
