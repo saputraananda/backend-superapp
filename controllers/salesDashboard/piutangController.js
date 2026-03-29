@@ -11,7 +11,12 @@ function computeDateRange(asOfDate) {
     dateStart = new Date(d.getFullYear(), d.getMonth() - 1, 26);
     dateEnd   = new Date(d.getFullYear(), d.getMonth(), 25);
   }
-  const fmt = (dt) => dt.toISOString().split("T")[0];
+  const fmt = (dt) => {
+    const y = dt.getFullYear();
+    const m = String(dt.getMonth() + 1).padStart(2, "0");
+    const d = String(dt.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  };
   return { dateStart: fmt(dateStart), dateEnd: fmt(dateEnd) };
 }
 
@@ -34,7 +39,10 @@ export const getPiutang = async (req, res) => {
       if (!asOfDate) {
         const y = new Date();
         y.setDate(y.getDate() - 1);
-        asOfDate = y.toISOString().split("T")[0];
+        const yy = y.getFullYear();
+        const mm = String(y.getMonth() + 1).padStart(2, "0");
+        const dd = String(y.getDate()).padStart(2, "0");
+        asOfDate = `${yy}-${mm}-${dd}`;
       }
       ({ dateStart, dateEnd } = computeDateRange(asOfDate));
     }

@@ -26,7 +26,12 @@ function computeDateRange(asOfDate) {
     dateStart = new Date(d.getFullYear(), d.getMonth() - 1, 26);
     dateEnd   = new Date(d.getFullYear(), d.getMonth(), 25);
   }
-  const fmt = (dt) => dt.toISOString().split("T")[0];
+  const fmt = (dt) => {
+    const y = dt.getFullYear();
+    const m = String(dt.getMonth() + 1).padStart(2, "0");
+    const d = String(dt.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  };
   return { dateStart: fmt(dateStart), dateEnd: fmt(dateEnd) };
 }
 
@@ -51,7 +56,10 @@ export const getPenjualan = async (req, res) => {
       if (!asOfDate) {
         const y = new Date();
         y.setDate(y.getDate() - 1);
-        asOfDate = y.toISOString().split("T")[0];
+        const yy = y.getFullYear();
+        const mm = String(y.getMonth() + 1).padStart(2, "0");
+        const dd = String(y.getDate()).padStart(2, "0");
+        asOfDate = `${yy}-${mm}-${dd}`;
       }
       effectiveAsOfDate = asOfDate;
       ({ dateStart, dateEnd } = computeDateRange(asOfDate));
@@ -113,6 +121,38 @@ actual_yesterday AS (
     JOIN param p ON cd.tanggal = p.as_of_date
     GROUP BY cd.outlet
 ),
+nota_flag AS (
+    SELECT
+        rtr.no_nota COLLATE utf8mb4_unicode_ci AS no_nota,
+        MAX(
+            CASE
+                WHEN LOWER(COALESCE(rtr.nama_item, '')) LIKE '%cleanox%'
+                  OR LOWER(COALESCE(rtr.nama_item, '')) LIKE '%karpet%'
+                THEN 1 ELSE 0
+            END
+        ) AS is_cleanox
+    FROM rekap_transaksi_reguler rtr
+    GROUP BY 1
+),
+cleanox_actual AS (
+    SELECT
+        rtrp.outlet COLLATE utf8mb4_unicode_ci AS outlet,
+        SUM(rtrp.nominal_bayar) AS cleanox_sales
+    FROM rekap_transaksi_reguler_pembayaran rtrp
+    JOIN param p ON DATE(rtrp.waktu_pembayaran) BETWEEN p.date_start AND p.as_of_date
+    JOIN nota_flag nf ON rtrp.no_nota COLLATE utf8mb4_unicode_ci = nf.no_nota
+    WHERE rtrp.jenis_bayar <> 'e-money'
+      AND nf.is_cleanox = 1
+      AND rtrp.no_nota NOT IN (${EP})
+      AND (? = 'all' OR LOWER(rtrp.outlet) = LOWER(?))
+      AND NOT EXISTS (
+            SELECT 1 FROM rekap_transaksi_reguler rtr2
+            WHERE rtr2.no_nota = rtrp.no_nota
+              AND rtr2.outlet LIKE '%legenda%'
+              AND (rtr2.nama_item LIKE '%haji%' OR rtr2.customer_nama LIKE '%haji%')
+      )
+    GROUP BY 1
+),
 customer_status AS (
     SELECT c.nama AS customer_nama,
            c.outlet COLLATE utf8mb4_unicode_ci AS outlet,
@@ -163,6 +203,7 @@ SELECT
     COALESCE(a.actual_sales,0) - (((DATEDIFF(p.as_of_date,p.date_start)+1)/(DATEDIFF(p.date_end,p.date_start)+1))*t.nominal) AS gap_nominal,
     ROUND((COALESCE(a.actual_sales,0)/NULLIF(t.nominal,0))*100,2)                                  AS persen_actual,
     ROUND(((COALESCE(a.actual_sales,0)/NULLIF(t.nominal,0))-((DATEDIFF(p.as_of_date,p.date_start)+1)/(DATEDIFF(p.date_end,p.date_start)+1)))*100,2) AS persen_gap,
+    COALESCE(ca.cleanox_sales,0)       AS cleanox_sales,
     COALESCE(csc.loyal_count,0)        AS loyal_count,
     COALESCE(csc.regular_count,0)      AS regular_count,
     COALESCE(csc.one_time_count,0)     AS one_time_count,
@@ -171,6 +212,7 @@ FROM param p
 CROSS JOIN target t
 LEFT JOIN actual               a   ON a.outlet   COLLATE utf8mb4_unicode_ci = t.outlet COLLATE utf8mb4_unicode_ci
 LEFT JOIN actual_yesterday     ay  ON ay.outlet  COLLATE utf8mb4_unicode_ci = t.outlet COLLATE utf8mb4_unicode_ci
+LEFT JOIN cleanox_actual       ca  ON ca.outlet  COLLATE utf8mb4_unicode_ci = t.outlet COLLATE utf8mb4_unicode_ci
 LEFT JOIN customer_segment_counts csc ON csc.outlet COLLATE utf8mb4_unicode_ci = t.outlet COLLATE utf8mb4_unicode_ci
 WHERE (? = 'all' OR LOWER(t.outlet) = LOWER(?))
 ORDER BY t.outlet`;
@@ -180,6 +222,8 @@ ORDER BY t.outlet`;
       ...EXCLUDED_NOTAS,                                         // NOT IN (reguler_daily)
       outlet, outlet,                                            // filter reguler_daily
       outlet, outlet,                                            // filter emoney_daily
+      ...EXCLUDED_NOTAS,                                         // NOT IN (cleanox_actual)
+      outlet, outlet,                                            // filter cleanox_actual
       outlet, outlet,                                            // filter customer_status
       outlet, outlet,                                            // WHERE t.outlet
     ];
@@ -225,18 +269,73 @@ ORDER BY tanggal`;
       outlet, outlet,                // filter emoney
     ];
 
-    const [[outletRows], [trendRows]] = await Promise.all([
+    // ── Waschen-only trend (excludes cleanox notas) ──────────────────────
+    const trendWaschenSql = `
+SELECT
+    DATE(tanggal) AS tanggal,
+    SUM(total)    AS sales
+FROM (
+    SELECT outlet COLLATE utf8mb4_unicode_ci AS outlet,
+           DATE(rtrp.waktu_pembayaran) AS tanggal,
+           SUM(rtrp.nominal_bayar)     AS total
+    FROM rekap_transaksi_reguler_pembayaran rtrp
+    LEFT JOIN (
+        SELECT rtr2.no_nota COLLATE utf8mb4_unicode_ci AS no_nota,
+               MAX(CASE
+                   WHEN LOWER(COALESCE(rtr2.nama_item,'')) LIKE '%cleanox%'
+                     OR LOWER(COALESCE(rtr2.nama_item,'')) LIKE '%karpet%'
+                   THEN 1 ELSE 0 END) AS is_cleanox
+        FROM rekap_transaksi_reguler rtr2
+        GROUP BY rtr2.no_nota
+    ) nf ON rtrp.no_nota COLLATE utf8mb4_unicode_ci = nf.no_nota
+    WHERE DATE(rtrp.waktu_pembayaran) BETWEEN ? AND ?
+      AND jenis_bayar <> 'e-money'
+      AND rtrp.no_nota NOT IN (${EP})
+      AND (? = 'all' OR LOWER(rtrp.outlet) = LOWER(?))
+      AND COALESCE(nf.is_cleanox, 0) = 0
+      AND NOT EXISTS (
+            SELECT 1 FROM rekap_transaksi_reguler rtr
+            WHERE rtr.no_nota = rtrp.no_nota
+              AND rtr.outlet LIKE '%legenda%'
+              AND (rtr.nama_item LIKE '%haji%' OR rtr.customer_nama LIKE '%haji%')
+      )
+    GROUP BY outlet, tanggal
+    UNION ALL
+    SELECT outlet COLLATE utf8mb4_unicode_ci AS outlet,
+           DATE(rpe.tanggal_beli) AS tanggal,
+           SUM(rpe.grand_total)   AS total
+    FROM rekap_pembelian_emoney rpe
+    WHERE DATE(rpe.tanggal_beli) BETWEEN ? AND ?
+      AND (? = 'all' OR LOWER(rpe.outlet) = LOWER(?))
+    GROUP BY outlet, tanggal
+) x
+GROUP BY tanggal
+ORDER BY tanggal`;
+
+    const trendWaschenParams = [
+      dateStart, effectiveAsOfDate,  // reguler range
+      ...EXCLUDED_NOTAS,
+      outlet, outlet,                // filter reguler
+      dateStart, effectiveAsOfDate,  // emoney range
+      outlet, outlet,                // filter emoney
+    ];
+
+    const [[outletRows], [trendRows], [trendWaschenRows]] = await Promise.all([
       safeSmartlinkQuery(mainSql, mainParams),
       safeSmartlinkQuery(trendSql, trendParams),
+      safeSmartlinkQuery(trendWaschenSql, trendWaschenParams),
     ]);
+
+    const mapTrend = (r) => ({
+      day: String(parseInt(r.tanggal.split("-")[2])),
+      date: r.tanggal,
+      sales: Number(r.sales),
+    });
 
     res.json({
       outlets: outletRows,
-      trend: trendRows.map((r) => ({
-        day: String(parseInt(r.tanggal.split("-")[2])),
-        date: r.tanggal,
-        sales: Number(r.sales),
-      })),
+      trend:        trendRows.map(mapTrend),
+      trendWaschen: trendWaschenRows.map(mapTrend),
       meta: { asOfDate: effectiveAsOfDate, dateStart, dateEnd },
     });
   } catch (err) {
