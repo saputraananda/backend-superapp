@@ -113,7 +113,7 @@ export const getCustomer = async (req, res) => {
         SELECT
           COUNT(*)                                                              AS total,
           SUM(CASE WHEN total_jumlah_transaksi > 4            THEN 1 ELSE 0 END) AS loyal,
-          SUM(CASE WHEN total_jumlah_transaksi BETWEEN 2 AND 4 THEN 1 ELSE 0 END) AS regular,
+          SUM(CASE WHEN total_jumlah_transaksi BETWEEN 2 AND 3 THEN 1 ELSE 0 END) AS regular,
           SUM(CASE WHEN total_jumlah_transaksi = 1             THEN 1 ELSE 0 END) AS one_time,
           SUM(CASE WHEN total_jumlah_transaksi = 0             THEN 1 ELSE 0 END) AS inactive,
           COALESCE(SUM(saldo_epayment),        0)                               AS total_saldo_epayment,
@@ -129,7 +129,7 @@ export const getCustomer = async (req, res) => {
           ${OUTLET_CASE} AS outlet_name,
           COUNT(*) AS total,
           SUM(CASE WHEN total_jumlah_transaksi > 4             THEN 1 ELSE 0 END) AS loyal,
-          SUM(CASE WHEN total_jumlah_transaksi BETWEEN 2 AND 4  THEN 1 ELSE 0 END) AS regular,
+          SUM(CASE WHEN total_jumlah_transaksi BETWEEN 2 AND 3  THEN 1 ELSE 0 END) AS regular,
           SUM(CASE WHEN total_jumlah_transaksi = 1              THEN 1 ELSE 0 END) AS one_time,
           SUM(CASE WHEN total_jumlah_transaksi = 0              THEN 1 ELSE 0 END) AS inactive
         FROM customer
