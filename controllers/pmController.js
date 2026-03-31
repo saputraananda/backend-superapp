@@ -307,19 +307,20 @@ export async function deleteSemester(req, res) {
   }
 }
 
-// ─── MONTHLY ──────────────────────────────────────────────────────────────────
+// ─── SUB DIVISION (formerly MONTHLY) ──────────────────────────────────────────
 // tr_pm_monthly: FK ke semester = id_semester, FK ke project = id_project
+// Kolom `month` diganti `department` — sekarang mewakili Sub Division
 export async function listMonthlyBySemester(req, res) {
   if (!requireAuth(req, res)) return;
   try {
     const [rows] = await db.query(
-      `SELECT m.id, m.id_project, m.id_semester, m.month, m.title, m.\`desc\`,
+      `SELECT m.id, m.id_project, m.id_semester, m.department, m.title, m.\`desc\`,
               m.requestor_employee_id, e.full_name AS requestor_name,
               m.created_at, m.updated_at
        FROM tr_pm_monthly m
        LEFT JOIN mst_employee e ON m.requestor_employee_id = e.employee_id
        WHERE m.id_semester = ? AND m.is_deleted = 0
-       ORDER BY m.month ASC, m.created_at DESC`,
+       ORDER BY m.title ASC, m.created_at DESC`,
       [req.params.semesterId]
     );
     res.json({ data: rows });
@@ -333,9 +334,8 @@ export async function createMonthly(req, res) {
   const emp = await getSessionEmployee(req);
   if (!isSupervisorUp(emp)) return res.status(403).json({ message: "Forbidden" });
 
-  const { month, title, desc } = req.body;
+  const { department, title, desc } = req.body;
   if (!title?.trim()) return res.status(400).json({ message: "Title wajib diisi" });
-  if (!month) return res.status(400).json({ message: "Month wajib dipilih" });
 
   try {
     // Ambil id_project dari semester
@@ -346,10 +346,10 @@ export async function createMonthly(req, res) {
     if (!semRows[0]) return res.status(404).json({ message: "Semester tidak ditemukan" });
 
     const [r] = await db.query(
-      "INSERT INTO tr_pm_monthly (id_project, id_semester, month, title, `desc`, requestor_employee_id) VALUES (?,?,?,?,?,?)",
-      [semRows[0].id_project, req.params.semesterId, month, title.trim(), desc?.trim() || null, emp.employee_id]
+      "INSERT INTO tr_pm_monthly (id_project, id_semester, department, title, `desc`, requestor_employee_id) VALUES (?,?,?,?,?,?)",
+      [semRows[0].id_project, req.params.semesterId, department?.trim() || null, title.trim(), desc?.trim() || null, emp.employee_id]
     );
-    res.status(201).json({ id: r.insertId, month, title });
+    res.status(201).json({ id: r.insertId, department, title });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
@@ -359,7 +359,7 @@ export async function getMonthlyDetail(req, res) {
   if (!requireAuth(req, res)) return;
   try {
     const [rows] = await db.query(
-      `SELECT m.id, m.id_project, m.id_semester, m.month, m.title, m.\`desc\`,
+      `SELECT m.id, m.id_project, m.id_semester, m.department, m.title, m.\`desc\`,
               m.requestor_employee_id, e.full_name AS requestor_name,
               m.created_at, m.updated_at
        FROM tr_pm_monthly m
@@ -367,7 +367,7 @@ export async function getMonthlyDetail(req, res) {
        WHERE m.id = ? AND m.is_deleted = 0`,
       [req.params.monthlyId]
     );
-    if (!rows[0]) return res.status(404).json({ message: "Monthly tidak ditemukan" });
+    if (!rows[0]) return res.status(404).json({ message: "Sub Division tidak ditemukan" });
     res.json({ data: rows[0] });
   } catch (e) {
     res.status(500).json({ message: e.message });
@@ -389,14 +389,14 @@ export async function updateMonthly(req, res) {
       return res.status(403).json({ message: "Hanya creator atau Direktur yang bisa edit" });
     }
 
-    const { month, title, desc } = req.body;
+    const { department, title, desc } = req.body;
     if (!title?.trim()) return res.status(400).json({ message: "Title wajib diisi" });
 
     await db.query(
-      "UPDATE tr_pm_monthly SET month=?, title=?, `desc`=?, updated_at=NOW() WHERE id=?",
-      [month, title.trim(), desc?.trim() || null, monthlyId]
+      "UPDATE tr_pm_monthly SET department=?, title=?, `desc`=?, updated_at=NOW() WHERE id=?",
+      [department?.trim() || null, title.trim(), desc?.trim() || null, monthlyId]
     );
-    res.json({ message: "Monthly berhasil diupdate" });
+    res.json({ message: "Sub Division berhasil diupdate" });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
@@ -1094,6 +1094,18 @@ export async function listCompanies(req, res) {
   try {
     const [rows] = await db.query(
       "SELECT company_id, company_name FROM mst_company WHERE is_active = 1 ORDER BY company_name"
+    );
+    res.json({ data: rows });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+export async function listDepartments(req, res) {
+  if (!requireAuth(req, res)) return;
+  try {
+    const [rows] = await db.query(
+      "SELECT department_id, department_name FROM mst_department WHERE is_active = 1 ORDER BY department_name"
     );
     res.json({ data: rows });
   } catch (e) {
