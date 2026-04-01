@@ -147,7 +147,8 @@ export const getSalesStats = async (req, res) => {
           )
         ))*100,2) AS persen_gap
       FROM param p
-      CROSS JOIN target t
+      CROSS JOIN target_sales t
+        ON t.tahun = YEAR(p.date_end) AND t.bulan = MONTH(p.date_end)
       LEFT JOIN actual a 
         ON a.outlet COLLATE utf8mb4_unicode_ci
         = t.outlet COLLATE utf8mb4_unicode_ci

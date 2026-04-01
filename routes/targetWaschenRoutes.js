@@ -18,8 +18,8 @@ router.use(requireAuth);
 // ── Target Sales ──────────────────────────────────────────────────
 router.get("/target", getTargetSales);
 router.post("/target", createTargetSales);
-router.put("/target/:outlet", updateTargetSales);
-router.delete("/target/:outlet", deleteTargetSales);
+router.put("/target/:id", updateTargetSales);
+router.delete("/target/:id", deleteTargetSales);
 
 // ── Target Customer ───────────────────────────────────────────────
 router.get("/target-customer", getTargetCustomer);

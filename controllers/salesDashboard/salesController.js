@@ -65,6 +65,16 @@ export const getPenjualan = async (req, res) => {
       ({ dateStart, dateEnd } = computeDateRange(asOfDate));
     }
 
+    // Cap effectiveAsOfDate to yesterday (today's data may be incomplete)
+    // For past months this has no effect; for current month it shows proportional progress
+    {
+      const y = new Date();
+      y.setDate(y.getDate() - 1);
+      const yesterday = `${y.getFullYear()}-${String(y.getMonth() + 1).padStart(2, "0")}-${String(y.getDate()).padStart(2, "0")}`;
+      if (effectiveAsOfDate > yesterday) effectiveAsOfDate = yesterday;
+      if (effectiveAsOfDate < dateStart) effectiveAsOfDate = dateStart;
+    }
+
     const EP = EXCLUDED_NOTAS.map(() => "?").join(",");
 
     // ── Main per-outlet query ────────────────────────────────────────────
@@ -190,6 +200,18 @@ customer_segment_counts AS (
            SUM(status_pelanggan='Pelanggan Baru') AS new_customer_count
     FROM customer_segment
     GROUP BY outlet
+),
+target_period AS (
+    SELECT ts.outlet, SUM(ts.nominal) AS nominal
+    FROM target_sales ts
+    CROSS JOIN param p
+    WHERE (ts.tahun * 100 + ts.bulan) BETWEEN
+          (YEAR(DATE_ADD(p.date_start, INTERVAL IF(DAY(p.date_start) >= 26, 1, 0) MONTH)) * 100
+         + MONTH(DATE_ADD(p.date_start, INTERVAL IF(DAY(p.date_start) >= 26, 1, 0) MONTH)))
+      AND
+          (YEAR(DATE_ADD(p.date_end, INTERVAL IF(DAY(p.date_end) >= 26, 1, 0) MONTH)) * 100
+         + MONTH(DATE_ADD(p.date_end, INTERVAL IF(DAY(p.date_end) >= 26, 1, 0) MONTH)))
+    GROUP BY ts.outlet
 )
 SELECT
     t.outlet,
@@ -209,7 +231,7 @@ SELECT
     COALESCE(csc.one_time_count,0)     AS one_time_count,
     COALESCE(csc.new_customer_count,0) AS new_customer_count
 FROM param p
-CROSS JOIN target t
+CROSS JOIN target_period t
 LEFT JOIN actual               a   ON a.outlet   COLLATE utf8mb4_unicode_ci = t.outlet COLLATE utf8mb4_unicode_ci
 LEFT JOIN actual_yesterday     ay  ON ay.outlet  COLLATE utf8mb4_unicode_ci = t.outlet COLLATE utf8mb4_unicode_ci
 LEFT JOIN cleanox_actual       ca  ON ca.outlet  COLLATE utf8mb4_unicode_ci = t.outlet COLLATE utf8mb4_unicode_ci

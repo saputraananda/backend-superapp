@@ -1,14 +1,20 @@
 import { safeSmartlinkQuery } from "../db/pool.js";
 
 // ══════════════════════════════════════════════════════════════════
-// TARGET SALES  (tabel: target)
+// TARGET SALES  (tabel: target_sales)
 // ══════════════════════════════════════════════════════════════════
 
-export const getTargetSales = async (_req, res) => {
+export const getTargetSales = async (req, res) => {
   try {
-    const [rows] = await safeSmartlinkQuery(
-      "SELECT outlet, nominal FROM target ORDER BY outlet"
-    );
+    const { tahun, bulan } = req.query;
+    let sql = "SELECT id, outlet, tahun, bulan, nominal, created_at, updated_at FROM target_sales";
+    const params = [];
+    const conditions = [];
+    if (tahun) { conditions.push("tahun = ?"); params.push(Number(tahun)); }
+    if (bulan) { conditions.push("bulan = ?"); params.push(Number(bulan)); }
+    if (conditions.length) sql += " WHERE " + conditions.join(" AND ");
+    sql += " ORDER BY tahun DESC, bulan DESC, outlet";
+    const [rows] = await safeSmartlinkQuery(sql, params);
     res.json(rows);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -16,40 +22,48 @@ export const getTargetSales = async (_req, res) => {
 };
 
 export const createTargetSales = async (req, res) => {
-  const { outlet, nominal } = req.body;
-  if (!outlet || nominal === undefined || nominal === null)
-    return res.status(400).json({ message: "outlet dan nominal wajib diisi" });
+  const { outlet, tahun, bulan, nominal } = req.body;
+  if (!outlet || !tahun || !bulan || nominal === undefined || nominal === null)
+    return res.status(400).json({ message: "outlet, tahun, bulan, dan nominal wajib diisi" });
+  if (Number(bulan) < 1 || Number(bulan) > 12)
+    return res.status(400).json({ message: "bulan harus antara 1-12" });
   try {
     await safeSmartlinkQuery(
-      "INSERT INTO target (outlet, nominal) VALUES (?, ?)",
-      [outlet.trim(), Number(nominal)]
+      "INSERT INTO target_sales (outlet, tahun, bulan, nominal) VALUES (?, ?, ?, ?)",
+      [outlet.trim(), Number(tahun), Number(bulan), Number(nominal)]
     );
     res.status(201).json({ message: "Target sales berhasil ditambahkan" });
   } catch (err) {
+    if (err.code === "ER_DUP_ENTRY")
+      return res.status(409).json({ message: "Target untuk outlet, tahun, dan bulan ini sudah ada" });
     res.status(500).json({ message: err.message });
   }
 };
 
 export const updateTargetSales = async (req, res) => {
-  const { outlet } = req.params;           // outlet lama (sebagai kunci)
-  const { outlet: newOutlet, nominal } = req.body;
-  if (!newOutlet || nominal === undefined || nominal === null)
-    return res.status(400).json({ message: "outlet dan nominal wajib diisi" });
+  const { id } = req.params;
+  const { outlet, tahun, bulan, nominal } = req.body;
+  if (!outlet || !tahun || !bulan || nominal === undefined || nominal === null)
+    return res.status(400).json({ message: "outlet, tahun, bulan, dan nominal wajib diisi" });
+  if (Number(bulan) < 1 || Number(bulan) > 12)
+    return res.status(400).json({ message: "bulan harus antara 1-12" });
   try {
     await safeSmartlinkQuery(
-      "UPDATE target SET outlet = ?, nominal = ? WHERE outlet = ?",
-      [newOutlet.trim(), Number(nominal), outlet]
+      "UPDATE target_sales SET outlet = ?, tahun = ?, bulan = ?, nominal = ? WHERE id = ?",
+      [outlet.trim(), Number(tahun), Number(bulan), Number(nominal), id]
     );
     res.json({ message: "Target sales berhasil diperbarui" });
   } catch (err) {
+    if (err.code === "ER_DUP_ENTRY")
+      return res.status(409).json({ message: "Target untuk outlet, tahun, dan bulan ini sudah ada" });
     res.status(500).json({ message: err.message });
   }
 };
 
 export const deleteTargetSales = async (req, res) => {
-  const { outlet } = req.params;
+  const { id } = req.params;
   try {
-    await safeSmartlinkQuery("DELETE FROM target WHERE outlet = ?", [outlet]);
+    await safeSmartlinkQuery("DELETE FROM target_sales WHERE id = ?", [id]);
     res.json({ message: "Target sales berhasil dihapus" });
   } catch (err) {
     res.status(500).json({ message: err.message });
