@@ -192,3 +192,28 @@ export const uploadAsetPhoto = multer({
   fileFilter: imageFilter,
   limits: { fileSize: 10 * 1024 * 1024 },
 });
+
+// =========================
+// Upload tasklist evidence (semua tipe, 10 MB)
+// =========================
+const TASKLIST_EVIDENCE_DIR = path.join(BASE_DIR, "tasklist_evidence");
+if (!fs.existsSync(TASKLIST_EVIDENCE_DIR)) fs.mkdirSync(TASKLIST_EVIDENCE_DIR, { recursive: true });
+
+const tasklistEvidenceStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, TASKLIST_EVIDENCE_DIR),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    const baseName = path
+      .basename(file.originalname, ext)
+      .replace(/[^a-zA-Z0-9_\-]/g, "_")
+      .slice(0, 60);
+    const unique = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    cb(null, `${baseName}_${unique}${ext}`);
+  },
+});
+
+export const uploadTasklistEvidence = multer({
+  storage: tasklistEvidenceStorage,
+  fileFilter: (_req, file, cb) => cb(null, true),
+  limits: { fileSize: 10 * 1024 * 1024 },
+});

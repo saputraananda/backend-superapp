@@ -28,6 +28,7 @@ import addMenuRoutes from "./routes/addMenuRoutes.js";
 import asetRoutes from "./routes/asetRoutes.js";
 import targetWaschenRoutes from "./routes/targetWaschenRoutes.js";
 import salesRoutes from "./routes/salesRoutes.js";
+import personalTasklistRoutes from "./routes/personalTasklistRoutes.js";
 
 import { sendIdulFitriBlastCleanoxProd } from "./utils/waBlastCustomerProd.js";
 
@@ -183,6 +184,7 @@ app.use("/assets/documents", express.static(path.join(ASSETS_BASE, "documents"))
 app.use("/assets/daily_evidence", express.static(path.join(ASSETS_BASE, "daily_evidence")));
 app.use("/assets", express.static(ASSETS_BASE));
 app.use("/assets/aset_photos", express.static(path.join(ASSETS_BASE, "aset_photos")));
+app.use("/assets/tasklist_evidence", express.static(path.join(ASSETS_BASE, "tasklist_evidence")));
 
 // =========================
 // Routes
@@ -241,6 +243,7 @@ app.use("/menus", addMenuRoutes);
 app.use("/aset", asetRoutes);
 app.use("/target-waschen", targetWaschenRoutes);
 app.use("/sales", salesRoutes);
+app.use("/personal-tasklist", personalTasklistRoutes);
 
 // 404
 app.use((req, res) => {
