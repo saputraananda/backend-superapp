@@ -11,7 +11,7 @@ const __dirname = path.dirname(__filename);
 const EVIDENCE_URL_PREFIX = "/assets/evidence";
 const EVIDENCE_DISK_DIR = path.join(__dirname, "..", "assets", "evidence");
 
-const JOB_LEVEL = { DIREKTUR: 1, SUPERVISOR: 2, STAFF: 3 };
+const JOB_LEVEL = { DIREKTUR: 1, MANAGER: 2, SUPERVISOR: 3, STAFF: 4 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 async function getSessionEmployee(req) {
@@ -75,7 +75,7 @@ export async function listProjects(req, res) {
 export async function createProject(req, res) {
   if (!requireAuth(req, res)) return;
   const emp = await getSessionEmployee(req);
-  if (!isSupervisorUp(emp)) return res.status(403).json({ message: "Hanya Direktur & Supervisor yang bisa membuat project" });
+  if (!isSupervisorUp(emp)) return res.status(403).json({ message: "Hanya Direktur/Manager/Supervisor yang bisa membuat project" });
 
   const { title, desc, company_id } = req.body;
   if (!title?.trim()) return res.status(400).json({ message: "Title wajib diisi" });

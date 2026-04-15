@@ -72,6 +72,8 @@ export const updateProfile = async (req, res) => {
     return res.status(401).json({ message: "Not authenticated" });
   }
 
+  const toNull = (value) => (value === "" || value == null ? null : value);
+
   const {
     full_name, gender, birth_place, birth_date, address, ktp_number,
     family_card_number, phone_number, company_id, job_level_id, position_id,
@@ -84,6 +86,14 @@ export const updateProfile = async (req, res) => {
 
   if (!employee_code?.trim()) {
     return res.status(400).json({ message: "Nomor Induk Karyawan wajib diisi." });
+  }
+
+  if (company_id === "" || company_id == null) {
+    return res.status(400).json({ message: "Perusahaan wajib diisi." });
+  }
+
+  if (job_level_id === "" || job_level_id == null) {
+    return res.status(400).json({ message: "Jabatan wajib diisi." });
   }
 
   try {
@@ -118,12 +128,12 @@ export const updateProfile = async (req, res) => {
         bank_account_number = ?, emergency_contact = ?, notes = ?, employee_code = ?
        WHERE email = ? AND is_deleted = 0`,
       [
-        full_name, gender, birth_place, birth_date, address, ktp_number,
-        family_card_number, phone_number, company_id, job_level_id, position_id,
-        department_id, join_date, employment_status_id, contract_end_date,
-        education_level_id, school_name, religion_id, marital_status,
+        full_name, gender, birth_place, toNull(birth_date), address, ktp_number,
+        family_card_number, phone_number, toNull(company_id), toNull(job_level_id), toNull(position_id),
+        toNull(department_id), toNull(join_date), toNull(employment_status_id), toNull(contract_end_date),
+        toNull(education_level_id), school_name, toNull(religion_id), marital_status,
         bpjs_health_number, bpjs_employment_number, npwp_number,
-        bank_id, bank_account_number, emergency_contact, notes,
+        toNull(bank_id), bank_account_number, emergency_contact, notes,
         employee_code, req.session.userEmail,
       ]
     );

@@ -358,7 +358,7 @@ export const submitAset = async (req, res) => {
       "SELECT job_level_id FROM mst_employee WHERE employee_id = ? AND is_deleted = 0",
       [employeeId]
     );
-    if (empRows.length === 0 || Number(empRows[0].job_level_id) < 3) {
+    if (empRows.length === 0 || Number(empRows[0].job_level_id) < 4) {
       return res.status(403).json({ message: "Hanya Staff yang dapat mengajukan approval" });
     }
   } catch (err) {
@@ -398,10 +398,10 @@ export const approveSpv = async (req, res) => {
   if (!employeeId) return res.status(401).json({ message: "Session employee tidak ditemukan" });
 
   try {
-    // Verify supervisor role (job_level_id <= 2)
+    // Verify manager/supervisor role (job_level_id <= 3)
     const [emp] = await safeQuery("SELECT job_level_id FROM mst_employee WHERE employee_id = ?", [employeeId]);
-    if (emp.length === 0 || Number(emp[0].job_level_id) > 2) {
-      return res.status(403).json({ message: "Hanya Supervisor atau Direktur yang dapat menyetujui" });
+    if (emp.length === 0 || Number(emp[0].job_level_id) > 3) {
+      return res.status(403).json({ message: "Hanya Manager/Supervisor atau Direktur yang dapat menyetujui" });
     }
 
     const [rows] = await safeQuery(
@@ -473,8 +473,8 @@ export const rejectAset = async (req, res) => {
 
   try {
     const [emp] = await safeQuery("SELECT job_level_id FROM mst_employee WHERE employee_id = ?", [employeeId]);
-    if (emp.length === 0 || Number(emp[0].job_level_id) > 2) {
-      return res.status(403).json({ message: "Hanya Supervisor atau Direktur yang dapat menolak" });
+    if (emp.length === 0 || Number(emp[0].job_level_id) > 3) {
+      return res.status(403).json({ message: "Hanya Manager/Supervisor atau Direktur yang dapat menolak" });
     }
 
     const [rows] = await safeQuery(

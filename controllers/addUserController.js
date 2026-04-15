@@ -1,7 +1,20 @@
 import { safeQuery } from "../db/pool.js";
 import bcrypt from "bcrypt";
 
-const ALLOWED_ROLES = ["bod", "finance", "spv_hr", "hr", "spv_bdsm", "admin", "employee", "unauthorized"];
+const ALLOWED_ROLES = [
+  "bod",
+  "finance",
+  "spv_finance",
+  "spv_hr",
+  "hr",
+  "spv_bdsm",
+  "bdsm",
+  "spv_ikm",
+  "staff_ikm",
+  "admin",
+  "employee",
+  "unauthorized",
+];
 
 // ── GET ALL USERS ──────────────────────────────────────────────────────────
 export async function getUsers(req, res) {
