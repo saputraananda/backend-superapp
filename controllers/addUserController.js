@@ -10,6 +10,7 @@ const ALLOWED_ROLES = [
   "spv_bdsm",
   "bdsm",
   "spv_ikm",
+  "manager_ikm",
   "staff_ikm",
   "admin",
   "employee",
