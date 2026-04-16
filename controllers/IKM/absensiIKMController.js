@@ -1,4 +1,4 @@
-import { safeIKMQuery } from "../../db/pool.js";
+import { safeIKMQuery, safeQuery } from "../../db/pool.js";
 
 const ALLOWED_SHIFTS = new Set(["pagi", "siang", "sore", "lembur"]);
 
@@ -9,6 +9,12 @@ function toISODateString(value) {
 function toBoolean(value) {
 	if (typeof value === "boolean") return value;
 	return ["1", "true", "yes", "y"].includes(String(value || "").toLowerCase());
+}
+
+function toPositiveInt(value) {
+	const n = Number(value);
+	if (!Number.isInteger(n) || n <= 0) return null;
+	return n;
 }
 
 function diffDays(startDate, endDate) {
@@ -60,6 +66,146 @@ function getRecordStatus(row) {
 	return "Lengkap";
 }
 
+async function getMatchedEmployeeIdsBySearch(search) {
+	if (!search) return [];
+	const kw = `%${search}%`;
+	const [rows] = await safeQuery(
+		`
+			SELECT e.employee_id
+			FROM mst_employee e
+			WHERE e.is_deleted = 0
+				AND (
+					e.full_name LIKE ?
+					OR e.employee_code LIKE ?
+					OR CAST(e.employee_id AS CHAR) LIKE ?
+				)
+			LIMIT 2000
+		`,
+		[kw, kw, kw]
+	);
+	return rows
+		.map((row) => Number(row.employee_id))
+		.filter((id) => Number.isInteger(id) && id > 0);
+}
+
+function buildWhereSql({ startDate, endDate, shiftType, employeeId, onlyIncomplete, search, matchedEmployeeIds }) {
+	const where = ["work_date BETWEEN ? AND ?"];
+	const params = [startDate, endDate];
+
+	if (employeeId) {
+		where.push("employee_id = ?");
+		params.push(employeeId);
+	}
+
+	if (shiftType) {
+		where.push("shift_type = ?");
+		params.push(shiftType);
+	}
+
+	if (search) {
+		const searchParts = ["CAST(employee_id AS CHAR) LIKE ?", "CAST(user_id AS CHAR) LIKE ?"];
+		const searchParams = [`%${search}%`, `%${search}%`];
+
+		if (matchedEmployeeIds.length > 0) {
+			searchParts.push(`employee_id IN (${matchedEmployeeIds.map(() => "?").join(",")})`);
+			searchParams.push(...matchedEmployeeIds);
+		}
+
+		where.push(`(${searchParts.join(" OR ")})`);
+		params.push(...searchParams);
+	}
+
+	if (onlyIncomplete) {
+		where.push(`
+			NOT (
+				check_in_time IS NOT NULL
+				AND check_out_time IS NOT NULL
+				AND check_in_photo_name IS NOT NULL
+				AND check_in_photo_name <> ''
+				AND check_out_photo_name IS NOT NULL
+				AND check_out_photo_name <> ''
+			)
+		`);
+	}
+
+	return {
+		whereSql: where.join(" AND "),
+		params,
+	};
+}
+
+function buildTodayWhereSql({ employeeId, shiftType, search, matchedEmployeeIds }) {
+	const where = ["work_date = CURDATE()"];
+	const params = [];
+
+	if (employeeId) {
+		where.push("employee_id = ?");
+		params.push(employeeId);
+	}
+
+	if (shiftType) {
+		where.push("shift_type = ?");
+		params.push(shiftType);
+	}
+
+	if (search) {
+		const searchParts = ["CAST(employee_id AS CHAR) LIKE ?", "CAST(user_id AS CHAR) LIKE ?"];
+		const searchParams = [`%${search}%`, `%${search}%`];
+		if (matchedEmployeeIds.length > 0) {
+			searchParts.push(`employee_id IN (${matchedEmployeeIds.map(() => "?").join(",")})`);
+			searchParams.push(...matchedEmployeeIds);
+		}
+		where.push(`(${searchParts.join(" OR ")})`);
+		params.push(...searchParams);
+	}
+
+	return {
+		whereSql: where.join(" AND "),
+		params,
+	};
+}
+
+async function getEmployeeProfileMap(employeeIds) {
+	if (!employeeIds.length) return new Map();
+
+	const placeholders = employeeIds.map(() => "?").join(",");
+	const [rows] = await safeQuery(
+		`
+			SELECT
+				e.employee_id,
+				e.employee_code,
+				e.full_name,
+				p.position_name,
+				j.job_level_name
+			FROM mst_employee e
+			LEFT JOIN mst_position p ON p.position_id = e.position_id
+			LEFT JOIN mst_job_level j ON j.job_level_id = e.job_level_id
+			WHERE e.is_deleted = 0
+				AND e.employee_id IN (${placeholders})
+		`,
+		[...employeeIds]
+	);
+
+	const map = new Map();
+	for (const row of rows) {
+		map.set(Number(row.employee_id), {
+			employee_code: row.employee_code || null,
+			employee_name: row.full_name || null,
+			jabatan: row.job_level_name || row.position_name || "-",
+		});
+	}
+	return map;
+}
+
+function getEmployeeView(employeeMap, employeeId) {
+	const profile = employeeMap.get(Number(employeeId));
+	return {
+		employee_code: profile?.employee_code || null,
+		employee_name: profile?.employee_name || `ID ${employeeId}`,
+		jabatan: profile?.jabatan || "-",
+	};
+}
+
 export const getAttendanceShiftIKM = async (req, res) => {
 	try {
 		const today = new Date().toISOString().slice(0, 10);
@@ -80,43 +226,29 @@ export const getAttendanceShiftIKM = async (req, res) => {
 			return res.status(400).json({ message: "shiftType tidak valid" });
 		}
 
-		const employeeId = Number(req.query.employeeId || 0);
-		if (req.query.employeeId && (!Number.isInteger(employeeId) || employeeId <= 0)) {
+		const employeeId = toPositiveInt(req.query.employeeId);
+		if (req.query.employeeId && !employeeId) {
 			return res.status(400).json({ message: "employeeId harus bilangan bulat positif" });
 		}
+
+		const search = String(req.query.search || "").trim();
 
 		const page = Math.max(Number(req.query.page) || 1, 1);
 		const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
 		const offset = (page - 1) * limit;
 		const onlyIncomplete = toBoolean(req.query.onlyIncomplete);
 
-		const where = ["work_date BETWEEN ? AND ?"];
-		const params = [startDate, endDate];
+		const matchedEmployeeIds = await getMatchedEmployeeIdsBySearch(search);
 
-		if (employeeId) {
-			where.push("employee_id = ?");
-			params.push(employeeId);
-		}
-
-		if (shiftType) {
-			where.push("shift_type = ?");
-			params.push(shiftType);
-		}
-
-		if (onlyIncomplete) {
-			where.push(`
-				NOT (
-					check_in_time IS NOT NULL
-					AND check_out_time IS NOT NULL
-					AND check_in_photo_name IS NOT NULL
-					AND check_in_photo_name <> ''
-					AND check_out_photo_name IS NOT NULL
-					AND check_out_photo_name <> ''
-				)
-			`);
-		}
-
-		const whereSql = where.join(" AND ");
+		const { whereSql, params } = buildWhereSql({
+			startDate,
+			endDate,
+			shiftType,
+			employeeId,
+			onlyIncomplete,
+			search,
+			matchedEmployeeIds,
+		});
 
 		const [countRows] = await safeIKMQuery(
 			`SELECT COUNT(*) AS total FROM tr_attendance_shift_ikm WHERE ${whereSql}`,
@@ -191,13 +323,6 @@ export const getAttendanceShiftIKM = async (req, res) => {
 			params
 		);
 
-		const dayWhere = ["work_date BETWEEN ? AND ?"];
-		const dayParams = [startDate, endDate];
-		if (employeeId) {
-			dayWhere.push("employee_id = ?");
-			dayParams.push(employeeId);
-		}
-
 		const [dailyRows] = await safeIKMQuery(
 			`
 				SELECT
@@ -228,11 +353,67 @@ export const getAttendanceShiftIKM = async (req, res) => {
 						AND check_out_photo_name IS NOT NULL AND check_out_photo_name <> ''
 					THEN 1 ELSE 0 END) AS lembur_complete
 				FROM tr_attendance_shift_ikm
-				WHERE ${dayWhere.join(" AND ")}
+				WHERE ${whereSql}
 				GROUP BY employee_id, work_date
 			`,
-			dayParams
+			params
 		);
+
+		const [employeeSummaryRows] = await safeIKMQuery(
+			`
+				SELECT
+					employee_id,
+					COUNT(*) AS total_records,
+					SUM(CASE WHEN check_in_time IS NOT NULL THEN 1 ELSE 0 END) AS total_check_in,
+					SUM(CASE WHEN check_out_time IS NOT NULL THEN 1 ELSE 0 END) AS total_check_out,
+					SUM(
+						CASE WHEN check_in_time IS NOT NULL
+							AND check_out_time IS NOT NULL
+							AND check_in_photo_name IS NOT NULL
+							AND check_in_photo_name <> ''
+							AND check_out_photo_name IS NOT NULL
+							AND check_out_photo_name <> ''
+						THEN 1 ELSE 0 END
+					) AS total_complete,
+					MAX(work_date) AS last_work_date
+				FROM tr_attendance_shift_ikm
+				WHERE ${whereSql}
+				GROUP BY employee_id
+				ORDER BY employee_id ASC
+				LIMIT 500
+			`,
+			params
+		);
+
+		const { whereSql: todayWhereSql, params: todayParams } = buildTodayWhereSql({
+			employeeId,
+			shiftType,
+			search,
+			matchedEmployeeIds,
+		});
+
+		const [todayRows] = await safeIKMQuery(
+			`
+				SELECT
+					COUNT(*) AS total_today_records,
+					COUNT(DISTINCT CASE WHEN check_in_time IS NOT NULL THEN employee_id END) AS present_employees
+				FROM tr_attendance_shift_ikm
+				WHERE ${todayWhereSql}
+			`,
+			todayParams
+		);
+
+		const [masterEmployeeRows] = await safeQuery(
+			`SELECT COUNT(*) AS total FROM mst_employee WHERE is_deleted = 0`,
+			[]
+		);
+
+		const allEmployeeIds = [...new Set([
+			...rows.map((row) => Number(row.employee_id)),
+			...employeeSummaryRows.map((row) => Number(row.employee_id)),
+		])].filter((id) => Number.isInteger(id) && id > 0);
+
+		const employeeMap = await getEmployeeProfileMap(allEmployeeIds);
 
 		let completedMandatorySlots = 0;
 		let availableMandatorySlots = 0;
@@ -260,9 +441,13 @@ export const getAttendanceShiftIKM = async (req, res) => {
 			const hasCheckOut = Boolean(row.check_out_time);
 			const hasCheckInPhoto = Boolean(row.check_in_photo_name);
 			const hasCheckOutPhoto = Boolean(row.check_out_photo_name);
+			const profile = getEmployeeView(employeeMap, row.employee_id);
 
 			return {
 				...row,
+				employee_name: profile.employee_name,
+				employee_code: profile.employee_code,
+				jabatan: profile.jabatan,
 				check_in_photo_url: buildPhotoUrl(row.check_in_photo_path, row.check_in_photo_name),
 				check_out_photo_url: buildPhotoUrl(row.check_out_photo_path, row.check_out_photo_name),
 				is_check_in_complete: hasCheckIn && hasCheckInPhoto,
@@ -273,6 +458,27 @@ export const getAttendanceShiftIKM = async (req, res) => {
 		});
 
 		const summary = summaryRows[0] || {};
+		const todaySummary = todayRows[0] || {};
+		const totalMasterEmployees = Number(masterEmployeeRows[0]?.total || 0);
+		const presentEmployeesToday = Number(todaySummary.present_employees || 0);
+		const dummyAbsentEmployees = Math.max(totalMasterEmployees - presentEmployeesToday, 0);
+
+		const employeeSummary = employeeSummaryRows
+			.map((row) => {
+				const profile = getEmployeeView(employeeMap, row.employee_id);
+				return {
+					employee_id: Number(row.employee_id),
+					employee_name: profile.employee_name,
+					employee_code: profile.employee_code,
+					jabatan: profile.jabatan,
+					total_records: Number(row.total_records || 0),
+					total_check_in: Number(row.total_check_in || 0),
+					total_check_out: Number(row.total_check_out || 0),
+					total_complete: Number(row.total_complete || 0),
+					last_work_date: row.last_work_date,
+				};
+			})
+			.sort((a, b) => a.employee_name.localeCompare(b.employee_name, "id"));
 
 		return res.json({
 			success: true,
@@ -280,6 +486,7 @@ export const getAttendanceShiftIKM = async (req, res) => {
 				startDate,
 				endDate,
 				employeeId: employeeId || null,
+				search: search || null,
 				shiftType: shiftType || null,
 				onlyIncomplete,
 			},
@@ -306,7 +513,12 @@ export const getAttendanceShiftIKM = async (req, res) => {
 				mandatoryCompletionRate,
 				lemburExists,
 				lemburComplete,
+				todayRecords: Number(todaySummary.total_today_records || 0),
+				todayPresentEmployees: presentEmployeesToday,
+				dummyAbsentEmployees,
+				totalMasterEmployees,
 			},
+			employeeSummary,
 			records,
 		});
 	} catch (error) {
