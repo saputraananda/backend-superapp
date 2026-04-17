@@ -1,6 +1,15 @@
 import { safeIKMQuery, safeQuery } from "../../db/pool.js";
 
 const ALLOWED_SHIFTS = new Set(["pagi", "siang", "sore", "lembur"]);
+const IKM_COMPANY_ID = 2;
+const ADMIN_EMPLOYEE_ID = 31;
+const ATTENDANCE_WATCH_INTERVAL_MS = 2000;
+const SSE_KEEPALIVE_MS = 25000;
+
+const attendanceSseClients = new Set();
+let attendanceWatcherTimer = null;
+let attendanceWatcherBusy = false;
+let attendanceLastSignature = null;
 
 function toISODateString(value) {
 	return /^\d{4}-\d{2}-\d{2}$/.test(value || "") ? value : null;
@@ -15,6 +24,18 @@ function toPositiveInt(value) {
 	const n = Number(value);
 	if (!Number.isInteger(n) || n <= 0) return null;
 	return n;
+}
+
+function toPositiveIntList(value) {
+	const raw = Array.isArray(value) ? value.join(",") : String(value || "");
+	if (!raw.trim()) return [];
+
+	const values = raw
+		.split(",")
+		.map((part) => Number(String(part).trim()))
+		.filter((n) => Number.isInteger(n) && n > 0);
+
+	return [...new Set(values)];
 }
 
 function diffDays(startDate, endDate) {
@@ -74,6 +95,7 @@ async function getMatchedEmployeeIdsBySearch(search) {
 			SELECT e.employee_id
 			FROM mst_employee e
 			WHERE e.is_deleted = 0
+				AND (e.company_id = ? OR e.employee_id = ?)
 				AND (
 					e.full_name LIKE ?
 					OR e.employee_code LIKE ?
@@ -81,18 +103,21 @@ async function getMatchedEmployeeIdsBySearch(search) {
 				)
 			LIMIT 2000
 		`,
-		[kw, kw, kw]
+		[IKM_COMPANY_ID, ADMIN_EMPLOYEE_ID, kw, kw, kw]
 	);
 	return rows
 		.map((row) => Number(row.employee_id))
 		.filter((id) => Number.isInteger(id) && id > 0);
 }
 
-function buildWhereSql({ startDate, endDate, shiftType, employeeId, onlyIncomplete, search, matchedEmployeeIds }) {
+function buildWhereSql({ startDate, endDate, shiftType, employeeId, employeeIds, onlyIncomplete, search, matchedEmployeeIds }) {
 	const where = ["work_date BETWEEN ? AND ?"];
 	const params = [startDate, endDate];
 
-	if (employeeId) {
+	if (employeeIds.length > 0) {
+		where.push(`employee_id IN (${employeeIds.map(() => "?").join(",")})`);
+		params.push(...employeeIds);
+	} else if (employeeId) {
 		where.push("employee_id = ?");
 		params.push(employeeId);
 	}
@@ -134,11 +159,14 @@ function buildWhereSql({ startDate, endDate, shiftType, employeeId, onlyIncomple
 	};
 }
 
-function buildTodayWhereSql({ employeeId, shiftType, search, matchedEmployeeIds }) {
+function buildTodayWhereSql({ employeeId, employeeIds, shiftType, search, matchedEmployeeIds }) {
 	const where = ["work_date = CURDATE()"];
 	const params = [];
 
-	if (employeeId) {
+	if (employeeIds.length > 0) {
+		where.push(`employee_id IN (${employeeIds.map(() => "?").join(",")})`);
+		params.push(...employeeIds);
+	} else if (employeeId) {
 		where.push("employee_id = ?");
 		params.push(employeeId);
 	}
@@ -163,6 +191,29 @@ function buildTodayWhereSql({ employeeId, shiftType, search, matchedEmployeeIds 
 		whereSql: where.join(" AND "),
 		params,
 	};
+}
+
+async function getEmployeeSelectionOptions() {
+	const [rows] = await safeQuery(
+		`
+			SELECT
+				e.employee_id,
+				e.employee_code,
+				e.full_name
+			FROM mst_employee e
+			WHERE e.is_deleted = 0
+				AND (e.company_id = ? OR e.employee_id = ?)
+			ORDER BY e.full_name ASC
+			LIMIT 3000
+		`,
+		[IKM_COMPANY_ID, ADMIN_EMPLOYEE_ID]
+	);
+
+	return rows.map((row) => ({
+		employee_id: Number(row.employee_id),
+		employee_code: row.employee_code || null,
+		employee_name: row.full_name || `ID ${row.employee_id}`,
+	}));
 }
 
 async function getEmployeeProfileMap(employeeIds) {
@@ -206,6 +257,120 @@ function getEmployeeView(employeeMap, employeeId) {
 	};
 }
 
+function writeSseEvent(res, event, data) {
+	res.write(`event: ${event}\n`);
+	res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+function broadcastAttendanceEvent(event, data) {
+	for (const client of attendanceSseClients) {
+		try {
+			writeSseEvent(client, event, data);
+		} catch {
+			// Ignore client write error. Connection cleanup happens on close.
+		}
+	}
+}
+
+async function getAttendanceDataSignature() {
+	const [rows] = await safeIKMQuery(
+		`
+			SELECT
+				COALESCE(MAX(shift_record_id), 0) AS max_id,
+				COALESCE(UNIX_TIMESTAMP(MAX(created_at)), 0) AS max_created_at,
+				COALESCE(UNIX_TIMESTAMP(MAX(check_in_time)), 0) AS max_check_in,
+				COALESCE(UNIX_TIMESTAMP(MAX(check_out_time)), 0) AS max_check_out,
+				COUNT(*) AS total_rows
+			FROM tr_attendance_shift_ikm
+		`,
+		[]
+	);
+
+	const row = rows?.[0] || {};
+	return [
+		Number(row.max_id || 0),
+		Number(row.max_created_at || 0),
+		Number(row.max_check_in || 0),
+		Number(row.max_check_out || 0),
+		Number(row.total_rows || 0),
+	].join(":");
+}
+
+async function runAttendanceWatcherTick() {
+	if (attendanceWatcherBusy || attendanceSseClients.size === 0) return;
+	attendanceWatcherBusy = true;
+
+	try {
+		const nextSignature = await getAttendanceDataSignature();
+
+		if (attendanceLastSignature === null) {
+			attendanceLastSignature = nextSignature;
+			return;
+		}
+
+		if (nextSignature !== attendanceLastSignature) {
+			attendanceLastSignature = nextSignature;
+			broadcastAttendanceEvent("attendance_update", {
+				timestamp: new Date().toISOString(),
+			});
+		}
+	} catch (error) {
+		console.error("[attendanceSSEWatcher] Error:", error);
+	} finally {
+		attendanceWatcherBusy = false;
+	}
+}
+
+function ensureAttendanceWatcher() {
+	if (attendanceWatcherTimer) return;
+
+	runAttendanceWatcherTick();
+	attendanceWatcherTimer = setInterval(runAttendanceWatcherTick, ATTENDANCE_WATCH_INTERVAL_MS);
+}
+
+function stopAttendanceWatcherIfIdle() {
+	if (attendanceSseClients.size > 0) return;
+	if (attendanceWatcherTimer) {
+		clearInterval(attendanceWatcherTimer);
+		attendanceWatcherTimer = null;
+	}
+	attendanceLastSignature = null;
+	attendanceWatcherBusy = false;
+}
+
+export const streamAttendanceShiftIKM = async (req, res) => {
+	res.setHeader("Content-Type", "text/event-stream");
+	res.setHeader("Cache-Control", "no-cache, no-transform");
+	res.setHeader("Connection", "keep-alive");
+	res.setHeader("X-Accel-Buffering", "no");
+	res.flushHeaders?.();
+
+	writeSseEvent(res, "connected", {
+		message: "IKM attendance realtime stream connected",
+		timestamp: new Date().toISOString(),
+	});
+
+	attendanceSseClients.add(res);
+	ensureAttendanceWatcher();
+
+	const keepAliveTimer = setInterval(() => {
+		res.write(`: keep-alive ${Date.now()}\n\n`);
+	}, SSE_KEEPALIVE_MS);
+
+	let closed = false;
+	const close = () => {
+		if (closed) return;
+		closed = true;
+		clearInterval(keepAliveTimer);
+		attendanceSseClients.delete(res);
+		stopAttendanceWatcherIfIdle();
+	};
+
+	req.on("close", close);
+	req.on("end", close);
+	res.on("close", close);
+};
+
 export const getAttendanceShiftIKM = async (req, res) => {
 	try {
 		const today = new Date().toISOString().slice(0, 10);
@@ -231,6 +396,14 @@ export const getAttendanceShiftIKM = async (req, res) => {
 			return res.status(400).json({ message: "employeeId harus bilangan bulat positif" });
 		}
 
+		const employeeIds = toPositiveIntList(req.query.employeeIds);
+		if (req.query.employeeIds && employeeIds.length === 0) {
+			return res.status(400).json({ message: "employeeIds harus berisi bilangan bulat positif" });
+		}
+		if (employeeIds.length > 200) {
+			return res.status(400).json({ message: "employeeIds maksimal 200 data" });
+		}
+
 		const search = String(req.query.search || "").trim();
 
 		const page = Math.max(Number(req.query.page) || 1, 1);
@@ -245,6 +418,7 @@ export const getAttendanceShiftIKM = async (req, res) => {
 			endDate,
 			shiftType,
 			employeeId,
+			employeeIds,
 			onlyIncomplete,
 			search,
 			matchedEmployeeIds,
@@ -367,6 +541,20 @@ export const getAttendanceShiftIKM = async (req, res) => {
 					SUM(CASE WHEN check_in_time IS NOT NULL THEN 1 ELSE 0 END) AS total_check_in,
 					SUM(CASE WHEN check_out_time IS NOT NULL THEN 1 ELSE 0 END) AS total_check_out,
 					SUM(
+						CASE WHEN shift_type IN ('pagi', 'siang', 'sore')
+							AND check_in_time IS NOT NULL
+							AND check_out_time IS NOT NULL
+						THEN GREATEST(TIMESTAMPDIFF(MINUTE, check_in_time, check_out_time), 0)
+						ELSE 0 END
+					) AS total_absen_minutes,
+					SUM(
+						CASE WHEN shift_type = 'lembur'
+							AND check_in_time IS NOT NULL
+							AND check_out_time IS NOT NULL
+						THEN GREATEST(TIMESTAMPDIFF(MINUTE, check_in_time, check_out_time), 0)
+						ELSE 0 END
+					) AS total_lembur_minutes,
+					SUM(
 						CASE WHEN check_in_time IS NOT NULL
 							AND check_out_time IS NOT NULL
 							AND check_in_photo_name IS NOT NULL
@@ -387,6 +575,7 @@ export const getAttendanceShiftIKM = async (req, res) => {
 
 		const { whereSql: todayWhereSql, params: todayParams } = buildTodayWhereSql({
 			employeeId,
+			employeeIds,
 			shiftType,
 			search,
 			matchedEmployeeIds,
@@ -474,11 +663,15 @@ export const getAttendanceShiftIKM = async (req, res) => {
 					total_records: Number(row.total_records || 0),
 					total_check_in: Number(row.total_check_in || 0),
 					total_check_out: Number(row.total_check_out || 0),
+					total_absen_minutes: Number(row.total_absen_minutes || 0),
+					total_lembur_minutes: Number(row.total_lembur_minutes || 0),
 					total_complete: Number(row.total_complete || 0),
 					last_work_date: row.last_work_date,
 				};
 			})
 			.sort((a, b) => a.employee_name.localeCompare(b.employee_name, "id"));
+
+		const employeeOptions = await getEmployeeSelectionOptions();
 
 		return res.json({
 			success: true,
@@ -486,6 +679,7 @@ export const getAttendanceShiftIKM = async (req, res) => {
 				startDate,
 				endDate,
 				employeeId: employeeId || null,
+				employeeIds,
 				search: search || null,
 				shiftType: shiftType || null,
 				onlyIncomplete,
@@ -518,6 +712,7 @@ export const getAttendanceShiftIKM = async (req, res) => {
 				dummyAbsentEmployees,
 				totalMasterEmployees,
 			},
+			employeeOptions,
 			employeeSummary,
 			records,
 		});
