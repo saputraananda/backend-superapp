@@ -9,6 +9,7 @@ import {
   // Monthly
   listMonthlyBySemester, createMonthly, getMonthlyDetail, updateMonthly, deleteMonthly,
   // Tasks
+  searchTasks,
   getMonthlyTasksWithAssignees, createTask, updateTask, deleteTask,
   // Comments
   listComments, addComment,
@@ -49,6 +50,7 @@ router.put("/monthlies/:monthlyId",             updateMonthly);
 router.delete("/monthlies/:monthlyId",          deleteMonthly);
 
 // ── Tasks ─────────────────────────────────────────────────────────────────
+router.get("/tasks/search",               searchTasks);
 router.get("/monthlies/:monthlyId/tasks",  getMonthlyTasksWithAssignees);
 router.post("/monthlies/:monthlyId/tasks", createTask);
 router.put("/tasks/:taskId",               updateTask);

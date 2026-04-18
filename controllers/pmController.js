@@ -1089,6 +1089,65 @@ export async function deleteAllNotif(req, res) {
   }
 }
 
+// ─── GLOBAL TASK SEARCH ───────────────────────────────────────────────────────
+export async function searchTasks(req, res) {
+  if (!requireAuth(req, res)) return;
+  const q = (req.query.q || "").trim();
+  if (!q) return res.json({ data: [] });
+
+  const like = `%${q}%`;
+  try {
+    const [tasks] = await db.query(
+      `SELECT
+         t.id, t.title, t.status, t.priority, t.startdate, t.enddate,
+         t.id_monthly, t.owner_employee_id,
+         eo.full_name AS owner_name,
+         m.title AS monthly_title, m.department AS monthly_dept,
+         s.title AS semester_title,
+         p.id AS project_id, p.title AS project_title
+       FROM tr_pm_task t
+       LEFT JOIN mst_employee eo ON t.owner_employee_id = eo.employee_id
+       LEFT JOIN tr_pm_monthly m  ON t.id_monthly  = m.id
+       LEFT JOIN tr_pm_semester s ON m.id_semester = s.id
+       LEFT JOIN tr_pm_project  p ON s.id_project  = p.id
+       WHERE t.is_deleted = 0
+         AND (
+           t.title LIKE ?
+           OR EXISTS (
+             SELECT 1 FROM tr_pm_task_assignee ta
+             JOIN mst_employee ea ON ta.employee_id = ea.employee_id
+             WHERE ta.task_id = t.id AND ea.full_name LIKE ?
+           )
+         )
+       ORDER BY t.created_at DESC
+       LIMIT 50`,
+      [like, like]
+    );
+
+    if (tasks.length === 0) return res.json({ data: [] });
+
+    const taskIds = tasks.map((t) => t.id);
+    const [assignees] = await db.query(
+      `SELECT ta.task_id, e.employee_id, e.full_name
+       FROM tr_pm_task_assignee ta
+       JOIN mst_employee e ON ta.employee_id = e.employee_id
+       WHERE ta.task_id IN (?)`,
+      [taskIds]
+    );
+
+    const assigneeMap = {};
+    assignees.forEach((a) => {
+      if (!assigneeMap[a.task_id]) assigneeMap[a.task_id] = [];
+      assigneeMap[a.task_id].push({ employee_id: a.employee_id, full_name: a.full_name });
+    });
+
+    const result = tasks.map((t) => ({ ...t, assignees: assigneeMap[t.id] || [] }));
+    res.json({ data: result });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
 export async function listCompanies(req, res) {
   if (!requireAuth(req, res)) return;
   try {
