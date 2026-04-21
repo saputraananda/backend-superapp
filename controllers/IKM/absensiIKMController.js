@@ -673,6 +673,21 @@ export const getAttendanceShiftIKM = async (req, res) => {
 
 		const employeeOptions = await getEmployeeSelectionOptions();
 
+		// Leave counts for the active period from tr_employee_leaves
+		const [leaveCountRows] = await safeIKMQuery(
+			`
+				SELECT leave_type, COUNT(*) AS cnt
+				FROM tr_employee_leaves
+				WHERE start_date <= ? AND end_date >= ?
+				GROUP BY leave_type
+			`,
+			[endDate, startDate]
+		);
+		const leaveSummary = { izin: 0, sakit: 0, cuti: 0 };
+		for (const r of leaveCountRows) {
+			if (r.leave_type in leaveSummary) leaveSummary[r.leave_type] = Number(r.cnt);
+		}
+
 		return res.json({
 			success: true,
 			filters: {
@@ -711,6 +726,7 @@ export const getAttendanceShiftIKM = async (req, res) => {
 				todayPresentEmployees: presentEmployeesToday,
 				dummyAbsentEmployees,
 				totalMasterEmployees,
+				leaveSummary,
 			},
 			employeeOptions,
 			employeeSummary,

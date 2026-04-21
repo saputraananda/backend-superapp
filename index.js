@@ -31,6 +31,7 @@ import salesRoutes from "./routes/salesRoutes.js";
 import personalTasklistRoutes from "./routes/personalTasklistRoutes.js";
 import absensiIKMRoutes from "./routes/IKM/absensiIKMRoutes.js";
 import employeeIKMRoutes from "./routes/IKM/employeeIKMRoutes.js";
+import leavesIKMRoutes from "./routes/IKM/leavesIKMRoutes.js";
 
 import { sendIdulFitriBlastCleanoxProd } from "./utils/waBlastCustomerProd.js";
 
@@ -248,6 +249,7 @@ app.use("/sales", salesRoutes);
 app.use("/personal-tasklist", personalTasklistRoutes);
 app.use("/ikm/absensi", absensiIKMRoutes);
 app.use("/ikm/employees", employeeIKMRoutes);
+app.use("/ikm/leaves", leavesIKMRoutes);
 
 // 404
 app.use((req, res) => {
