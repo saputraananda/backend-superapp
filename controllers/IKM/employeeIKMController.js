@@ -1,5 +1,5 @@
 import bcrypt from "bcrypt";
-import { pool, safeQuery } from "../../db/pool.js";
+import { pool, safeQuery, safeIKMQuery } from "../../db/pool.js";
 
 const FIXED_COMPANY_ID = 2;
 
@@ -27,12 +27,32 @@ function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || ""));
 }
 
+async function resolveLeaderEmployeeIds(leaderRole) {
+	if (leaderRole === "all") {
+		return null;
+	}
+
+	if (leaderRole === "leader" || leaderRole === "deputi") {
+		const [leaderRows] = await safeIKMQuery(
+			"SELECT employee_id FROM mst_leader WHERE role = ?",
+			[leaderRole]
+		);
+		return leaderRows.map((row) => row.employee_id);
+	}
+
+	const [leaderRows] = await safeIKMQuery("SELECT employee_id FROM mst_leader");
+	return {
+		excludeIds: leaderRows.map((row) => row.employee_id),
+	};
+}
+
 export const listIKMEmployees = async (req, res) => {
 	try {
 		const search = String(req.query.search || "").trim();
 		const gender = String(req.query.gender || "").toUpperCase();
 		const employment = String(req.query.employment || "all").toLowerCase();
 		const hasAccount = String(req.query.hasAccount || "all").toLowerCase();
+		const leaderRole = String(req.query.leaderRole || "all").toLowerCase();
 
 		const sortByKey = String(req.query.sortBy || "full_name");
 		const sortBy = SORT_COLUMNS[sortByKey] || SORT_COLUMNS.full_name;
@@ -66,6 +86,43 @@ export const listIKMEmployees = async (req, res) => {
 			where.push("u.id IS NOT NULL");
 		} else if (hasAccount === "no") {
 			where.push("u.id IS NULL");
+		}
+
+		const leaderFilter = await resolveLeaderEmployeeIds(
+			["all", "normal", "leader", "deputi"].includes(leaderRole) ? leaderRole : "all"
+		);
+
+		if (Array.isArray(leaderFilter)) {
+			if (leaderFilter.length === 0) {
+				return res.json({
+					success: true,
+					filters: {
+						company_id: FIXED_COMPANY_ID,
+						search,
+						gender: gender || null,
+						employment,
+						hasAccount,
+						leaderRole,
+						sortBy: sortByKey,
+						sortDir: sortDir.toLowerCase(),
+					},
+					pagination: {
+						total: 0,
+						page,
+						limit,
+						totalPages: 1,
+					},
+					data: [],
+				});
+			}
+
+			where.push(`e.employee_id IN (${leaderFilter.map(() => "?").join(", ")})`);
+			params.push(...leaderFilter);
+		} else if (leaderFilter?.excludeIds) {
+			if (leaderFilter.excludeIds.length > 0) {
+				where.push(`e.employee_id NOT IN (${leaderFilter.excludeIds.map(() => "?").join(", ")})`);
+				params.push(...leaderFilter.excludeIds);
+			}
 		}
 
 		const whereSql = `WHERE ${where.join(" AND ")}`;
@@ -112,6 +169,21 @@ export const listIKMEmployees = async (req, res) => {
 			[...params, limit, offset]
 		);
 
+		// mst_leader ada di IKM DB (server berbeda) → query terpisah lalu merge
+		let leaderMap = {};
+		if (rows.length > 0) {
+			const employeeIds = rows.map((r) => r.employee_id);
+			const placeholders = employeeIds.map(() => "?").join(", ");
+			const [leaderRows] = await safeIKMQuery(
+				`SELECT employee_id, role FROM mst_leader WHERE employee_id IN (${placeholders})`,
+				employeeIds
+			);
+			for (const lr of leaderRows) {
+				leaderMap[lr.employee_id] = lr.role;
+			}
+		}
+		const data = rows.map((r) => ({ ...r, leader_role: leaderMap[r.employee_id] ?? null }));
+
 		return res.json({
 			success: true,
 			filters: {
@@ -120,6 +192,7 @@ export const listIKMEmployees = async (req, res) => {
 				gender: gender || null,
 				employment,
 				hasAccount,
+				leaderRole,
 				sortBy: sortByKey,
 				sortDir: sortDir.toLowerCase(),
 			},
@@ -129,7 +202,7 @@ export const listIKMEmployees = async (req, res) => {
 				limit,
 				totalPages: Number(total || 0) > 0 ? Math.ceil(Number(total || 0) / limit) : 1,
 			},
-			data: rows,
+			data: data,
 		});
 	} catch (error) {
 		console.error("[listIKMEmployees] Error:", error);
@@ -137,6 +210,46 @@ export const listIKMEmployees = async (req, res) => {
 			success: false,
 			message: error.message || "Gagal mengambil data karyawan IKM",
 		});
+	}
+};
+
+export const setIKMEmployeeLeaderRole = async (req, res) => {
+	try {
+		const id = Number(req.params.id);
+		if (!Number.isInteger(id) || id <= 0) {
+			return res.status(400).json({ message: "ID tidak valid" });
+		}
+
+		// Verify employee exists in company
+		const [empRows] = await safeQuery(
+			"SELECT employee_id FROM mst_employee WHERE employee_id = ? AND company_id = ? AND is_deleted = 0 LIMIT 1",
+			[id, FIXED_COMPANY_ID]
+		);
+		if (empRows.length === 0) {
+			return res.status(404).json({ message: "Karyawan tidak ditemukan" });
+		}
+
+		const roleInput = String(req.body?.role || "").trim().toLowerCase();
+		const ALLOWED_ROLES = new Set(["leader", "deputi"]);
+
+		if (!roleInput || !ALLOWED_ROLES.has(roleInput)) {
+			// null / "normal" → remove from mst_leader
+			await safeIKMQuery("DELETE FROM mst_leader WHERE employee_id = ?", [id]);
+			return res.json({ message: "Role karyawan diubah ke Normal", leader_role: null });
+		}
+
+		// leader or deputi → upsert
+		await safeIKMQuery(
+			`INSERT INTO mst_leader (employee_id, role)
+			 VALUES (?, ?)
+			 ON DUPLICATE KEY UPDATE role = VALUES(role), updated_at = NOW()`,
+			[id, roleInput]
+		);
+
+		return res.json({ message: `Karyawan berhasil dijadikan ${roleInput}`, leader_role: roleInput });
+	} catch (error) {
+		console.error("[setIKMEmployeeLeaderRole] Error:", error);
+		return res.status(500).json({ message: error.message || "Gagal mengubah role karyawan" });
 	}
 };
 
