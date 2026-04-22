@@ -1,5 +1,13 @@
 import { safeQuery } from "../db/pool.js";
 
+const getNextAppId = async () => {
+  const [[{ maxId }]] = await safeQuery(
+    `SELECT COALESCE(MAX(CAST(id AS UNSIGNED)), 0) AS maxId FROM mst_apps`
+  );
+
+  return Number(maxId || 0) + 1;
+};
+
 // ── GET ALL APPS ───────────────────────────────────────────────────────────
 export const getApps = async (req, res) => {
   try {
@@ -55,6 +63,8 @@ export const createApp = async (req, res) => {
     if (existHref.length > 0)
       return res.status(409).json({ message: "Path sudah digunakan app lain" });
 
+    const nextId = await getNextAppId();
+
     // Auto sort_order: max + 1
     const [[{ maxOrder }]] = await safeQuery(`SELECT MAX(sort_order) as maxOrder FROM mst_apps`);
     const nextOrder = (maxOrder ?? 0) + 1;
@@ -63,13 +73,13 @@ export const createApp = async (req, res) => {
       ? authorization.join(",")
       : authorization;
 
-    const [result] = await safeQuery(
-      `INSERT INTO mst_apps (name, description, href, authorization, is_active, sort_order)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [name, description || null, href, authStr, is_active ? 1 : 0, nextOrder]
+    await safeQuery(
+      `INSERT INTO mst_apps (id, name, description, href, authorization, is_active, sort_order)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [nextId, name, description || null, href, authStr, is_active ? 1 : 0, nextOrder]
     );
 
-    res.status(201).json({ message: "App berhasil ditambahkan", id: result.insertId });
+    res.status(201).json({ message: "App berhasil ditambahkan", id: nextId });
   } catch (error) {
     console.error("createApp error:", error);
     res.status(500).json({ message: error.message });
