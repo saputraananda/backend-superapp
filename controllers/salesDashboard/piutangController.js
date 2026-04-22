@@ -52,6 +52,7 @@ export const getPiutang = async (req, res) => {
         SELECT
           rtr.no_nota,
           MAX(rtr.customer_nama)              AS customer_nama,
+          MAX(rtr.customer_telepon)           AS customer_telepon,
           MAX(rtr.outlet)                     AS outlet,
           MAX(rtr.tgl_terima)                 AS tgl_terima,
           MAX(rtr.tgl_selesai)                AS tgl_selesai,
@@ -81,6 +82,7 @@ export const getPiutang = async (req, res) => {
           ELSE outlet
         END AS outlet,
         customer_nama,
+        customer_telepon,
         no_nota,
         DATE(tgl_terima)  AS tgl_terima,
         DATE(tgl_selesai) AS tgl_selesai,
