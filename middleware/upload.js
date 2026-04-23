@@ -41,8 +41,12 @@ const DAILY_EVIDENCE_DIR = path.join(BASE_DIR, "daily_evidence");
 const ASET_PHOTO_DIR = path.join(BASE_DIR, "aset_photos");
 if (!fs.existsSync(ASET_PHOTO_DIR)) fs.mkdirSync(ASET_PHOTO_DIR, { recursive: true });
 
+// Folder: <BASE>/buktiLO/
+const BUKTILO_DIR = path.join(BASE_DIR, "buktiLO");
+if (!fs.existsSync(BUKTILO_DIR)) fs.mkdirSync(BUKTILO_DIR, { recursive: true });
+
 // Buat folder kalau belum ada
-[UPLOAD_DIR, AVATAR_DIR, DOCUMENT_DIR, DAILY_EVIDENCE_DIR, ASET_PHOTO_DIR].forEach((dir) => {
+[UPLOAD_DIR, AVATAR_DIR, DOCUMENT_DIR, DAILY_EVIDENCE_DIR, ASET_PHOTO_DIR, BUKTILO_DIR].forEach((dir) => {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
@@ -215,5 +219,27 @@ const tasklistEvidenceStorage = multer.diskStorage({
 export const uploadTasklistEvidence = multer({
   storage: tasklistEvidenceStorage,
   fileFilter: (_req, file, cb) => cb(null, true),
+  limits: { fileSize: 10 * 1024 * 1024 },
+});
+
+// =========================
+// Upload BUKTILO Leader Operasional (gambar, max 10 MB per file)
+// =========================
+const buktiLOStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, BUKTILO_DIR),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    const baseName = path
+      .basename(file.originalname, ext)
+      .replace(/[^a-zA-Z0-9_\-]/g, "_")
+      .slice(0, 60);
+    const unique = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    cb(null, `${baseName}_${unique}${ext}`);
+  },
+});
+
+export const uploadBuktiLO = multer({
+  storage: buktiLOStorage,
+  fileFilter: imageFilter,
   limits: { fileSize: 10 * 1024 * 1024 },
 });

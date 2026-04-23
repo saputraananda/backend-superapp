@@ -34,6 +34,7 @@ import employeeIKMRoutes from "./routes/IKM/employeeIKMRoutes.js";
 import leavesIKMRoutes from "./routes/IKM/leavesIKMRoutes.js";
 import masterAbsensiRoutes from "./routes/IKM/masterAbsensiRoutes.js";
 import masterRsIkmRoutes from "./routes/IKM/masterRsIkmRoutes.js";
+import operationalRoutes from "./routes/operationalRoutes.js";
 
 import { sendIdulFitriBlastCleanoxProd } from "./utils/waBlastCustomerProd.js";
 
@@ -190,6 +191,8 @@ app.use("/assets/daily_evidence", express.static(path.join(ASSETS_BASE, "daily_e
 app.use("/assets", express.static(ASSETS_BASE));
 app.use("/assets/aset_photos", express.static(path.join(ASSETS_BASE, "aset_photos")));
 app.use("/assets/tasklist_evidence", express.static(path.join(ASSETS_BASE, "tasklist_evidence")));
+app.use("/assets/buktiLO", express.static(path.join(ASSETS_BASE, "buktiLO")));
+app.use("/assets/butkiLO", express.static(path.join(ASSETS_BASE, "butkiLO")));
 
 // =========================
 // Routes
@@ -254,6 +257,7 @@ app.use("/ikm/employees", employeeIKMRoutes);
 app.use("/ikm/leaves", leavesIKMRoutes);
 app.use("/ikm/master-absensi", masterAbsensiRoutes);
 app.use("/ikm/master-rs", masterRsIkmRoutes);
+app.use("/operational", operationalRoutes);
 
 // 404
 app.use((req, res) => {
