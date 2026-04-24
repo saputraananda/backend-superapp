@@ -32,7 +32,7 @@ async function resolveLeaderEmployeeIds(leaderRole) {
 		return null;
 	}
 
-	if (leaderRole === "leader" || leaderRole === "deputi") {
+	if (leaderRole === "leader" || leaderRole === "deputi" || leaderRole === "management") {
 		const [leaderRows] = await safeIKMQuery(
 			"SELECT employee_id FROM mst_leader WHERE role = ?",
 			[leaderRole]
@@ -89,7 +89,7 @@ export const listIKMEmployees = async (req, res) => {
 		}
 
 		const leaderFilter = await resolveLeaderEmployeeIds(
-			["all", "normal", "leader", "deputi"].includes(leaderRole) ? leaderRole : "all"
+			["all", "normal", "leader", "deputi", "management"].includes(leaderRole) ? leaderRole : "all"
 		);
 
 		if (Array.isArray(leaderFilter)) {
@@ -230,7 +230,7 @@ export const setIKMEmployeeLeaderRole = async (req, res) => {
 		}
 
 		const roleInput = String(req.body?.role || "").trim().toLowerCase();
-		const ALLOWED_ROLES = new Set(["leader", "deputi"]);
+		const ALLOWED_ROLES = new Set(["leader", "deputi", "management"]);
 
 		if (!roleInput || !ALLOWED_ROLES.has(roleInput)) {
 			// null / "normal" → remove from mst_leader
