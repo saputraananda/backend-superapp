@@ -35,6 +35,7 @@ import leavesIKMRoutes from "./routes/IKM/leavesIKMRoutes.js";
 import masterAbsensiRoutes from "./routes/IKM/masterAbsensiRoutes.js";
 import masterRsIkmRoutes from "./routes/IKM/masterRsIkmRoutes.js";
 import operationalRoutes from "./routes/operationalRoutes.js";
+import internalRoutes from "./routes/internalRoutes.js";
 
 import { sendIdulFitriBlastCleanoxProd } from "./utils/waBlastCustomerProd.js";
 
@@ -258,6 +259,7 @@ app.use("/ikm/leaves", leavesIKMRoutes);
 app.use("/ikm/master-absensi", masterAbsensiRoutes);
 app.use("/ikm/master-rs", masterRsIkmRoutes);
 app.use("/operational", operationalRoutes);
+app.use("/internal", internalRoutes);
 
 // 404
 app.use((req, res) => {
