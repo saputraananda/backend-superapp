@@ -243,3 +243,53 @@ export const uploadBuktiLO = multer({
   fileFilter: imageFilter,
   limits: { fileSize: 10 * 1024 * 1024 },
 });
+
+// =========================
+// Upload IKM Linen Report attachment (gambar + PDF, 10 MB)
+// =========================
+const IKM_LINEN_DIR = path.join(BASE_DIR, "ikm_linen");
+if (!fs.existsSync(IKM_LINEN_DIR)) fs.mkdirSync(IKM_LINEN_DIR, { recursive: true });
+
+const ikmLinenStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, IKM_LINEN_DIR),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    const baseName = path
+      .basename(file.originalname, ext)
+      .replace(/[^a-zA-Z0-9_\-]/g, "_")
+      .slice(0, 60);
+    const unique = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    cb(null, `${baseName}_${unique}${ext}`);
+  },
+});
+
+export const uploadIKMLinen = multer({
+  storage: ikmLinenStorage,
+  fileFilter: documentFilter,
+  limits: { fileSize: 10 * 1024 * 1024 },
+});
+
+// =========================
+// Upload IKM Briefing Document (gambar + PDF, 10 MB)
+// =========================
+const IKM_BRIEFING_DIR = path.join(BASE_DIR, "ikm_briefing");
+if (!fs.existsSync(IKM_BRIEFING_DIR)) fs.mkdirSync(IKM_BRIEFING_DIR, { recursive: true });
+
+const ikmBriefingStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, IKM_BRIEFING_DIR),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    const baseName = path
+      .basename(file.originalname, ext)
+      .replace(/[^a-zA-Z0-9_\-]/g, "_")
+      .slice(0, 60);
+    const unique = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    cb(null, `${baseName}_${unique}${ext}`);
+  },
+});
+
+export const uploadIKMBriefing = multer({
+  storage: ikmBriefingStorage,
+  fileFilter: documentFilter,
+  limits: { fileSize: 10 * 1024 * 1024 },
+});
