@@ -452,9 +452,7 @@ export const getAttendanceShiftIKM = async (req, res) => {
 				FROM tr_attendance_shift_ikm
 				WHERE ${whereSql}
 				ORDER BY
-					work_date DESC,
-					employee_id ASC,
-					FIELD(shift_type, 'pagi', 'siang', 'sore', 'lembur') ASC,
+					check_in_time DESC,
 					shift_record_id DESC
 				LIMIT ? OFFSET ?
 			`,
