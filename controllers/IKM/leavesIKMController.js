@@ -1,3 +1,4 @@
+import path from "path";
 import { safeIKMQuery, safeQuery } from "../../db/pool.js";
 
 const IKM_COMPANY_ID = 2;
@@ -37,7 +38,8 @@ function buildLeavePhotoUrl(fileName) {
 	if (!fileName) return null;
 	if (/^https?:\/\//i.test(fileName)) return fileName;
 	const base = (process.env.IKM_PHOTO_LEAVE_BASE_URL || "https://api.ikmalora.com/storage/suratketerangan").replace(/\/+$/, "");
-	return `${base}/${encodeURIComponent(fileName)}`;
+	const name = path.basename(fileName);
+	return `${base}/${name}`;
 }
 
 async function getEmployeeMap(employeeCodes) {
