@@ -41,7 +41,7 @@ function buildBriefingUrl(filename) {
   if (/^https?:\/\//i.test(filename)) return filename;
   const base = (process.env.IKM_PUBLIC_BASE_URL || "https://api.ikmalora.com").replace(/\/+$/, "");
   const name = path.basename(filename);
-  return `${base}/storage/linenreport/dailyreport/${name}`;
+  return `${base}/storage/dailyreport/${name}`;
 }
 
 // ── GET employee options for dropdowns ────────────────────────────────────
