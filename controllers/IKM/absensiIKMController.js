@@ -248,6 +248,20 @@ async function getEmployeeProfileMap(employeeIds) {
 	return map;
 }
 
+async function getLeaderRoleMap(employeeIds) {
+	if (!employeeIds.length) return new Map();
+	const placeholders = employeeIds.map(() => "?").join(",");
+	const [rows] = await safeIKMQuery(
+		`SELECT employee_id, role FROM mst_leader WHERE employee_id IN (${placeholders})`,
+		[...employeeIds]
+	);
+	const map = new Map();
+	for (const row of rows) {
+		map.set(Number(row.employee_id), row.role);
+	}
+	return map;
+}
+
 function getEmployeeView(employeeMap, employeeId) {
 	const profile = employeeMap.get(Number(employeeId));
 	return {
@@ -565,7 +579,7 @@ export const getAttendanceShiftIKM = async (req, res) => {
 				FROM tr_attendance_shift_ikm
 				WHERE ${whereSql}
 				GROUP BY employee_id
-				ORDER BY employee_id ASC
+				ORDER BY total_absen_minutes DESC
 				LIMIT 500
 			`,
 			params
@@ -600,7 +614,10 @@ export const getAttendanceShiftIKM = async (req, res) => {
 			...employeeSummaryRows.map((row) => Number(row.employee_id)),
 		])].filter((id) => Number.isInteger(id) && id > 0);
 
-		const employeeMap = await getEmployeeProfileMap(allEmployeeIds);
+		const [employeeMap, leaderRoleMap] = await Promise.all([
+			getEmployeeProfileMap(allEmployeeIds),
+			getLeaderRoleMap(allEmployeeIds),
+		]);
 
 		let completedMandatorySlots = 0;
 		let availableMandatorySlots = 0;
@@ -653,11 +670,12 @@ export const getAttendanceShiftIKM = async (req, res) => {
 		const employeeSummary = employeeSummaryRows
 			.map((row) => {
 				const profile = getEmployeeView(employeeMap, row.employee_id);
+				const leaderRole = leaderRoleMap.get(Number(row.employee_id));
 				return {
 					employee_id: Number(row.employee_id),
 					employee_name: profile.employee_name,
 					employee_code: profile.employee_code,
-					jabatan: profile.jabatan,
+					jabatan: leaderRole || "staff",
 					total_records: Number(row.total_records || 0),
 					total_check_in: Number(row.total_check_in || 0),
 					total_check_out: Number(row.total_check_out || 0),
@@ -666,8 +684,7 @@ export const getAttendanceShiftIKM = async (req, res) => {
 					total_complete: Number(row.total_complete || 0),
 					last_work_date: row.last_work_date,
 				};
-			})
-			.sort((a, b) => a.employee_name.localeCompare(b.employee_name, "id"));
+			});
 
 		const employeeOptions = await getEmployeeSelectionOptions();
 
