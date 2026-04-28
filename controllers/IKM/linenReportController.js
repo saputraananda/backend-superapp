@@ -34,8 +34,8 @@ function resolveReportedBy(req) {
 function buildAttachmentUrl(filename) {
   if (!filename) return null;
   if (/^https?:\/\//i.test(filename)) return filename;
-  const base = (process.env.APP_BASE_URL || "").replace(/\/+$/, "");
-  return `${base}/assets/ikm_linen/${encodeURIComponent(filename)}`;
+  const base = (process.env.IKM_PUBLIC_BASE_URL || "https://api.ikmalora.com").replace(/\/+$/, "");
+  return `${base}/storage/linenreport/${encodeURIComponent(filename)}`;
 }
 
 // ── GET list ───────────────────────────────────────────────────────────────

@@ -39,8 +39,8 @@ function resolveReportedBy(req) {
 function buildBriefingUrl(filename) {
   if (!filename) return null;
   if (/^https?:\/\//i.test(filename)) return filename;
-  const base = (process.env.APP_BASE_URL || "").replace(/\/+$/, "");
-  return `${base}/assets/ikm_briefing/${encodeURIComponent(filename)}`;
+  const base = (process.env.IKM_PUBLIC_BASE_URL || "https://api.ikmalora.com").replace(/\/+$/, "");
+  return `${base}/storage/linenreport/dailyreport/${encodeURIComponent(filename)}`;
 }
 
 // ── GET employee options for dropdowns ────────────────────────────────────
