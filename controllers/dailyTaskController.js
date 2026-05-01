@@ -498,7 +498,7 @@ export const getCompanies = async (_req, res) => {
   }
 };
 
-// ─── GET EMPLOYEES (with optional search, limit 100) ─────────────────────────
+// ─── GET EMPLOYEES (with optional search) ───────────────────────────────────
 export const getEmployees = async (req, res) => {
   try {
     const search = (req.query.search || "").trim();
@@ -509,7 +509,7 @@ export const getEmployees = async (req, res) => {
       q += " AND (full_name LIKE ? OR employee_code LIKE ?)";
       params.push(`%${search}%`, `%${search}%`);
     }
-    q += " ORDER BY full_name ASC LIMIT 100";
+    q += " ORDER BY full_name ASC";
     const [rows] = await safeQuery(q, params);
     return res.json({ employees: rows });
   } catch (err) {
