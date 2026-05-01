@@ -7,16 +7,19 @@ import {
   updateTask,
   deleteTask,
   getDepartments,
+  getCompanies,
+  getEmployees,
 } from "../controllers/dailyTaskController.js";
 
 const router = express.Router();
 
-// GET tidak perlu multer
+// GET — tidak perlu multer
 router.get("/",            requireAuth, getTasks);
 router.get("/departments", requireAuth, getDepartments);
+router.get("/companies",   requireAuth, getCompanies);
+router.get("/employees",   requireAuth, getEmployees);
 
 // POST & PUT: multer HARUS dipasang sebelum controller
-// multer akan parse multipart/form-data → req.body & req.files tersedia
 router.post(
   "/",
   requireAuth,

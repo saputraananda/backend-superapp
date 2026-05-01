@@ -43,7 +43,10 @@ export const getMasterData = async (_req, res) => {
        LEFT JOIN mst_position p ON e.position_id = p.position_id 
        WHERE e.is_deleted = 0 AND e.exit_date IS NULL ORDER BY e.full_name`
     );
-    res.json({ companies, employees });
+    const [outlets] = await safeQuery(
+      "SELECT id, name, full_name FROM mst_outlet ORDER BY name"
+    );
+    res.json({ companies, employees, outlets });
   } catch (err) {
     console.error("getMasterData error:", err);
     res.status(500).json({ message: err.message });
@@ -99,6 +102,7 @@ export const getAsets = async (req, res) => {
       kondisi = "",
       company_id = "",
       approval_status = "",
+      outlet_id = "",
       page = 1,
       limit = 20,
     } = req.query;
@@ -127,6 +131,10 @@ export const getAsets = async (req, res) => {
       where += " AND a.approval_status = ?";
       params.push(approval_status);
     }
+    if (outlet_id) {
+      where += " AND a.outlet_id = ?";
+      params.push(Number(outlet_id));
+    }
 
     const offset = (Number(page) - 1) * Number(limit);
 
@@ -136,11 +144,13 @@ export const getAsets = async (req, res) => {
     );
 
     const [rows] = await safeQuery(
-      `SELECT a.*, c.company_name, e.full_name AS pic_name, sub.full_name AS submitted_by_name
+      `SELECT a.*, c.company_name, e.full_name AS pic_name, sub.full_name AS submitted_by_name,
+              o.name AS outlet_name, o.full_name AS outlet_full_name
        FROM mst_aset a
        LEFT JOIN mst_company c ON a.company_id = c.company_id
        LEFT JOIN mst_employee e ON a.pic_employee_id = e.employee_id
        LEFT JOIN mst_employee sub ON a.submitted_by = sub.employee_id
+       LEFT JOIN mst_outlet o ON a.outlet_id = o.id
        WHERE ${where}
        ORDER BY a.created_at DESC
        LIMIT ? OFFSET ?`,
@@ -180,11 +190,13 @@ export const getAsets = async (req, res) => {
 export const getAsetById = async (req, res) => {
   try {
     const [rows] = await safeQuery(
-      `SELECT a.*, c.company_name, e.full_name AS pic_name, sub.full_name AS submitted_by_name
+      `SELECT a.*, c.company_name, e.full_name AS pic_name, sub.full_name AS submitted_by_name,
+              o.name AS outlet_name, o.full_name AS outlet_full_name
        FROM mst_aset a
        LEFT JOIN mst_company c ON a.company_id = c.company_id
        LEFT JOIN mst_employee e ON a.pic_employee_id = e.employee_id
        LEFT JOIN mst_employee sub ON a.submitted_by = sub.employee_id
+       LEFT JOIN mst_outlet o ON a.outlet_id = o.id
        WHERE a.id = ? AND a.is_deleted = 0`,
       [req.params.id]
     );
@@ -214,11 +226,13 @@ export const getAsetById = async (req, res) => {
 export const getAsetByKode = async (req, res) => {
   try {
     const [rows] = await safeQuery(
-      `SELECT a.*, c.company_name, e.full_name AS pic_name, sub.full_name AS submitted_by_name
+      `SELECT a.*, c.company_name, e.full_name AS pic_name, sub.full_name AS submitted_by_name,
+              o.name AS outlet_name, o.full_name AS outlet_full_name
        FROM mst_aset a
        LEFT JOIN mst_company c ON a.company_id = c.company_id
        LEFT JOIN mst_employee e ON a.pic_employee_id = e.employee_id
        LEFT JOIN mst_employee sub ON a.submitted_by = sub.employee_id
+       LEFT JOIN mst_outlet o ON a.outlet_id = o.id
        WHERE a.kode_aset = ? AND a.is_deleted = 0`,
       [req.params.kode]
     );
@@ -248,7 +262,7 @@ export const createAset = async (req, res) => {
   const {
     kode_aset, nama_aset, company_id, sub_kategori, brand, model,
     no_seri, lokasi_nama, lokasi_lat, lokasi_lng, jumlah, satuan,
-    pic_employee_id, kondisi, is_active,
+    pic_employee_id, kondisi, is_active, outlet_id,
   } = req.body;
 
   if (!nama_aset?.trim()) return res.status(400).json({ message: "Nama aset wajib diisi" });
@@ -262,18 +276,21 @@ export const createAset = async (req, res) => {
     const [exist] = await safeQuery("SELECT id FROM mst_aset WHERE kode_aset = ?", [finalKode]);
     if (exist.length > 0) return res.status(409).json({ message: "Kode aset sudah digunakan" });
 
+    // outlet_id hanya berlaku untuk company_id = 5
+    const effectiveOutletId = Number(company_id) === 5 ? (outlet_id || null) : null;
+
     const [result] = await safeQuery(
       `INSERT INTO mst_aset (kode_aset, nama_aset, company_id, sub_kategori, brand, model,
         no_seri, lokasi_nama, lokasi_lat, lokasi_lng, jumlah, satuan, pic_employee_id, kondisi, 
-        is_active, approval_status, submitted_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?)`,
+        is_active, approval_status, submitted_by, outlet_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)`,
       [
         finalKode, nama_aset, company_id || null, sub_kategori, brand || null,
         model || null, no_seri || null, lokasi_nama || null,
         lokasi_lat || null, lokasi_lng || null, jumlah || 1,
         satuan || "Unit", pic_employee_id || null, kondisi || "Baik",
         is_active !== undefined ? (is_active ? 1 : 0) : 1,
-        employeeId,
+        employeeId, effectiveOutletId,
       ]
     );
 
@@ -294,7 +311,7 @@ export const updateAset = async (req, res) => {
   const {
     kode_aset, nama_aset, company_id, sub_kategori, brand, model,
     no_seri, lokasi_nama, lokasi_lat, lokasi_lng, jumlah, satuan,
-    pic_employee_id, kondisi, is_active,
+    pic_employee_id, kondisi, is_active, outlet_id,
   } = req.body;
 
   if (!nama_aset?.trim()) return res.status(400).json({ message: "Nama aset wajib diisi" });
@@ -308,18 +325,21 @@ export const updateAset = async (req, res) => {
       if (dup.length > 0) return res.status(409).json({ message: "Kode aset sudah digunakan" });
     }
 
+    // outlet_id hanya berlaku untuk company_id = 5
+    const effectiveOutletId = Number(company_id) === 5 ? (outlet_id || null) : null;
+
     await safeQuery(
       `UPDATE mst_aset SET
         kode_aset=?, nama_aset=?, company_id=?, sub_kategori=?, brand=?, model=?,
         no_seri=?, lokasi_nama=?, lokasi_lat=?, lokasi_lng=?, jumlah=?, satuan=?,
-        pic_employee_id=?, kondisi=?, is_active=?, updated_at=NOW()
+        pic_employee_id=?, kondisi=?, is_active=?, outlet_id=?, updated_at=NOW()
        WHERE id=?`,
       [
         kode_aset, nama_aset, company_id || null, sub_kategori, brand || null,
         model || null, no_seri || null, lokasi_nama || null,
         lokasi_lat || null, lokasi_lng || null, jumlah || 1,
         satuan || "Unit", pic_employee_id || null, kondisi || "Baik",
-        is_active !== undefined ? (is_active ? 1 : 0) : 1, id,
+        is_active !== undefined ? (is_active ? 1 : 0) : 1, effectiveOutletId, id,
       ]
     );
 
