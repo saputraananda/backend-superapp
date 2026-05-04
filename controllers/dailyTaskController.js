@@ -160,6 +160,7 @@ export const getTasks = async (req, res) => {
         t.department_id,
         d.department_name,
         t.is_public,
+        t.progress,
         t.creator_id,
         t.target_company_ids,
         t.target_department_ids,
@@ -231,7 +232,7 @@ export const createTask = async (req, res) => {
     if (!userId) return res.status(401).json({ message: "Unauthorized" });
 
     const {
-      title, description, department_id, is_public, links,
+      title, description, department_id, is_public, progress, links,
       target_company_ids, target_department_ids, target_employee_ids,
     } = req.body;
 
@@ -241,16 +242,20 @@ export const createTask = async (req, res) => {
 
     const publicFlag = is_public === "0" ? 0 : 1;
 
+    // Validate progress value
+    const validProgress = ['todo', 'on_progress', 'completed'].includes(progress) ? progress : 'todo';
+
     const [result] = await safeQuery(
       `INSERT INTO tr_daily_task
-        (title, description, department_id, is_public, creator_id,
+        (title, description, department_id, is_public, progress, creator_id,
          target_company_ids, target_department_ids, target_employee_ids)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         title.trim(),
         description || null,
         department_id || null,
         publicFlag,
+        validProgress,
         userId,
         toJsonIds(target_company_ids),
         toJsonIds(target_department_ids),
@@ -333,7 +338,7 @@ export const updateTask = async (req, res) => {
     }
 
     const {
-      title, description, department_id, is_public, links, deleted_evidence_ids,
+      title, description, department_id, is_public, progress, links, deleted_evidence_ids,
       target_company_ids, target_department_ids, target_employee_ids,
     } = req.body;
 
@@ -343,9 +348,12 @@ export const updateTask = async (req, res) => {
 
     const publicFlag = is_public === "0" ? 0 : 1;
 
+    // Validate progress value
+    const validProgress = ['todo', 'on_progress', 'completed'].includes(progress) ? progress : 'todo';
+
     await safeQuery(
       `UPDATE tr_daily_task SET
-        title = ?, description = ?, department_id = ?, is_public = ?,
+        title = ?, description = ?, department_id = ?, is_public = ?, progress = ?,
         target_company_ids = ?, target_department_ids = ?, target_employee_ids = ?
        WHERE id = ?`,
       [
@@ -353,6 +361,7 @@ export const updateTask = async (req, res) => {
         description || null,
         department_id || null,
         publicFlag,
+        validProgress,
         toJsonIds(target_company_ids),
         toJsonIds(target_department_ids),
         toJsonIds(target_employee_ids),
