@@ -27,6 +27,3 @@ dist/
 *.sw?
 assets/
 **/assets/
-
-# Database schemas (local only)
-db/
