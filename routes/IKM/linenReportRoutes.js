@@ -6,6 +6,7 @@ import {
   createLinenReport,
   updateLinenReport,
   deleteLinenReport,
+  updateLinenReportStatus,
 } from "../../controllers/IKM/linenReportController.js";
 import { uploadIKMLinen } from "../../middleware/upload.js";
 
@@ -16,5 +17,6 @@ router.get("/",      requireAuth, getLinenReports);
 router.post("/",     requireAuth, uploadIKMLinen.single("attachment"), createLinenReport);
 router.put("/:id",   requireAuth, uploadIKMLinen.single("attachment"), updateLinenReport);
 router.delete("/:id",requireAuth, deleteLinenReport);
+router.put("/:id/status", requireAuth, updateLinenReportStatus);
 
 export default router;

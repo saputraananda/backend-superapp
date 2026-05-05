@@ -22,6 +22,28 @@ function toUInt(v, def = 1) {
   const n = Number(v);
   return Number.isInteger(n) && n >= 0 ? n : def;
 }
+
+function getDefaultCutoffDates() {
+  const now = new Date();
+  const day = now.getDate();
+  const year = now.getFullYear();
+  const month = now.getMonth(); // 0-indexed
+
+  let start, end;
+  if (day <= 25) {
+    const s = new Date(year, month - 1, 26);
+    const e = new Date(year, month, 25);
+    start = `${s.getFullYear()}-${String(s.getMonth()+1).padStart(2,"0")}-26`;
+    end   = `${e.getFullYear()}-${String(e.getMonth()+1).padStart(2,"0")}-25`;
+  } else {
+    const s = new Date(year, month, 26);
+    const e = new Date(year, month + 1, 25);
+    start = `${s.getFullYear()}-${String(s.getMonth()+1).padStart(2,"0")}-26`;
+    end   = `${e.getFullYear()}-${String(e.getMonth()+1).padStart(2,"0")}-25`;
+  }
+  return { start, end };
+}
+
 function resolveReportedBy(req) {
   return (
     req.session?.user?.employee?.employee_id ||
@@ -29,6 +51,13 @@ function resolveReportedBy(req) {
     req.session?.employeeId ||
     0
   );
+}
+
+function resolveCurrentUser(req) {
+  const emp = req.session?.user?.employee;
+  const id = emp?.employee_id || req.session?.user?.employeeId || req.session?.employeeId || 0;
+  const name = emp?.full_name || req.session?.user?.name || "";
+  return { id, name };
 }
 
 function buildAttachmentUrl(filename) {
@@ -44,8 +73,9 @@ export const getLinenReports = async (req, res) => {
   try {
     const { startDate, endDate, area_id, hospital_id, finding_location, page, limit } = req.query;
 
-    const start = toISODateString(startDate);
-    const end   = toISODateString(endDate);
+    const defaultCutoff = getDefaultCutoffDates();
+    const start = toISODateString(startDate) || defaultCutoff.start;
+    const end   = toISODateString(endDate)   || defaultCutoff.end;
     const pg    = toPositiveInt(page) ?? 1;
     const lm    = Math.min(toPositiveInt(limit) ?? 25, 100);
     const offset = (pg - 1) * lm;
@@ -53,8 +83,8 @@ export const getLinenReports = async (req, res) => {
     const where = [];
     const params = [];
 
-    if (start) { where.push("lr.report_date >= ?"); params.push(start); }
-    if (end)   { where.push("lr.report_date <= ?"); params.push(end); }
+    where.push("lr.report_date >= ?"); params.push(start);
+    where.push("lr.report_date <= ?"); params.push(end);
     if (area_id) { where.push("lr.area_id = ?"); params.push(Number(area_id)); }
     if (hospital_id) { where.push("lr.hospital_id = ?"); params.push(Number(hospital_id)); }
     if (finding_location && ["Rumah Sakit", "IKM"].includes(finding_location)) {
@@ -75,7 +105,10 @@ export const getLinenReports = async (req, res) => {
       `SELECT lr.id, lr.reporter_name, lr.report_date, lr.area_id,
               a.area_name, lr.hospital_id, h.hospital_name,
               lr.finding_location, lr.linen_type, lr.finding_type,
-              lr.finding_qty, lr.attachment_path, lr.reported_by, lr.created_at
+              lr.finding_qty, lr.attachment_path, lr.reported_by, lr.created_at,
+              lr.status, lr.sending_note,
+              lr.process_by, lr.process_by_name, lr.process_note, lr.process_at,
+              lr.completed_by, lr.completed_by_name, lr.completed_note, lr.completed_at
        FROM tr_linen_report lr
        LEFT JOIN mst_area a ON a.id = lr.area_id
        LEFT JOIN mst_hospital h ON h.id = lr.hospital_id
@@ -140,7 +173,7 @@ export const createLinenReport = async (req, res) => {
   try {
     const {
       reporter_name, report_date, area_id, hospital_id,
-      finding_location, linen_type, finding_type, finding_qty,
+      finding_location, linen_type, finding_type, finding_qty, sending_note,
     } = req.body;
 
     if (!reporter_name?.trim())
@@ -166,12 +199,13 @@ export const createLinenReport = async (req, res) => {
     const [result] = await safeIKMQuery(
       `INSERT INTO tr_linen_report
          (reporter_name, report_date, area_id, hospital_id, finding_location,
-          linen_type, finding_type, finding_qty, attachment_path, reported_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          linen_type, finding_type, finding_qty, attachment_path, reported_by, sending_note)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         reporter_name.trim(), date, Number(area_id), Number(hospital_id),
         finding_location, linen_type.trim(), finding_type.trim(),
         qty, attachmentFilename, reportedBy,
+        sending_note?.trim() || null,
       ]
     );
 
@@ -195,7 +229,7 @@ export const updateLinenReport = async (req, res) => {
     const current = exist[0];
     const {
       reporter_name, report_date, area_id, hospital_id,
-      finding_location, linen_type, finding_type, finding_qty,
+      finding_location, linen_type, finding_type, finding_qty, sending_note,
     } = req.body;
 
     if (!reporter_name?.trim())
@@ -220,12 +254,12 @@ export const updateLinenReport = async (req, res) => {
       `UPDATE tr_linen_report
        SET reporter_name=?, report_date=?, area_id=?, hospital_id=?,
            finding_location=?, linen_type=?, finding_type=?, finding_qty=?,
-           attachment_path=?, updated_at=NOW()
+           attachment_path=?, sending_note=?, updated_at=NOW()
        WHERE id=?`,
       [
         reporter_name.trim(), date, Number(area_id), Number(hospital_id),
         finding_location, linen_type?.trim(), finding_type?.trim(),
-        toUInt(finding_qty, 1), attachmentFilename, id,
+        toUInt(finding_qty, 1), attachmentFilename, sending_note?.trim() || null, id,
       ]
     );
 
@@ -256,6 +290,53 @@ export const deleteLinenReport = async (req, res) => {
     res.json({ message: "Laporan linen berhasil dihapus" });
   } catch (err) {
     console.error("deleteLinenReport:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ── PUT update status (proses / selesai) ────────────────────────────────────
+export const updateLinenReportStatus = async (req, res) => {
+  const { id } = req.params;
+  try {
+    const [exist] = await safeIKMQuery(
+      "SELECT id, status FROM tr_linen_report WHERE id = ?", [id]
+    );
+    if (!exist.length)
+      return res.status(404).json({ message: "Laporan tidak ditemukan" });
+
+    const current = exist[0];
+    const { status, note, by_name } = req.body;
+    const user = resolveCurrentUser(req);
+    const actorName = by_name?.trim() || user.name;
+
+    if (!["proses", "selesai"].includes(status))
+      return res.status(400).json({ message: "Status hanya boleh 'proses' atau 'selesai'" });
+
+    if (status === "proses") {
+      if (current.status !== "terkirim")
+        return res.status(400).json({ message: "Hanya laporan dengan status 'terkirim' yang dapat diproses" });
+
+      await safeIKMQuery(
+        `UPDATE tr_linen_report
+         SET status='proses', process_by=?, process_by_name=?, process_note=?, process_at=NOW()
+         WHERE id=?`,
+        [user.id, actorName, note?.trim() || null, id]
+      );
+      res.json({ message: "Laporan diproses", status: "proses" });
+    } else if (status === "selesai") {
+      if (current.status !== "proses" && current.status !== "terkirim")
+        return res.status(400).json({ message: "Status tidak valid untuk diselesaikan" });
+
+      await safeIKMQuery(
+        `UPDATE tr_linen_report
+         SET status='selesai', completed_by=?, completed_by_name=?, completed_note=?, completed_at=NOW()
+         WHERE id=?`,
+        [user.id, actorName, note?.trim() || null, id]
+      );
+      res.json({ message: "Laporan diselesaikan", status: "selesai" });
+    }
+  } catch (err) {
+    console.error("updateLinenReportStatus:", err);
     res.status(500).json({ message: err.message });
   }
 };
