@@ -13,6 +13,26 @@ const BASE_DIR = isProd
 
 const IKM_COMPANY_ID = 2;
 
+function getDefaultCutoffDates() {
+  const now = new Date();
+  const day = now.getDate();
+  const year = now.getFullYear();
+  const month = now.getMonth(); // 0-indexed
+  let start, end;
+  if (day <= 25) {
+    const s = new Date(year, month - 1, 26);
+    const e = new Date(year, month, 25);
+    start = `${s.getFullYear()}-${String(s.getMonth()+1).padStart(2,"0")}-26`;
+    end   = `${e.getFullYear()}-${String(e.getMonth()+1).padStart(2,"0")}-25`;
+  } else {
+    const s = new Date(year, month, 26);
+    const e = new Date(year, month + 1, 25);
+    start = `${s.getFullYear()}-${String(s.getMonth()+1).padStart(2,"0")}-26`;
+    end   = `${e.getFullYear()}-${String(e.getMonth()+1).padStart(2,"0")}-25`;
+  }
+  return { start, end };
+}
+
 function toISODateString(v) {
   return /^\d{4}-\d{2}-\d{2}$/.test(v || "") ? v : null;
 }
@@ -78,10 +98,11 @@ export const getDailyReportMeta = async (req, res) => {
 // ── GET list ───────────────────────────────────────────────────────────────
 export const getDailyReports = async (req, res) => {
   try {
-    const { startDate, endDate, area_id, page, limit } = req.query;
+    const { startDate, endDate, area_id, search, page, limit } = req.query;
 
-    const start = toISODateString(startDate);
-    const end   = toISODateString(endDate);
+    const defaultCutoff = getDefaultCutoffDates();
+    const start = toISODateString(startDate) || defaultCutoff.start;
+    const end   = toISODateString(endDate)   || defaultCutoff.end;
     const pg    = toPositiveInt(page) ?? 1;
     const lm    = Math.min(toPositiveInt(limit) ?? 25, 100);
     const offset = (pg - 1) * lm;
@@ -89,14 +110,25 @@ export const getDailyReports = async (req, res) => {
     const where = [];
     const params = [];
 
-    if (start) { where.push("dr.report_date >= ?"); params.push(start); }
-    if (end)   { where.push("dr.report_date <= ?"); params.push(end); }
+    where.push("dr.report_date >= ?"); params.push(start);
+    where.push("dr.report_date <= ?"); params.push(end);
     if (area_id) { where.push("dr.area_id = ?"); params.push(Number(area_id)); }
+    if (search?.trim()) {
+      const like = `%${search.trim()}%`;
+      where.push(
+        "(dr.pic_name LIKE ? OR a.area_name LIKE ? OR dr.role LIKE ?" +
+        " OR dr.area_cleanliness LIKE ? OR dr.constraint_notes LIKE ?)"
+      );
+      params.push(like, like, like, like, like);
+    }
 
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
     const [[{ total }]] = await safeIKMQuery(
-      `SELECT COUNT(*) AS total FROM tr_daily_report_leader dr ${whereSql}`,
+      `SELECT COUNT(*) AS total
+       FROM tr_daily_report_leader dr
+       LEFT JOIN mst_area a ON a.id = dr.area_id
+       ${whereSql}`,
       params
     );
 

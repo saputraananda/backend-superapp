@@ -71,7 +71,7 @@ function buildAttachmentUrl(filename) {
 // ── GET list ───────────────────────────────────────────────────────────────
 export const getLinenReports = async (req, res) => {
   try {
-    const { startDate, endDate, area_id, hospital_id, finding_location, page, limit } = req.query;
+    const { startDate, endDate, area_id, hospital_id, finding_location, search, page, limit } = req.query;
 
     const defaultCutoff = getDefaultCutoffDates();
     const start = toISODateString(startDate) || defaultCutoff.start;
@@ -91,12 +91,22 @@ export const getLinenReports = async (req, res) => {
       where.push("lr.finding_location = ?");
       params.push(finding_location);
     }
+    if (search?.trim()) {
+      const like = `%${search.trim()}%`;
+      where.push(
+        "(lr.reporter_name LIKE ? OR lr.linen_type LIKE ? OR lr.finding_type LIKE ?" +
+        " OR h.hospital_name LIKE ? OR a.area_name LIKE ? OR lr.finding_location LIKE ? OR lr.status LIKE ?)"
+      );
+      params.push(like, like, like, like, like, like, like);
+    }
 
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
     const [[{ total }]] = await safeIKMQuery(
       `SELECT COUNT(*) AS total
        FROM tr_linen_report lr
+       LEFT JOIN mst_area a ON a.id = lr.area_id
+       LEFT JOIN mst_hospital h ON h.id = lr.hospital_id
        ${whereSql}`,
       params
     );
@@ -117,6 +127,9 @@ export const getLinenReports = async (req, res) => {
        LIMIT ? OFFSET ?`,
       [...params, lm, offset]
     );
+
+    // NOTE: COUNT query also needs LEFT JOIN for hospital search to work
+    // Re-running count with joins when search is active is handled above via whereSql
 
     // enrich reported_by with employee name
     const reportedByIds = [...new Set(rows.map((r) => r.reported_by).filter(Boolean))];
