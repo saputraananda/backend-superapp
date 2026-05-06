@@ -756,3 +756,119 @@ export const getAttendanceShiftIKM = async (req, res) => {
 		});
 	}
 };
+
+/**
+ * GET /ikm/absensi/employee-leave-resume
+ * Aggregates leave/absence/late data per employee for a date range.
+ * Combines:
+ *  - tr_employee_leaves (disetujui): sakit, izin, cuti (pengajuan karyawan)
+ *  - tr_daily_report_absent (Sakit, Izin, Alfa): laporan leader
+ *  - tr_daily_report_late: laporan telat dari leader
+ */
+export const getEmployeeLeaveAndLateResume = async (req, res) => {
+	try {
+		const startDate = toISODateString(req.query.startDate);
+		const endDate = toISODateString(req.query.endDate);
+
+		if (!startDate || !endDate) {
+			return res.status(400).json({ message: "startDate dan endDate wajib diisi (YYYY-MM-DD)" });
+		}
+
+		// ── 1. Pengajuan karyawan yang disetujui (tr_employee_leaves) ──────────────
+		const [leaveRows] = await safeIKMQuery(
+			`
+			SELECT
+				CAST(el.employee_id AS UNSIGNED) AS employee_id,
+				SUM(CASE WHEN el.leave_type = 'sakit' THEN 1 ELSE 0 END) AS pengajuan_sakit,
+				SUM(CASE WHEN el.leave_type = 'izin'  THEN 1 ELSE 0 END) AS pengajuan_izin,
+				SUM(CASE WHEN el.leave_type = 'cuti'  THEN 1 ELSE 0 END) AS pengajuan_cuti
+			FROM tr_employee_leaves el
+			WHERE el.status = 'disetujui'
+			  AND el.start_date <= ?
+			  AND el.end_date   >= ?
+			GROUP BY el.employee_id
+			`,
+			[endDate, startDate]
+		);
+
+		// ── 2. Laporan absen dari leader (tr_daily_report_absent) ─────────────────
+		const [reportAbsentRows] = await safeIKMQuery(
+			`
+			SELECT
+				dra.employee_id,
+				SUM(CASE WHEN dra.absence_reason = 'Sakit' THEN 1 ELSE 0 END) AS laporan_sakit,
+				SUM(CASE WHEN dra.absence_reason = 'Izin'  THEN 1 ELSE 0 END) AS laporan_izin,
+				SUM(CASE WHEN dra.absence_reason = 'Alfa'  THEN 1 ELSE 0 END) AS laporan_alfa
+			FROM tr_daily_report_absent dra
+			INNER JOIN tr_daily_report_leader drl ON drl.id = dra.report_id
+			WHERE drl.report_date BETWEEN ? AND ?
+			GROUP BY dra.employee_id
+			`,
+			[startDate, endDate]
+		);
+
+		// ── 3. Laporan telat dari leader (tr_daily_report_late) ──────────────────
+		const [reportLateRows] = await safeIKMQuery(
+			`
+			SELECT
+				drl2.employee_id,
+				COUNT(*) AS laporan_telat
+			FROM tr_daily_report_late drl2
+			INNER JOIN tr_daily_report_leader drl ON drl.id = drl2.report_id
+			WHERE drl.report_date BETWEEN ? AND ?
+			GROUP BY drl2.employee_id
+			`,
+			[startDate, endDate]
+		);
+
+		// ── Merge all into a single map keyed by employee_id ─────────────────────
+		const empMap = new Map();
+
+		const getOrCreate = (id) => {
+			const key = Number(id);
+			if (!empMap.has(key)) {
+				empMap.set(key, {
+					employee_id: key,
+					pengajuan_sakit: 0,
+					pengajuan_izin: 0,
+					pengajuan_cuti: 0,
+					laporan_sakit: 0,
+					laporan_izin: 0,
+					laporan_alfa: 0,
+					laporan_telat: 0,
+				});
+			}
+			return empMap.get(key);
+		};
+
+		for (const r of leaveRows) {
+			const e = getOrCreate(r.employee_id);
+			e.pengajuan_sakit = Number(r.pengajuan_sakit || 0);
+			e.pengajuan_izin  = Number(r.pengajuan_izin  || 0);
+			e.pengajuan_cuti  = Number(r.pengajuan_cuti  || 0);
+		}
+
+		for (const r of reportAbsentRows) {
+			const e = getOrCreate(r.employee_id);
+			e.laporan_sakit = Number(r.laporan_sakit || 0);
+			e.laporan_izin  = Number(r.laporan_izin  || 0);
+			e.laporan_alfa  = Number(r.laporan_alfa  || 0);
+		}
+
+		for (const r of reportLateRows) {
+			const e = getOrCreate(r.employee_id);
+			e.laporan_telat = Number(r.laporan_telat || 0);
+		}
+
+		return res.json({
+			success: true,
+			data: [...empMap.values()],
+		});
+	} catch (error) {
+		console.error("[getEmployeeLeaveAndLateResume] Error:", error);
+		return res.status(500).json({
+			success: false,
+			message: error.message || "Gagal mengambil data resume izin & telat karyawan",
+		});
+	}
+};
