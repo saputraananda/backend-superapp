@@ -421,7 +421,7 @@ export const getAttendanceShiftIKM = async (req, res) => {
 		const search = String(req.query.search || "").trim();
 
 		const page = Math.max(Number(req.query.page) || 1, 1);
-		const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
+		const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 1000000000000000);
 		const offset = (page - 1) * limit;
 		const onlyIncomplete = toBoolean(req.query.onlyIncomplete);
 
@@ -462,6 +462,7 @@ export const getAttendanceShiftIKM = async (req, res) => {
 					check_out_lng,
 					check_out_photo_path,
 					check_out_photo_name,
+					is_valet,
 					created_at
 				FROM tr_attendance_shift_ikm
 				WHERE ${whereSql}
