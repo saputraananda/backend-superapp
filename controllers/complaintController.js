@@ -39,7 +39,7 @@ export const getComplaintCustomers = async (req, res) => {
     const search = req.query.q ? `%${req.query.q}%` : "%";
     console.log("[getComplaintCustomers] q:", req.query.q, "| search:", search);
     const [rows] = await safeSmartlinkQuery(
-      "SELECT customer_id, nama FROM customer WHERE nama LIKE ? ORDER BY nama ASC LIMIT 50",
+      "SELECT id AS customer_id, nama FROM customer WHERE nama LIKE ? ORDER BY nama ASC LIMIT 50",
       [search]
     );
     console.log("[getComplaintCustomers] rows:", rows.length);
@@ -56,7 +56,7 @@ export const getComplaintEmployees = async (req, res) => {
   try {
     const search = req.query.q ? `%${req.query.q}%` : "%";
     const [rows] = await safeQuery(
-      "SELECT employee_id, full_name FROM mst_employee WHERE company_id = 1 AND exit_date IS NULL AND is_deleted = 0 AND full_name LIKE ? ORDER BY full_name ASC LIMIT 50",
+      "SELECT employee_id, full_name FROM mst_employee WHERE company_id = 1 AND exit_date IS NULL AND (is_deleted = 0 OR is_deleted IS NULL) AND full_name LIKE ? ORDER BY full_name ASC LIMIT 50",
       [search]
     );
     res.json(rows);
@@ -73,7 +73,7 @@ export const getComplaintSummary = async (req, res) => {
     const dateWhere = [];
     const dateParams = [];
     if (req.query.start_date) { dateWhere.push("DATE(created_at) >= ?"); dateParams.push(req.query.start_date); }
-    if (req.query.end_date)   { dateWhere.push("DATE(created_at) <= ?"); dateParams.push(req.query.end_date); }
+    if (req.query.end_date) { dateWhere.push("DATE(created_at) <= ?"); dateParams.push(req.query.end_date); }
     const dw = dateWhere.length ? `WHERE ${dateWhere.join(" AND ")}` : "";
     const cJoinWhere = dateWhere.length
       ? `WHERE ${dateWhere.map(s => s.replace("created_at", "c.created_at")).join(" AND ")}`
@@ -146,16 +146,16 @@ export const getComplaints = async (req, res) => {
     const params = [];
 
     if (req.query.outlet_id) { where.push("c.outlet_id = ?"); params.push(Number(req.query.outlet_id)); }
-    if (req.query.progress)   { where.push("c.progress = ?"); params.push(req.query.progress); }
-    if (req.query.type_id)    { where.push("c.type_id = ?");  params.push(Number(req.query.type_id)); }
-    if (req.query.topic_id)   { where.push("c.topic_id = ?"); params.push(Number(req.query.topic_id)); }
-    if (req.query.search)     {
+    if (req.query.progress) { where.push("c.progress = ?"); params.push(req.query.progress); }
+    if (req.query.type_id) { where.push("c.type_id = ?"); params.push(Number(req.query.type_id)); }
+    if (req.query.topic_id) { where.push("c.topic_id = ?"); params.push(Number(req.query.topic_id)); }
+    if (req.query.search) {
       where.push("(c.complaint_name LIKE ? OR c.nota_number LIKE ?)");
       const s = `%${req.query.search}%`;
       params.push(s, s);
     }
     if (req.query.start_date) { where.push("DATE(c.created_at) >= ?"); params.push(req.query.start_date); }
-    if (req.query.end_date)   { where.push("DATE(c.created_at) <= ?"); params.push(req.query.end_date); }
+    if (req.query.end_date) { where.push("DATE(c.created_at) <= ?"); params.push(req.query.end_date); }
 
     const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
     const orderDir = req.query.order_dir?.toUpperCase() === "ASC" ? "ASC" : "DESC";
@@ -252,17 +252,17 @@ export const createComplaint = async (req, res) => {
     const userId = req.session?.userId;
     if (!userId) return res.status(401).json({ message: "Unauthorized" });
 
-    const typeId       = Number(req.body.type_id || 0);
-    const categoryId   = Number(req.body.category_id || 0);
-    const topicId      = Number(req.body.topic_id || 0);
-    const outletId     = Number(req.body.outlet_id || 0);
-    const name         = String(req.body.complaint_name || "").trim();
-    const nota         = String(req.body.nota_number || "").trim();
-    const qty          = Math.max(Number(req.body.qty || 1), 1);
-    const description  = String(req.body.description || "").trim();
-    const deduction    = ["None","Company","Management"].includes(req.body.deduction) ? req.body.deduction : "None";
+    const typeId = Number(req.body.type_id || 0);
+    const categoryId = Number(req.body.category_id || 0);
+    const topicId = Number(req.body.topic_id || 0);
+    const outletId = Number(req.body.outlet_id || 0);
+    const name = String(req.body.complaint_name || "").trim();
+    const nota = String(req.body.nota_number || "").trim();
+    const qty = Math.max(Number(req.body.qty || 1), 1);
+    const description = String(req.body.description || "").trim();
+    const deduction = ["None", "Company", "Management"].includes(req.body.deduction) ? req.body.deduction : "None";
     const picEmployeeId = req.body.pic_employee_id ? Number(req.body.pic_employee_id) : null;
-    const picName      = String(req.body.pic_name || "").trim() || null;
+    const picName = String(req.body.pic_name || "").trim() || null;
 
     if (!typeId || !categoryId || !topicId || !outletId || !name || !nota || !description) {
       return res.status(400).json({ message: "Semua field wajib diisi." });
@@ -276,9 +276,9 @@ export const createComplaint = async (req, res) => {
           created_by_user_id, created_by_employee_id)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,'Open',COALESCE(?, NOW()),?,?)`,
       [typeId, categoryId, topicId, outletId, name, nota, qty, description,
-       deduction, picEmployeeId, picName,
-       req.body.submitted_at || null,
-       Number(userId), req.session?.employeeId ? Number(req.session.employeeId) : null]
+        deduction, picEmployeeId, picName,
+        req.body.submitted_at || null,
+        Number(userId), req.session?.employeeId ? Number(req.session.employeeId) : null]
     );
 
     const complaintId = insertResult.insertId;
@@ -299,7 +299,7 @@ export const createComplaint = async (req, res) => {
          (complaint_id, progress, note, pic_employee_id, pic_name, logged_by_user_id, logged_by_employee_id)
        VALUES (?,?,?,?,?,?,?)`,
       [complaintId, "Open", "Komplain dibuat.", picEmployeeId, picName,
-       Number(userId), req.session?.employeeId ? Number(req.session.employeeId) : null]
+        Number(userId), req.session?.employeeId ? Number(req.session.employeeId) : null]
     );
 
     res.status(201).json({ message: "Komplain berhasil disimpan.", complaint_id: complaintId });
@@ -323,17 +323,17 @@ export const updateComplaint = async (req, res) => {
     );
     if (!existing.length) return res.status(404).json({ message: "Komplain tidak ditemukan." });
 
-    const typeId       = Number(req.body.type_id || 0);
-    const categoryId   = Number(req.body.category_id || 0);
-    const topicId      = Number(req.body.topic_id || 0);
-    const outletId     = Number(req.body.outlet_id || 0);
-    const name         = String(req.body.complaint_name || "").trim();
-    const nota         = String(req.body.nota_number || "").trim();
-    const qty          = Math.max(Number(req.body.qty || 1), 1);
-    const description  = String(req.body.description || "").trim();
-    const deduction    = ["None","Company","Management"].includes(req.body.deduction) ? req.body.deduction : "None";
+    const typeId = Number(req.body.type_id || 0);
+    const categoryId = Number(req.body.category_id || 0);
+    const topicId = Number(req.body.topic_id || 0);
+    const outletId = Number(req.body.outlet_id || 0);
+    const name = String(req.body.complaint_name || "").trim();
+    const nota = String(req.body.nota_number || "").trim();
+    const qty = Math.max(Number(req.body.qty || 1), 1);
+    const description = String(req.body.description || "").trim();
+    const deduction = ["None", "Company", "Management"].includes(req.body.deduction) ? req.body.deduction : "None";
     const picEmployeeId = req.body.pic_employee_id ? Number(req.body.pic_employee_id) : null;
-    const picName      = String(req.body.pic_name || "").trim() || null;
+    const picName = String(req.body.pic_name || "").trim() || null;
 
     if (!typeId || !categoryId || !topicId || !outletId || !name || !nota || !description) {
       return res.status(400).json({ message: "Semua field wajib diisi." });
@@ -350,9 +350,9 @@ export const updateComplaint = async (req, res) => {
          updated_at=NOW()
        WHERE complaint_id=?`,
       [typeId, categoryId, topicId, outletId, name, nota, qty, description,
-       deduction, picEmployeeId, picName, 
-       req.body.submitted_at || null, req.body.submitted_at || null, req.body.submitted_at || null, 
-       id]
+        deduction, picEmployeeId, picName,
+        req.body.submitted_at || null, req.body.submitted_at || null, req.body.submitted_at || null,
+        id]
     );
 
     // Handle new file uploads
@@ -367,15 +367,15 @@ export const updateComplaint = async (req, res) => {
 
     // Handle deleted docs
     let deletedDocIds = [];
-    try { deletedDocIds = JSON.parse(req.body.deleted_doc_ids || "[]"); } catch (_) {}
+    try { deletedDocIds = JSON.parse(req.body.deleted_doc_ids || "[]"); } catch (_) { }
     if (deletedDocIds.length) {
       const [delDocs] = await safeQuery(
-        `SELECT file_path FROM tr_complaint_document WHERE doc_id IN (${deletedDocIds.map(()=>"?").join(",")}) AND complaint_id=?`,
+        `SELECT file_path FROM tr_complaint_document WHERE doc_id IN (${deletedDocIds.map(() => "?").join(",")}) AND complaint_id=?`,
         [...deletedDocIds.map(Number), id]
       );
       delDocs.forEach((d) => removeFile(d.file_path));
       await safeQuery(
-        `DELETE FROM tr_complaint_document WHERE doc_id IN (${deletedDocIds.map(()=>"?").join(",")}) AND complaint_id=?`,
+        `DELETE FROM tr_complaint_document WHERE doc_id IN (${deletedDocIds.map(() => "?").join(",")}) AND complaint_id=?`,
         [...deletedDocIds.map(Number), id]
       );
     }
@@ -425,21 +425,21 @@ export const addProgressLog = async (req, res) => {
     if (!existing.length) return res.status(404).json({ message: "Komplain tidak ditemukan." });
 
     const progress = req.body.progress;
-    const validProgress = ["Open","On Progress","Waiting Customer","Resolved","Closed"];
+    const validProgress = ["Open", "On Progress", "Waiting Customer", "Resolved", "Closed"];
     if (!validProgress.includes(progress)) {
       return res.status(400).json({ message: "Progress tidak valid." });
     }
 
-    const note          = String(req.body.note || "").trim() || null;
+    const note = String(req.body.note || "").trim() || null;
     const picEmployeeId = req.body.pic_employee_id ? Number(req.body.pic_employee_id) : null;
-    const picName       = String(req.body.pic_name || "").trim() || null;
+    const picName = String(req.body.pic_name || "").trim() || null;
 
     const [logResult] = await safeQuery(
       `INSERT INTO tr_complaint_progress_log
          (complaint_id, progress, note, pic_employee_id, pic_name, logged_by_user_id, logged_by_employee_id)
        VALUES (?,?,?,?,?,?,?)`,
       [id, progress, note, picEmployeeId, picName,
-       Number(userId), req.session?.employeeId ? Number(req.session.employeeId) : null]
+        Number(userId), req.session?.employeeId ? Number(req.session.employeeId) : null]
     );
 
     const logId = logResult.insertId;
