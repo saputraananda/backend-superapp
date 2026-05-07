@@ -38,6 +38,7 @@ import linenReportRoutes from "./routes/IKM/linenReportRoutes.js";
 import leaderDailyReportRoutes from "./routes/IKM/leaderDailyReportRoutes.js";
 import operationalRoutes from "./routes/operationalRoutes.js";
 import internalRoutes from "./routes/internalRoutes.js";
+import complaintRoutes from "./routes/complaintRoutes.js";
 
 import { sendIdulFitriBlastCleanoxProd } from "./utils/waBlastCustomerProd.js";
 
@@ -198,6 +199,7 @@ app.use("/assets/buktiLO", express.static(path.join(ASSETS_BASE, "buktiLO")));
 app.use("/assets/butkiLO", express.static(path.join(ASSETS_BASE, "butkiLO")));
 app.use("/assets/ikm_linen",    express.static(path.join(ASSETS_BASE, "ikm_linen")));
 app.use("/assets/ikm_briefing", express.static(path.join(ASSETS_BASE, "ikm_briefing")));
+app.use("/assets/complaint_docs", express.static(path.join(ASSETS_BASE, "complaint_docs")));
 
 // =========================
 // Routes
@@ -266,6 +268,7 @@ app.use("/ikm/linen-report",     linenReportRoutes);
 app.use("/ikm/leader-daily-report", leaderDailyReportRoutes);
 app.use("/operational", operationalRoutes);
 app.use("/internal", internalRoutes);
+app.use("/complaints", complaintRoutes);
 
 // 404
 app.use((req, res) => {
