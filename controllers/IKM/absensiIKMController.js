@@ -872,3 +872,152 @@ export const getEmployeeLeaveAndLateResume = async (req, res) => {
 		});
 	}
 };
+
+/**
+ * Converts a datetime string (YYYY-MM-DDTHH:MM or YYYY-MM-DD HH:MM:SS) to
+ * a MySQL-compatible datetime string (YYYY-MM-DD HH:MM:SS). Returns null if
+ * invalid.
+ */
+function toMySQLDatetime(value) {
+	if (!value) return null;
+	const normalized = String(value).replace("T", " ").slice(0, 19);
+	if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2})?$/.test(normalized)) return null;
+	return normalized.length === 16 ? `${normalized}:00` : normalized;
+}
+
+/**
+ * PUT /ikm/absensi/shifts/:id
+ * Admin: edit check_in_time and/or check_out_time of an existing record.
+ */
+export const updateAttendanceShiftIKM = async (req, res) => {
+	try {
+		const id = toPositiveInt(req.params.id);
+		if (!id) return res.status(400).json({ success: false, message: "shift_record_id tidak valid" });
+
+		const hasCheckIn = "check_in_time" in req.body;
+		const hasCheckOut = "check_out_time" in req.body;
+
+		if (!hasCheckIn && !hasCheckOut) {
+			return res.status(400).json({ success: false, message: "Tidak ada field yang diubah. Sediakan check_in_time dan/atau check_out_time." });
+		}
+
+		const checkInRaw = hasCheckIn ? req.body.check_in_time : undefined;
+		const checkOutRaw = hasCheckOut ? req.body.check_out_time : undefined;
+
+		// Validate format when value is not explicitly cleared
+		if (hasCheckIn && checkInRaw !== "" && checkInRaw !== null && !toMySQLDatetime(checkInRaw)) {
+			return res.status(400).json({ success: false, message: "Format check_in_time tidak valid. Gunakan YYYY-MM-DDTHH:MM" });
+		}
+		if (hasCheckOut && checkOutRaw !== "" && checkOutRaw !== null && !toMySQLDatetime(checkOutRaw)) {
+			return res.status(400).json({ success: false, message: "Format check_out_time tidak valid. Gunakan YYYY-MM-DDTHH:MM" });
+		}
+
+		// Fetch existing record
+		const [existing] = await safeIKMQuery(
+			"SELECT shift_record_id, check_in_time, check_out_time FROM tr_attendance_shift_ikm WHERE shift_record_id = ?",
+			[id]
+		);
+		if (!existing.length) return res.status(404).json({ success: false, message: "Record absensi tidak ditemukan" });
+
+		const record = existing[0];
+		const finalCheckIn = hasCheckIn
+			? (checkInRaw === "" || checkInRaw === null ? null : toMySQLDatetime(checkInRaw))
+			: record.check_in_time;
+		const finalCheckOut = hasCheckOut
+			? (checkOutRaw === "" || checkOutRaw === null ? null : toMySQLDatetime(checkOutRaw))
+			: record.check_out_time;
+
+		if (finalCheckIn && finalCheckOut && new Date(finalCheckOut) <= new Date(finalCheckIn)) {
+			return res.status(400).json({ success: false, message: "Jam keluar harus lebih besar dari jam masuk" });
+		}
+
+		const setClauses = [];
+		const params = [];
+
+		if (hasCheckIn) {
+			setClauses.push("check_in_time = ?");
+			params.push(finalCheckIn);
+		}
+		if (hasCheckOut) {
+			setClauses.push("check_out_time = ?");
+			params.push(finalCheckOut);
+		}
+		params.push(id);
+
+		await safeIKMQuery(
+			`UPDATE tr_attendance_shift_ikm SET ${setClauses.join(", ")} WHERE shift_record_id = ?`,
+			params
+		);
+
+		broadcastAttendanceEvent("attendance_update", { updated: id });
+
+		return res.json({ success: true, message: "Data absensi berhasil diperbarui" });
+	} catch (error) {
+		console.error("[updateAttendanceShiftIKM] Error:", error);
+		return res.status(500).json({ success: false, message: error.message || "Gagal memperbarui data absensi" });
+	}
+};
+
+/**
+ * POST /ikm/absensi/shifts
+ * Admin: manually insert an attendance record (emergency input).
+ */
+export const createAttendanceShiftIKM = async (req, res) => {
+	try {
+		const employeeId = toPositiveInt(req.body.employee_id);
+		if (!employeeId) return res.status(400).json({ success: false, message: "employee_id tidak valid" });
+
+		const workDate = toISODateString(req.body.work_date);
+		if (!workDate) return res.status(400).json({ success: false, message: "work_date tidak valid (format: YYYY-MM-DD)" });
+
+		const shiftType = String(req.body.shift_type || "").toLowerCase();
+		if (!ALLOWED_SHIFTS.has(shiftType)) {
+			return res.status(400).json({
+				success: false,
+				message: `shift_type tidak valid. Gunakan salah satu: ${[...ALLOWED_SHIFTS].join(", ")}`,
+			});
+		}
+
+		const isValet = toBoolean(req.body.is_valet) ? 1 : 0;
+
+		const checkInRaw = req.body.check_in_time || null;
+		const checkOutRaw = req.body.check_out_time || null;
+		const checkInTime = checkInRaw ? toMySQLDatetime(checkInRaw) : null;
+		const checkOutTime = checkOutRaw ? toMySQLDatetime(checkOutRaw) : null;
+
+		if (checkInRaw && !checkInTime) {
+			return res.status(400).json({ success: false, message: "Format check_in_time tidak valid. Gunakan YYYY-MM-DDTHH:MM" });
+		}
+		if (checkOutRaw && !checkOutTime) {
+			return res.status(400).json({ success: false, message: "Format check_out_time tidak valid. Gunakan YYYY-MM-DDTHH:MM" });
+		}
+		if (checkInTime && checkOutTime && new Date(checkOutTime) <= new Date(checkInTime)) {
+			return res.status(400).json({ success: false, message: "Jam keluar harus lebih besar dari jam masuk" });
+		}
+
+		// Check for duplicate (UNIQUE KEY: employee_id, work_date, shift_type, is_valet)
+		const [existing] = await safeIKMQuery(
+			"SELECT shift_record_id FROM tr_attendance_shift_ikm WHERE employee_id = ? AND work_date = ? AND shift_type = ? AND is_valet = ?",
+			[employeeId, workDate, shiftType, isValet]
+		);
+		if (existing.length > 0) {
+			return res.status(409).json({
+				success: false,
+				message: "Record absensi dengan karyawan, tanggal, shift, dan jenis yang sama sudah ada",
+			});
+		}
+
+		await safeIKMQuery(
+			`INSERT INTO tr_attendance_shift_ikm (user_id, employee_id, work_date, shift_type, check_in_time, check_out_time, is_valet)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			[ADMIN_EMPLOYEE_ID, employeeId, workDate, shiftType, checkInTime, checkOutTime, isValet]
+		);
+
+		broadcastAttendanceEvent("attendance_update", { created: true });
+
+		return res.status(201).json({ success: true, message: "Data absensi berhasil ditambahkan" });
+	} catch (error) {
+		console.error("[createAttendanceShiftIKM] Error:", error);
+		return res.status(500).json({ success: false, message: error.message || "Gagal menambahkan data absensi" });
+	}
+};
