@@ -959,6 +959,32 @@ export const updateAttendanceShiftIKM = async (req, res) => {
 };
 
 /**
+ * DELETE /ikm/absensi/shifts/:id
+ * Admin: delete an attendance record by shift_record_id.
+ */
+export const deleteAttendanceShiftIKM = async (req, res) => {
+	try {
+		const id = toPositiveInt(req.params.id);
+		if (!id) return res.status(400).json({ success: false, message: "shift_record_id tidak valid" });
+
+		const [existing] = await safeIKMQuery(
+			"SELECT shift_record_id FROM tr_attendance_shift_ikm WHERE shift_record_id = ?",
+			[id]
+		);
+		if (!existing.length) return res.status(404).json({ success: false, message: "Record absensi tidak ditemukan" });
+
+		await safeIKMQuery("DELETE FROM tr_attendance_shift_ikm WHERE shift_record_id = ?", [id]);
+
+		broadcastAttendanceEvent("attendance_update", { deleted: id });
+
+		return res.json({ success: true, message: "Record absensi berhasil dihapus" });
+	} catch (error) {
+		console.error("[deleteAttendanceShiftIKM] Error:", error);
+		return res.status(500).json({ success: false, message: error.message || "Gagal menghapus record absensi" });
+	}
+};
+
+/**
  * POST /ikm/absensi/shifts
  * Admin: manually insert an attendance record (emergency input).
  */

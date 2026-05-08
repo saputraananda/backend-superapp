@@ -5,6 +5,7 @@ import {
 	streamAttendanceShiftIKM,
 	getEmployeeLeaveAndLateResume,
 	updateAttendanceShiftIKM,
+	deleteAttendanceShiftIKM,
 	createAttendanceShiftIKM,
 } from "../../controllers/IKM/absensiIKMController.js";
 
@@ -19,5 +20,6 @@ router.get("/shifts", requireAuth, getAttendanceShiftIKM);
 router.get("/employee-leave-resume", requireAuth, getEmployeeLeaveAndLateResume);
 router.post("/shifts", requireAuth, createAttendanceShiftIKM);
 router.put("/shifts/:id", requireAuth, updateAttendanceShiftIKM);
+router.delete("/shifts/:id", requireAuth, deleteAttendanceShiftIKM);
 
 export default router;
