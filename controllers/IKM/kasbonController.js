@@ -70,7 +70,7 @@ export const getKasbons = async (req, res) => {
   try {
     const { type, status, startDate, endDate, search, page, limit } = req.query;
     const pg = toPositiveInt(page) ?? 1;
-    const lm = Math.min(toPositiveInt(limit) ?? 25, 100);
+    const lm = Math.min(toPositiveInt(limit) ?? 25, 9999);
     const offset = (pg - 1) * lm;
 
     const where = [];
