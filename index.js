@@ -36,6 +36,7 @@ import masterAbsensiRoutes from "./routes/IKM/masterAbsensiRoutes.js";
 import masterRsIkmRoutes from "./routes/IKM/masterRsIkmRoutes.js";
 import linenReportRoutes from "./routes/IKM/linenReportRoutes.js";
 import leaderDailyReportRoutes from "./routes/IKM/leaderDailyReportRoutes.js";
+import kasbonRoutes from "./routes/IKM/kasbonRoutes.js";
 import operationalRoutes from "./routes/operationalRoutes.js";
 import internalRoutes from "./routes/internalRoutes.js";
 import complaintRoutes from "./routes/complaintRoutes.js";
@@ -197,9 +198,10 @@ app.use("/assets/aset_photos", express.static(path.join(ASSETS_BASE, "aset_photo
 app.use("/assets/tasklist_evidence", express.static(path.join(ASSETS_BASE, "tasklist_evidence")));
 app.use("/assets/buktiLO", express.static(path.join(ASSETS_BASE, "buktiLO")));
 app.use("/assets/butkiLO", express.static(path.join(ASSETS_BASE, "butkiLO")));
-app.use("/assets/ikm_linen",    express.static(path.join(ASSETS_BASE, "ikm_linen")));
+app.use("/assets/ikm_linen", express.static(path.join(ASSETS_BASE, "ikm_linen")));
 app.use("/assets/ikm_briefing", express.static(path.join(ASSETS_BASE, "ikm_briefing")));
 app.use("/assets/complaint_docs", express.static(path.join(ASSETS_BASE, "complaint_docs")));
+app.use("/assets/kasbon", express.static(path.join(ASSETS_BASE, "kasbon")));
 
 // =========================
 // Routes
@@ -263,9 +265,10 @@ app.use("/ikm/absensi", absensiIKMRoutes);
 app.use("/ikm/employees", employeeIKMRoutes);
 app.use("/ikm/leaves", leavesIKMRoutes);
 app.use("/ikm/master-absensi", masterAbsensiRoutes);
-app.use("/ikm/master-rs",        masterRsIkmRoutes);
-app.use("/ikm/linen-report",     linenReportRoutes);
+app.use("/ikm/master-rs", masterRsIkmRoutes);
+app.use("/ikm/linen-report", linenReportRoutes);
 app.use("/ikm/leader-daily-report", leaderDailyReportRoutes);
+app.use("/ikm/kasbon", kasbonRoutes);
 app.use("/operational", operationalRoutes);
 app.use("/internal", internalRoutes);
 app.use("/complaints", complaintRoutes);

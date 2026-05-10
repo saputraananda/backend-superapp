@@ -318,3 +318,28 @@ export const uploadComplaintDoc = multer({
   fileFilter: (_req, file, cb) => cb(null, true), // semua ekstensi
   limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB per file
 });
+
+// =========================
+// Upload IKM Kasbon proof (gambar + PDF, 10 MB)
+// =========================
+const IKM_KASBON_DIR = path.join(BASE_DIR, "kasbon");
+if (!fs.existsSync(IKM_KASBON_DIR)) fs.mkdirSync(IKM_KASBON_DIR, { recursive: true });
+
+const ikmKasbonStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, IKM_KASBON_DIR),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    const baseName = path
+      .basename(file.originalname, ext)
+      .replace(/[^a-zA-Z0-9_\-]/g, "_")
+      .slice(0, 60);
+    const unique = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    cb(null, `${baseName}_${unique}${ext}`);
+  },
+});
+
+export const uploadIKMKasbon = multer({
+  storage: ikmKasbonStorage,
+  fileFilter: documentFilter,
+  limits: { fileSize: 10 * 1024 * 1024 },
+});
