@@ -32,20 +32,23 @@ export const getComplaintMeta = async (_req, res) => {
   }
 };
 
-// ─── Customers (for complaint_name autocomplete) ──────────────────────────────
+// ─── Nota autocomplete (no_nota + customer_nama from rekap_transaksi_reguler) ─
 
-export const getComplaintCustomers = async (req, res) => {
+export const getComplaintNota = async (req, res) => {
   try {
     const search = req.query.q ? `%${req.query.q}%` : "%";
-    console.log("[getComplaintCustomers] q:", req.query.q, "| search:", search);
     const [rows] = await safeSmartlinkQuery(
-      "SELECT id AS customer_id, nama FROM customer WHERE nama LIKE ? ORDER BY nama ASC LIMIT 50",
+      `SELECT no_nota, customer_nama
+       FROM rekap_transaksi_reguler
+       WHERE no_nota LIKE ?
+       GROUP BY no_nota, customer_nama
+       ORDER BY no_nota ASC
+       LIMIT 30`,
       [search]
     );
-    console.log("[getComplaintCustomers] rows:", rows.length);
     res.json(rows);
   } catch (err) {
-    console.error("[getComplaintCustomers] ERROR:", err.message);
+    console.error("[getComplaintNota] ERROR:", err.message);
     res.status(500).json({ message: err.message });
   }
 };

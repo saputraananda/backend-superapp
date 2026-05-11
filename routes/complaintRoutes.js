@@ -1,7 +1,7 @@
 import express from "express";
 import {
   getComplaintMeta,
-  getComplaintCustomers,
+  getComplaintNota,
   getComplaintEmployees,
   getComplaintSummary,
   getComplaints,
@@ -20,7 +20,7 @@ const router = express.Router();
 router.get("/meta",      requireAuth, getComplaintMeta);
 
 // Autocomplete helpers
-router.get("/customers", requireAuth, getComplaintCustomers);
+router.get("/nota",      requireAuth, getComplaintNota);
 router.get("/employees", requireAuth, getComplaintEmployees);
 
 // Dashboard summary
