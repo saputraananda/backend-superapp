@@ -4,6 +4,7 @@ import {
   getKasbons,
   getKasbonDetail,
   getEmployeeOptions,
+  getEmployeeSummary,
   createKasbon,
   updateKasbon,
   updateKasbonStatus,
@@ -15,8 +16,9 @@ import { uploadIKMKasbon } from "../../middleware/upload.js";
 
 const router = express.Router();
 
-router.get("/employee-options", requireAuth, getEmployeeOptions);
-router.get("/", requireAuth, getKasbons);
+router.get("/employee-options",  requireAuth, getEmployeeOptions);
+router.get("/employee-summary",  requireAuth, getEmployeeSummary);
+router.get("/",                  requireAuth, getKasbons);
 router.get("/:id", requireAuth, getKasbonDetail);
 router.post("/", requireAuth, uploadIKMKasbon.single("proof_file"), createKasbon);
 router.put("/:id", requireAuth, uploadIKMKasbon.single("proof_file"), updateKasbon);

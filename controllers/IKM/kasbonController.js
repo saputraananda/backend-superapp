@@ -14,6 +14,24 @@ const BASE_DIR = isProd
 const IKM_COMPANY_ID = 2;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+// Cutoff: tgl 26 bulan lalu s/d tgl 25 bulan ini.
+// Jika hari ini > 25, aktifkan cutoff bulan depan.
+function getDefaultCutoff() {
+  const now = new Date();
+  const CUTOFF_END_DAY = 25;
+  let month = now.getMonth() + 1;
+  let year  = now.getFullYear();
+  if (now.getDate() > CUTOFF_END_DAY) {
+    month += 1;
+    if (month > 12) { month = 1; year += 1; }
+  }
+  const pad  = (n) => String(n).padStart(2, "0");
+  const start = new Date(year, month - 2, 26);
+  const end   = new Date(year, month - 1, CUTOFF_END_DAY);
+  const fmt   = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  return { start: fmt(start), end: fmt(end) };
+}
+
 function toPositiveInt(v) {
   const n = Number(v);
   return Number.isInteger(n) && n > 0 ? n : null;
@@ -97,6 +115,10 @@ export const getKasbons = async (req, res) => {
       where.push("(k.employee_name LIKE ? OR k.purpose LIKE ? OR k.notes LIKE ?)");
       params.push(like, like, like);
     }
+    if (req.query.employeeId) {
+      where.push("k.employee_id = ?");
+      params.push(Number(req.query.employeeId));
+    }
 
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
@@ -133,6 +155,44 @@ export const getKasbons = async (req, res) => {
       payments.forEach((p) => paymentMap.set(Number(p.kasbon_id), Number(p.total_paid || 0)));
     }
 
+    // Per-employee akumulasi cutoff bulan ini
+    // = SUM(amount_approved disetujui di cutoff) - SUM(payments dari entri tsb)
+    const cutoff    = getDefaultCutoff();
+    const allEmpIds = [...new Set(rows.map((r) => Number(r.employee_id)))];
+    const cutoffMap = new Map();
+
+    if (allEmpIds.length) {
+      const ph = allEmpIds.map(() => "?").join(",");
+
+      const [approvedInCutoff] = await safeIKMQuery(
+        `SELECT employee_id, SUM(amount_approved) AS total_approved
+         FROM tr_kasbon
+         WHERE status = 'disetujui'
+           AND submission_date BETWEEN ? AND ?
+           AND employee_id IN (${ph})
+         GROUP BY employee_id`,
+        [cutoff.start, cutoff.end, ...allEmpIds]
+      );
+
+      const [paidInCutoff] = await safeIKMQuery(
+        `SELECT k.employee_id, SUM(p.amount) AS total_paid
+         FROM tr_kasbon_payment p
+         JOIN tr_kasbon k ON k.id = p.kasbon_id
+         WHERE k.status = 'disetujui'
+           AND k.submission_date BETWEEN ? AND ?
+           AND k.employee_id IN (${ph})
+         GROUP BY k.employee_id`,
+        [cutoff.start, cutoff.end, ...allEmpIds]
+      );
+
+      const approvedM = new Map(approvedInCutoff.map((r) => [Number(r.employee_id), Number(r.total_approved || 0)]));
+      const paidM     = new Map(paidInCutoff.map((r)    => [Number(r.employee_id), Number(r.total_paid    || 0)]));
+
+      for (const empId of allEmpIds) {
+        cutoffMap.set(empId, (approvedM.get(empId) || 0) - (paidM.get(empId) || 0));
+      }
+    }
+
     const data = rows.map((r) => ({
       ...r,
       proof_url: buildProofUrl(req, r.proof_path),
@@ -141,6 +201,8 @@ export const getKasbons = async (req, res) => {
         r.type === "pinjaman" && r.amount_approved
           ? Number(r.amount_approved) - (paymentMap.get(r.id) ?? 0)
           : null,
+      cutoff_net:    cutoffMap.get(Number(r.employee_id)) ?? 0,
+      cutoff_period: cutoff,
     }));
 
     res.json({
@@ -149,6 +211,82 @@ export const getKasbons = async (req, res) => {
     });
   } catch (err) {
     console.error("getKasbons:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ── GET /employee-summary ───────────────────────────────────────────────────
+export const getEmployeeSummary = async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    const where = [];
+    const params = [];
+    if (startDate && /^\d{4}-\d{2}-\d{2}$/.test(startDate)) {
+      where.push("k.submission_date >= ?"); params.push(startDate);
+    }
+    if (endDate && /^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+      where.push("k.submission_date <= ?"); params.push(endDate);
+    }
+    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+    const [summaryRows] = await safeIKMQuery(
+      `SELECT
+         k.employee_id,
+         k.employee_name,
+         COUNT(CASE WHEN k.type = 'kasbon' THEN 1 END) AS kasbon_count,
+         COALESCE(SUM(CASE WHEN k.type = 'kasbon' AND k.status = 'disetujui' THEN k.amount_approved ELSE 0 END), 0) AS kasbon_total,
+         COUNT(CASE WHEN k.type = 'pinjaman' THEN 1 END) AS pinjaman_count,
+         COALESCE(SUM(CASE WHEN k.type = 'pinjaman' AND k.status = 'disetujui' THEN k.amount_approved ELSE 0 END), 0) AS pinjaman_total
+       FROM tr_kasbon k
+       ${whereSql}
+       GROUP BY k.employee_id, k.employee_name
+       ORDER BY k.employee_name ASC`,
+      params
+    );
+
+    const empIds = summaryRows.map((r) => Number(r.employee_id));
+    const paidMap = new Map();
+    if (empIds.length) {
+      const ph = empIds.map(() => "?").join(",");
+      const paidWhere = [`k.status = 'disetujui'`, `k.type = 'pinjaman'`, `k.employee_id IN (${ph})`];
+      const paidParams = [...empIds];
+      if (startDate && /^\d{4}-\d{2}-\d{2}$/.test(startDate)) {
+        paidWhere.push("k.submission_date >= ?"); paidParams.push(startDate);
+      }
+      if (endDate && /^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+        paidWhere.push("k.submission_date <= ?"); paidParams.push(endDate);
+      }
+      const [paidRows] = await safeIKMQuery(
+        `SELECT k.employee_id, SUM(p.amount) AS total_paid
+         FROM tr_kasbon_payment p
+         JOIN tr_kasbon k ON k.id = p.kasbon_id
+         WHERE ${paidWhere.join(" AND ")}
+         GROUP BY k.employee_id`,
+        paidParams
+      );
+      paidRows.forEach((r) => paidMap.set(Number(r.employee_id), Number(r.total_paid || 0)));
+    }
+
+    const data = summaryRows.map((r) => {
+      const kasbonTotal   = Number(r.kasbon_total   || 0);
+      const pinjamanTotal = Number(r.pinjaman_total || 0);
+      const totalPaid     = paidMap.get(Number(r.employee_id)) || 0;
+      return {
+        employee_id:    Number(r.employee_id),
+        employee_name:  r.employee_name,
+        kasbon_count:   Number(r.kasbon_count   || 0),
+        kasbon_total:   kasbonTotal,
+        pinjaman_count: Number(r.pinjaman_count || 0),
+        pinjaman_total: pinjamanTotal,
+        total_all:      kasbonTotal + pinjamanTotal,
+        total_paid:     totalPaid,
+        sisa:           Math.max(0, pinjamanTotal - totalPaid),
+      };
+    });
+
+    res.json({ data });
+  } catch (err) {
+    console.error("getEmployeeSummary:", err);
     res.status(500).json({ message: err.message });
   }
 };
