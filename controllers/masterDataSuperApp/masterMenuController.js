@@ -1,10 +1,9 @@
-import { safeQuery } from "../db/pool.js";
+import { safeQuery } from "../../db/pool.js";
 
 const getNextAppId = async () => {
   const [[{ maxId }]] = await safeQuery(
     `SELECT COALESCE(MAX(CAST(id AS UNSIGNED)), 0) AS maxId FROM mst_apps`
   );
-
   return Number(maxId || 0) + 1;
 };
 
@@ -16,7 +15,6 @@ export const getApps = async (req, res) => {
        FROM mst_apps
        ORDER BY sort_order ASC`
     );
-    // authorization string → array
     const apps = rows.map((r) => ({
       ...r,
       authorization: r.authorization
@@ -58,14 +56,12 @@ export const createApp = async (req, res) => {
     return res.status(400).json({ message: "Minimal pilih 1 role" });
 
   try {
-    // Cek href duplikat
     const [existHref] = await safeQuery(`SELECT id FROM mst_apps WHERE href = ?`, [href]);
     if (existHref.length > 0)
       return res.status(409).json({ message: "Path sudah digunakan app lain" });
 
     const nextId = await getNextAppId();
 
-    // Auto sort_order: max + 1
     const [[{ maxOrder }]] = await safeQuery(`SELECT MAX(sort_order) as maxOrder FROM mst_apps`);
     const nextOrder = (maxOrder ?? 0) + 1;
 
@@ -100,7 +96,6 @@ export const updateApp = async (req, res) => {
     const [exist] = await safeQuery(`SELECT id FROM mst_apps WHERE id = ?`, [id]);
     if (exist.length === 0) return res.status(404).json({ message: "App tidak ditemukan" });
 
-    // Cek href duplikat (exclude diri sendiri)
     const [existHref] = await safeQuery(
       `SELECT id FROM mst_apps WHERE href = ? AND id != ?`, [href, id]
     );

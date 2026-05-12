@@ -5,7 +5,7 @@ import {
   createApp,
   updateApp,
   deleteApp,
-} from "../controllers/addMenuController.js";
+} from "../../controllers/masterDataSuperApp/masterMenuController.js";
 
 const router = express.Router();
 

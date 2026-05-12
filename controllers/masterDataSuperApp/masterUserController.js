@@ -1,4 +1,4 @@
-import { safeQuery } from "../db/pool.js";
+import { safeQuery } from "../../db/pool.js";
 import bcrypt from "bcrypt";
 
 const ALLOWED_ROLES = [
@@ -60,12 +60,10 @@ export async function createUser(req, res) {
     return res.status(400).json({ message: "Role tidak valid" });
 
   try {
-    // Cek email duplikat
     const [existEmail] = await safeQuery(`SELECT id FROM users WHERE email = ?`, [email]);
     if (existEmail.length > 0)
       return res.status(409).json({ message: "Email sudah terdaftar" });
 
-    // Cek username duplikat
     if (username) {
       const [existUser] = await safeQuery(`SELECT id FROM users WHERE username = ?`, [username]);
       if (existUser.length > 0)
@@ -79,7 +77,6 @@ export async function createUser(req, res) {
       [name, email, username || null, password_hash, role]
     );
 
-    // Insert ke mst_employee
     await safeQuery(
       `INSERT INTO mst_employee (full_name, email) VALUES (?, ?)`,
       [name, email]
@@ -103,20 +100,17 @@ export async function updateUser(req, res) {
     return res.status(400).json({ message: "Role tidak valid" });
 
   try {
-    // Cek user ada
     const [exist] = await safeQuery(`SELECT id, email FROM users WHERE id = ?`, [id]);
     if (exist.length === 0) return res.status(404).json({ message: "User tidak ditemukan" });
 
     const oldEmail = exist[0].email;
 
-    // Cek email duplikat (exclude diri sendiri)
     const [existEmail] = await safeQuery(
       `SELECT id FROM users WHERE email = ? AND id != ?`, [email, id]
     );
     if (existEmail.length > 0)
       return res.status(409).json({ message: "Email sudah dipakai user lain" });
 
-    // Cek username duplikat
     if (username) {
       const [existUser] = await safeQuery(
         `SELECT id FROM users WHERE username = ? AND id != ?`, [username, id]
@@ -125,7 +119,6 @@ export async function updateUser(req, res) {
         return res.status(409).json({ message: "Username sudah dipakai user lain" });
     }
 
-    // Update password jika diisi
     if (password && password.trim() !== "") {
       const password_hash = await bcrypt.hash(password, 10);
       await safeQuery(
@@ -141,7 +134,6 @@ export async function updateUser(req, res) {
       );
     }
 
-    // Sync mst_employee jika email berubah
     await safeQuery(
       `UPDATE mst_employee SET full_name=?, email=? WHERE email=?`,
       [name, email, oldEmail]
