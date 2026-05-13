@@ -17,6 +17,6 @@ router.get("/",      requireAuth, getLinenReports);
 router.post("/",     requireAuth, uploadIKMLinen.single("attachment"), createLinenReport);
 router.put("/:id",   requireAuth, uploadIKMLinen.single("attachment"), updateLinenReport);
 router.delete("/:id",requireAuth, deleteLinenReport);
-router.put("/:id/status", requireAuth, updateLinenReportStatus);
+router.put("/:id/status", requireAuth, uploadIKMLinen.single("attachment"), updateLinenReportStatus);
 
 export default router;

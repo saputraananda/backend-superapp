@@ -117,8 +117,8 @@ export const getLinenReports = async (req, res) => {
               lr.finding_location, lr.linen_type, lr.finding_type,
               lr.finding_qty, lr.attachment_path, lr.reported_by, lr.created_at,
               lr.status, lr.sending_note,
-              lr.process_by, lr.process_by_name, lr.process_note, lr.process_at,
-              lr.completed_by, lr.completed_by_name, lr.completed_note, lr.completed_at
+              lr.process_by, lr.process_by_name, lr.process_note, lr.process_path, lr.process_at,
+              lr.completed_by, lr.completed_by_name, lr.completed_note, lr.completed_path, lr.completed_at
        FROM tr_linen_report lr
        LEFT JOIN mst_area a ON a.id = lr.area_id
        LEFT JOIN mst_hospital h ON h.id = lr.hospital_id
@@ -146,6 +146,8 @@ export const getLinenReports = async (req, res) => {
     const records = rows.map((r) => ({
       ...r,
       attachment_url: buildAttachmentUrl(r.attachment_path),
+      process_path_url: buildAttachmentUrl(r.process_path),
+      completed_path_url: buildAttachmentUrl(r.completed_path),
       reporter_employee_name: employeeMap.get(r.reported_by) || null,
     }));
 
@@ -325,15 +327,18 @@ export const updateLinenReportStatus = async (req, res) => {
     if (!["proses", "selesai"].includes(status))
       return res.status(400).json({ message: "Status hanya boleh 'proses' atau 'selesai'" });
 
+    const attachmentFilename = req.file ? req.file.filename : null;
+
     if (status === "proses") {
       if (current.status !== "terkirim")
         return res.status(400).json({ message: "Hanya laporan dengan status 'terkirim' yang dapat diproses" });
 
       await safeIKMQuery(
         `UPDATE tr_linen_report
-         SET status='proses', process_by=?, process_by_name=?, process_note=?, process_at=NOW()
+         SET status='proses', process_by=?, process_by_name=?, process_note=?,
+             process_path=COALESCE(?, process_path), process_at=NOW()
          WHERE id=?`,
-        [user.id, actorName, note?.trim() || null, id]
+        [user.id, actorName, note?.trim() || null, attachmentFilename, id]
       );
       res.json({ message: "Laporan diproses", status: "proses" });
     } else if (status === "selesai") {
@@ -342,9 +347,10 @@ export const updateLinenReportStatus = async (req, res) => {
 
       await safeIKMQuery(
         `UPDATE tr_linen_report
-         SET status='selesai', completed_by=?, completed_by_name=?, completed_note=?, completed_at=NOW()
+         SET status='selesai', completed_by=?, completed_by_name=?, completed_note=?,
+             completed_path=COALESCE(?, completed_path), completed_at=NOW()
          WHERE id=?`,
-        [user.id, actorName, note?.trim() || null, id]
+        [user.id, actorName, note?.trim() || null, attachmentFilename, id]
       );
       res.json({ message: "Laporan diselesaikan", status: "selesai" });
     }
