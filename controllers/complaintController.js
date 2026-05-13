@@ -126,6 +126,16 @@ export const getComplaintSummary = async (req, res) => {
       dateParams
     );
 
+    const [byCategory] = await safeQuery(
+      `SELECT cat.category_name, COUNT(*) AS total
+       FROM tr_complaint c
+       JOIN mst_complaint_category cat ON cat.category_id = c.category_id
+       ${cJoinWhere}
+       GROUP BY c.category_id, cat.category_name
+       ORDER BY total DESC`,
+      dateParams
+    );
+
     const [recentTrend] = await safeQuery(
       `SELECT DATE_FORMAT(created_at,'%Y-%m') AS month, COUNT(*) AS total
        FROM tr_complaint
@@ -135,7 +145,7 @@ export const getComplaintSummary = async (req, res) => {
       []
     );
 
-    res.json({ totals: totals[0] || totals, byOutlet, byTopic, byType, recentTrend });
+    res.json({ totals: totals[0] || totals, byOutlet, byTopic, byType, byCategory, recentTrend });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
