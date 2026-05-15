@@ -78,11 +78,15 @@ export async function login(req, res) {
     }
 
     const [empRows] = await safeQuery(
-      `SELECT * FROM mst_employee WHERE email = ? AND is_deleted = 0`,
+      `SELECT * FROM mst_employee WHERE email = ? AND is_deleted = 0 AND exit_date IS NULL`,
       [user.email]
     );
 
-    const employee = empRows[0] || null;
+    if (!empRows[0]) {
+      return res.status(403).json({ message: "Akun tidak aktif atau tidak terdaftar sebagai karyawan" });
+    }
+
+    const employee = empRows[0];
 
     req.session.userId       = user.id;
     req.session.userEmail    = user.email;
