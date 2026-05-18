@@ -3,6 +3,7 @@ import {
   getAsets,
   getAsetById,
   getAsetByKode,
+  getAsetThumb,
   createAset,
   updateAset,
   deleteAset,
@@ -37,6 +38,9 @@ const router = express.Router();
 // Master data & stats
 router.get("/master-data", getMasterData);
 router.get("/stats", getStats);
+
+// Thumbnail (cached WebP)
+router.get("/thumb/:filename", getAsetThumb);
 
 // Lookup by kode (QR scan)
 router.get("/kode/:kode", getAsetByKode);

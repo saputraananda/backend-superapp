@@ -1,12 +1,6 @@
-import { readFileSync } from "fs";
-import { fileURLToPath } from "url";
-import path from "path";
 import db from "../db/pool.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const chatIds = JSON.parse(
-    readFileSync(path.join(__dirname, "../data/waChatIds.json"), "utf-8")
-);
+// ── Helpers ──────────────────────────────────────────────────────────────────
 
 function formatDate(val) {
     if (!val) return "-";
@@ -14,6 +8,61 @@ function formatDate(val) {
     if (isNaN(d)) return String(val);
     return d.toLocaleDateString("id-ID", { day: "2-digit", month: "long", year: "numeric" });
 }
+
+/**
+ * Normalisasi nomor HP ke format WhatsApp chatId (628xx@c.us).
+ * Menangani format: 08xxx, +628xxx, 628xxx, spasi, tanda baca, dsb.
+ * Return null jika nomor tidak valid / kosong.
+ */
+function phoneToWaChatId(phone) {
+    if (!phone) return null;
+    // Hapus semua karakter selain angka dan +
+    let n = String(phone).replace(/[^\d+]/g, "");
+    if (!n) return null;
+
+    // Buang leading +
+    n = n.replace(/^\+/, "");
+
+    // Konversi awalan 0 → 62
+    if (n.startsWith("0")) n = "62" + n.slice(1);
+
+    // Harus diawali 62 dan punya panjang wajar (10–15 digit)
+    if (!n.startsWith("62") || n.length < 10 || n.length > 16) return null;
+
+    return `${n}@c.us`;
+}
+
+/**
+ * Ambil chatId WA dari DB untuk satu atau banyak employee_id.
+ * Return Map<employee_id (number), chatId (string)>
+ */
+async function getChatIdMap(empIds) {
+    const map = new Map();
+    if (!empIds || empIds.length === 0) return map;
+
+    const uniqueIds = [...new Set(empIds.map(Number).filter((id) => !isNaN(id)))];
+    if (uniqueIds.length === 0) return map;
+
+    try {
+        const [rows] = await db.query(
+            `SELECT employee_id, phone_number
+             FROM mst_employee
+             WHERE employee_id IN (?)
+               AND is_deleted = 0
+               AND exit_date IS NULL`,
+            [uniqueIds]
+        );
+        for (const row of rows) {
+            const chatId = phoneToWaChatId(row.phone_number);
+            if (chatId) map.set(Number(row.employee_id), chatId);
+        }
+    } catch (err) {
+        console.error("[WA] Gagal query phone_number:", err.message);
+    }
+    return map;
+}
+
+// ── Public functions ─────────────────────────────────────────────────────────
 
 export async function sendWaTaskNotif({
     assigneeIds, taskTitle,
@@ -29,8 +78,10 @@ export async function sendWaTaskNotif({
     const appUrl = "https://central.waschenalora.com";
     const taskBoardUrl = monthlyId ? `${appUrl}/projectmanagement/month/${monthlyId}` : appUrl;
 
+    const chatIdMap = await getChatIdMap(assigneeIds);
+
     for (const empId of assigneeIds) {
-        const chatId = chatIds[String(empId)];
+        const chatId = chatIdMap.get(Number(empId));
         if (!chatId) continue;
 
         let recipientName = "Karyawan";
@@ -92,8 +143,10 @@ export async function sendWaSimpleNotif({ recipientIds, message }) {
 
     if (!url || !apiKey || !session) return;
 
+    const chatIdMap = await getChatIdMap(recipientIds);
+
     for (const empId of recipientIds) {
-        const chatId = chatIds[String(empId)];
+        const chatId = chatIdMap.get(Number(empId));
         if (!chatId) continue;
         try {
             await fetch(`${url}/api/sendText`, {
@@ -128,6 +181,7 @@ export async function sendWaDailyProgressBlast({ testEmpId = null } = {}) {
             `SELECT
                 a.employee_id,
                 e.full_name,
+                e.phone_number,
                 COUNT(DISTINCT t.id) AS total_assigned,
                 SUM(CASE WHEN t.status = 'completed' THEN 1 ELSE 0 END) AS total_completed,
                 SUM(CASE WHEN t.status = 'in_progress' THEN 1 ELSE 0 END) AS total_in_progress,
@@ -158,7 +212,8 @@ export async function sendWaDailyProgressBlast({ testEmpId = null } = {}) {
                 AND YEAR(m.created_at) = YEAR(NOW())
             GROUP BY
                 a.employee_id,
-                e.full_name
+                e.full_name,
+                e.phone_number
             HAVING
                 total_assigned > 0`
         );
@@ -177,10 +232,14 @@ export async function sendWaDailyProgressBlast({ testEmpId = null } = {}) {
     const bulan = now.toLocaleDateString("id-ID", { month: "long", year: "numeric" });
 
     let sent = 0;
+    const empIdsWithTasks = new Set();
+
     for (const row of rows) {
+        empIdsWithTasks.add(String(row.employee_id));
+
         if (testEmpId && Number(row.employee_id) !== testEmpId) continue;
 
-        const chatId = chatIds[String(row.employee_id)];
+        const chatId = phoneToWaChatId(row.phone_number);
         if (!chatId) continue;
 
         const name = row.full_name || "Karyawan";
@@ -247,69 +306,73 @@ export async function sendWaDailyProgressBlast({ testEmpId = null } = {}) {
     }
 
     // --- Blast untuk karyawan TANPA task bulan ini ---
-    const empIdsWithTasks = new Set(rows.map(r => String(r.employee_id)));
-    const noTaskEmpIds = Object.entries(chatIds)
-        .filter(([id, cid]) => cid && !empIdsWithTasks.has(id))
-        .map(([id]) => Number(id));
+    let noTaskEmployees = [];
+    try {
+        [noTaskEmployees] = await db.query(
+            `SELECT employee_id, full_name, phone_number
+             FROM mst_employee
+             WHERE is_deleted = 0
+               AND exit_date IS NULL
+               AND phone_number IS NOT NULL
+               AND phone_number != ''
+               AND employee_id NOT IN (
+                   SELECT DISTINCT a.employee_id
+                   FROM tr_pm_task_assignee a
+                   JOIN tr_pm_task t ON t.id = a.task_id AND t.is_deleted = 0
+                   JOIN tr_pm_monthly m ON m.id = t.id_monthly AND m.is_deleted = 0
+                   WHERE m.month = MONTH(NOW())
+                     AND YEAR(m.created_at) = YEAR(NOW())
+               )`
+        );
+    } catch (err) {
+        console.error("[WA Blast] Gagal query no-task employees:", err.message);
+    }
 
-    if (noTaskEmpIds.length > 0) {
-        let noTaskEmployees = [];
+    for (const emp of noTaskEmployees) {
+        if (testEmpId && Number(emp.employee_id) !== testEmpId) continue;
+
+        const chatId = phoneToWaChatId(emp.phone_number);
+        if (!chatId) continue;
+
+        const name = emp.full_name || "Karyawan";
+        const noTaskLines = [
+            `📊 *REKAP PROGRESS TASK*`,
+            `━━━━━━━━━━━━━━━━━━━━━━`,
+            ``,
+            `Halo *${name}* 👋`,
+            ``,
+            `📅 *${tanggal}*`,
+            `📁 Periode: *${bulan}*`,
+            ``,
+            `📭 Kamu belum memiliki task yang ditugaskan bulan ini.`,
+            ``,
+            `━━━━━━━━━━━━━━━━━━━━━━`,
+            `💡 Hubungi supervisormu jika ada penugasan baru!`,
+            ``,
+            `🔗 *Lihat Task Board:*`,
+            `${appUrl}/projectmanagement`,
+            ``,
+            `_Pesan otomatis dari *Alora SuperApp*_`,
+        ];
+
         try {
-            [noTaskEmployees] = await db.query(
-                `SELECT employee_id, full_name FROM mst_employee
-             WHERE employee_id IN (?) AND is_deleted = 0 AND exit_date IS NULL`,
-                [noTaskEmpIds]
-            );
-        } catch (err) {
-            console.error("[WA Blast] Gagal query no-task employees:", err.message);
-        }
-
-        for (const emp of noTaskEmployees) {
-            if (testEmpId && Number(emp.employee_id) !== testEmpId) continue;
-
-            const chatId = chatIds[String(emp.employee_id)];
-            if (!chatId) continue;
-
-            const name = emp.full_name || "Karyawan";
-            const noTaskLines = [
-                `📊 *REKAP PROGRESS TASK*`,
-                `━━━━━━━━━━━━━━━━━━━━━━`,
-                ``,
-                `Halo *${name}* 👋`,
-                ``,
-                `📅 *${tanggal}*`,
-                `📁 Periode: *${bulan}*`,
-                ``,
-                `📭 Kamu belum memiliki task yang ditugaskan bulan ini.`,
-                ``,
-                `━━━━━━━━━━━━━━━━━━━━━━`,
-                `💡 Hubungi supervisormu jika ada penugasan baru!`,
-                ``,
-                `🔗 *Lihat Task Board:*`,
-                `${appUrl}/projectmanagement`,
-                ``,
-                `_Pesan otomatis dari *Alora SuperApp*_`,
-            ];
-
-            try {
-                const resp = await fetch(`${url}/api/sendText`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json", "X-Api-Key": apiKey },
-                    body: JSON.stringify({ session, chatId, text: noTaskLines.join("\n") }),
-                });
-                if (resp.ok) {
-                    console.log(`[WA Blast] ✅ (no-task) Terkirim ke ${name} (${emp.employee_id})`);
-                    sent++;
-                } else {
-                    const body = await resp.text();
-                    console.error(`[WA Blast] ❌ (no-task) Gagal ke ${name}: HTTP ${resp.status} — ${body}`);
-                }
-            } catch (err) {
-                console.error(`[WA Blast] ❌ Error kirim no-task ke empId ${emp.employee_id}:`, err.message);
+            const resp = await fetch(`${url}/api/sendText`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "X-Api-Key": apiKey },
+                body: JSON.stringify({ session, chatId, text: noTaskLines.join("\n") }),
+            });
+            if (resp.ok) {
+                console.log(`[WA Blast] ✅ (no-task) Terkirim ke ${name} (${emp.employee_id})`);
+                sent++;
+            } else {
+                const body = await resp.text();
+                console.error(`[WA Blast] ❌ (no-task) Gagal ke ${name}: HTTP ${resp.status} — ${body}`);
             }
+        } catch (err) {
+            console.error(`[WA Blast] ❌ Error kirim no-task ke empId ${emp.employee_id}:`, err.message);
         }
     }
 
-    const totalTarget = rows.length + (noTaskEmpIds?.length ?? 0);
+    const totalTarget = (rows?.length ?? 0) + noTaskEmployees.length;
     console.log(`[WA Blast] Selesai. Terkirim ${sent}/${totalTarget} karyawan.`);
 }

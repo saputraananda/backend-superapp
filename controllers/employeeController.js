@@ -96,6 +96,11 @@ export const updateProfile = async (req, res) => {
     return res.status(400).json({ message: "Jabatan wajib diisi." });
   }
 
+  // Validasi format nomor telepon: wajib 08xxxxxxx (9–13 digit total)
+  if (phone_number && !/^08[0-9]{7,11}$/.test(phone_number)) {
+    return res.status(400).json({ message: "Format nomor telepon tidak valid. Gunakan format 08xxxxxxxxxx, contoh: 087770597000" });
+  }
+
   try {
     const [existing] = await safeQuery(
       "SELECT employee_id FROM mst_employee WHERE employee_code = ? AND email != ? AND is_deleted = 0",

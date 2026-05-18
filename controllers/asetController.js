@@ -11,6 +11,41 @@ const BASE_DIR = isProd
   ? process.env.UPLOAD_BASE_DIR || "/home/u420573163/domains/api.waschenalora.com/storage/assets/"
   : path.join(__dirname, "..", "assets");
 const ASET_PHOTO_DIR = path.join(BASE_DIR, "aset_photos");
+const THUMB_DIR = path.join(ASET_PHOTO_DIR, "thumbs");
+if (!fs.existsSync(THUMB_DIR)) fs.mkdirSync(THUMB_DIR, { recursive: true });
+
+// ── GET /aset/thumb/:filename — serve WebP thumbnail (cached) ──────────
+export const getAsetThumb = async (req, res) => {
+  const { filename } = req.params;
+  // Sanitize — only allow safe filename characters (no path traversal)
+  if (!/^[\w\-. ]+$/i.test(filename)) {
+    return res.status(400).json({ message: "Invalid filename" });
+  }
+
+  const origPath = path.join(ASET_PHOTO_DIR, filename);
+  if (!fs.existsSync(origPath)) return res.status(404).json({ message: "File tidak ditemukan" });
+
+  // Derive cached thumb name: replace ext with .webp
+  const thumbName = filename.replace(/\.[^.]+$/, "") + "_thumb.webp";
+  const thumbPath = path.join(THUMB_DIR, thumbName);
+
+  try {
+    if (!fs.existsSync(thumbPath)) {
+      const { default: sharp } = await import("sharp");
+      await sharp(origPath)
+        .resize(420, 315, { fit: "cover", withoutEnlargement: true })
+        .webp({ quality: 70 })
+        .toFile(thumbPath);
+    }
+    res.setHeader("Content-Type", "image/webp");
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    return res.sendFile(thumbPath);
+  } catch (err) {
+    // Fallback: serve original if sharp fails
+    console.error("thumb error, serving original:", err.message);
+    return res.sendFile(origPath);
+  }
+};
 
 // ── Helper: generate kode_aset ──────────────────────────────────────────
 async function generateKodeAset() {
