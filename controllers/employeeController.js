@@ -81,7 +81,7 @@ export const updateProfile = async (req, res) => {
     education_level_id, school_name, religion_id, marital_status,
     bpjs_health_number, bpjs_employment_number, npwp_number,
     bank_id, bank_account_number, emergency_contact, notes, employee_code,
-    username, // ← tambah
+    username, mother_name,
   } = req.body;
 
   if (!employee_code?.trim()) {
@@ -130,7 +130,8 @@ export const updateProfile = async (req, res) => {
         contract_end_date = ?, education_level_id = ?, school_name = ?,
         religion_id = ?, marital_status = ?, bpjs_health_number = ?,
         bpjs_employment_number = ?, npwp_number = ?, bank_id = ?,
-        bank_account_number = ?, emergency_contact = ?, notes = ?, employee_code = ?
+        bank_account_number = ?, emergency_contact = ?, notes = ?, employee_code = ?,
+        mother_name = ?
        WHERE email = ? AND is_deleted = 0`,
       [
         full_name, gender, birth_place, toNull(birth_date), address, ktp_number,
@@ -139,7 +140,7 @@ export const updateProfile = async (req, res) => {
         toNull(education_level_id), school_name, toNull(religion_id), marital_status,
         bpjs_health_number, bpjs_employment_number, npwp_number,
         toNull(bank_id), bank_account_number, emergency_contact, notes,
-        employee_code, req.session.userEmail,
+        employee_code, mother_name || null, req.session.userEmail,
       ]
     );
 

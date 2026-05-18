@@ -172,7 +172,7 @@ export const updateEmployee = async (req, res) => {
       exit_date, exit_reason, education_level_id, school_name, religion_id,
       marital_status, bpjs_health_number, bpjs_employment_number, npwp_number,
       bank_id, bank_account_number, emergency_contact, notes, employee_code,
-      username, // ← tambah
+      username, mother_name,
     } = req.body;
 
     if (!employee_code?.trim()) {
@@ -211,7 +211,7 @@ export const updateEmployee = async (req, res) => {
         education_level_id = ?, school_name = ?, religion_id = ?,
         marital_status = ?, bpjs_health_number = ?, bpjs_employment_number = ?,
         npwp_number = ?, bank_id = ?, bank_account_number = ?,
-        emergency_contact = ?, notes = ?, employee_code = ?
+        emergency_contact = ?, notes = ?, employee_code = ?, mother_name = ?
        WHERE employee_id = ? AND is_deleted = 0`,
       [
         full_name, gender, birth_place, birth_date, address, ktp_number,
@@ -220,7 +220,8 @@ export const updateEmployee = async (req, res) => {
         exit_date || null, exit_reason || null,
         education_level_id, school_name, religion_id, marital_status,
         bpjs_health_number, bpjs_employment_number, npwp_number,
-        bank_id, bank_account_number, emergency_contact, notes, employee_code, id,
+        bank_id, bank_account_number, emergency_contact, notes, employee_code,
+        mother_name || null, id,
       ]
     );
 
