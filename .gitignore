@@ -27,3 +27,5 @@ dist/
 *.sw?
 assets/
 **/assets/
+
+/aiAgent

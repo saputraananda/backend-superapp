@@ -154,7 +154,17 @@ export const getEmployee = async (req, res) => {
       [id]
     );
     if (rows.length === 0) return res.status(404).json({ message: "Employee not found" });
-    res.json({ employee: rows[0] });
+
+    const emp = rows[0];
+    if (parseInt(emp.company_id) === 2) {
+      emp.documents_base_url = process.env.IKM_DOCUMENTS_BASE_URL || "https://api.ikmalora.com/storage/documents";
+      emp.avatars_base_url   = process.env.IKM_AVATARS_BASE_URL   || "https://api.ikmalora.com/storage/avatars";
+    } else {
+      emp.documents_base_url = null;
+      emp.avatars_base_url   = null;
+    }
+
+    res.json({ employee: emp });
   } catch (err) {
     console.error("getEmployee error:", err);
     res.status(500).json({ message: err.message });

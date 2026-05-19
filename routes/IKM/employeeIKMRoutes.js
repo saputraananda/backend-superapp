@@ -1,6 +1,12 @@
 import express from "express";
 import { requireAuth } from "../../middleware/auth.js";
-import { listIKMEmployees, registerIKMEmployee, setIKMEmployeeLeaderRole } from "../../controllers/IKM/employeeIKMController.js";
+import {
+	listIKMEmployees,
+	registerIKMEmployee,
+	setIKMEmployeeLeaderRole,
+	exportIKMEmployees,
+	proxyIKMDocument,
+} from "../../controllers/IKM/employeeIKMController.js";
 
 const router = express.Router();
 
@@ -9,6 +15,8 @@ router.get("/health", (req, res) => {
 });
 
 router.get("/", requireAuth, listIKMEmployees);
+router.get("/export", requireAuth, exportIKMEmployees);
+router.get("/document-proxy", requireAuth, proxyIKMDocument);
 router.post("/register", requireAuth, registerIKMEmployee);
 router.put("/:id/leader", requireAuth, setIKMEmployeeLeaderRole);
 

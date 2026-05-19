@@ -213,6 +213,174 @@ export const listIKMEmployees = async (req, res) => {
 	}
 };
 
+/**
+ * Export semua karyawan IKM (company_id = 2) lengkap dengan join master
+ * dan path dokumen + base URL untuk avatar / documents.
+ * Tidak menggunakan paginasi karena dipakai untuk export Excel.
+ */
+export const exportIKMEmployees = async (req, res) => {
+	try {
+		const [rows] = await safeQuery(
+			`
+				SELECT
+					e.employee_id,
+					e.employee_code,
+					e.full_name,
+					e.gender,
+					e.birth_place,
+					e.birth_date,
+					e.address,
+					e.ktp_number,
+					e.family_card_number,
+					e.phone_number,
+					e.email,
+					e.join_date,
+					e.contract_end_date,
+					e.exit_date,
+					e.exit_reason,
+					e.school_name,
+					e.marital_status,
+					e.bpjs_health_number,
+					e.bpjs_employment_number,
+					e.npwp_number,
+					e.bank_account_number,
+					e.emergency_contact,
+					e.notes,
+					e.mother_name,
+					e.profile_path, e.profile_name,
+					e.ktp_path, e.ktp_name,
+					e.kk_path, e.kk_name,
+					e.npwp_path, e.npwp_name,
+					e.bpjs_path, e.bpjs_name,
+					e.bpjs_tk_path, e.bpjs_tk_name,
+					e.ijazah_path, e.ijazah_name,
+					e.sertifikat_path, e.sertifikat_name,
+					e.rekomkerja_path, e.rekomkerja_name,
+					e.created_at,
+					u.username,
+					c.company_name,
+					d.department_name,
+					p.position_name,
+					j.job_level_name,
+					es.employment_status_name,
+					ed.education_level_name,
+					r.religion_name,
+					b.bank_name
+				FROM mst_employee e
+				LEFT JOIN users                 u  ON u.email              = e.email
+				LEFT JOIN mst_company           c  ON e.company_id          = c.company_id
+				LEFT JOIN mst_department        d  ON e.department_id       = d.department_id
+				LEFT JOIN mst_position          p  ON e.position_id         = p.position_id
+				LEFT JOIN mst_job_level         j  ON e.job_level_id        = j.job_level_id
+				LEFT JOIN mst_employment_status es ON e.employment_status_id = es.employment_status_id
+				LEFT JOIN mst_education_level   ed ON e.education_level_id  = ed.education_level_id
+				LEFT JOIN mst_religion          r  ON e.religion_id         = r.religion_id
+				LEFT JOIN mst_bank              b  ON e.bank_id             = b.bank_id
+				WHERE e.is_deleted = 0 AND e.company_id = ?
+				ORDER BY e.full_name ASC, e.employee_id ASC
+			`,
+			[FIXED_COMPANY_ID]
+		);
+
+		// Merge leader role dari IKM DB
+		let leaderMap = {};
+		if (rows.length > 0) {
+			const employeeIds = rows.map((r) => r.employee_id);
+			const placeholders = employeeIds.map(() => "?").join(", ");
+			const [leaderRows] = await safeIKMQuery(
+				`SELECT employee_id, role FROM mst_leader WHERE employee_id IN (${placeholders})`,
+				employeeIds
+			);
+			for (const lr of leaderRows) {
+				leaderMap[lr.employee_id] = lr.role;
+			}
+		}
+
+		const documentsBaseUrl =
+			process.env.IKM_DOCUMENTS_BASE_URL || "https://api.ikmalora.com/storage/documents";
+		const avatarsBaseUrl =
+			process.env.IKM_AVATARS_BASE_URL || "https://api.ikmalora.com/storage/avatars";
+
+		const data = rows.map((r) => ({
+			...r,
+			leader_role: leaderMap[r.employee_id] ?? null,
+			documents_base_url: documentsBaseUrl,
+			avatars_base_url: avatarsBaseUrl,
+		}));
+
+		return res.json({
+			success: true,
+			company_id: FIXED_COMPANY_ID,
+			total: data.length,
+			documents_base_url: documentsBaseUrl,
+			avatars_base_url: avatarsBaseUrl,
+			data,
+		});
+	} catch (error) {
+		console.error("[exportIKMEmployees] Error:", error);
+		return res.status(500).json({
+			success: false,
+			message: error.message || "Gagal mengambil data export karyawan IKM",
+		});
+	}
+};
+
+/**
+ * Proxy untuk dokumen / avatar karyawan IKM agar bisa di-fetch dari frontend
+ * tanpa kena CORS (server IKM storage tidak set Access-Control-Allow-Origin).
+ *
+ * Query:
+ *   - kind: "documents" | "avatars" (default "documents")
+ *   - name: nama file (mis. "ktp_131_2026-05-18T10-09-20-249Z.jpg")
+ *
+ * Hanya menerima nama file polos (tanpa "..", tanpa slash) demi keamanan.
+ */
+export const proxyIKMDocument = async (req, res) => {
+	try {
+		const kindRaw = String(req.query.kind || "documents").toLowerCase();
+		const kind = kindRaw === "avatars" ? "avatars" : "documents";
+		const name = String(req.query.name || "").trim();
+
+		if (!name) {
+			return res.status(400).json({ message: "Parameter 'name' wajib diisi" });
+		}
+		// Cegah path traversal & subdirectory
+		if (name.includes("..") || name.includes("/") || name.includes("\\")) {
+			return res.status(400).json({ message: "Nama file tidak valid" });
+		}
+
+		const baseUrl =
+			kind === "avatars"
+				? process.env.IKM_AVATARS_BASE_URL || "https://api.ikmalora.com/storage/avatars"
+				: process.env.IKM_DOCUMENTS_BASE_URL || "https://api.ikmalora.com/storage/documents";
+
+		const targetUrl = `${baseUrl.replace(/\/$/, "")}/${encodeURIComponent(name)}`;
+
+		const upstream = await fetch(targetUrl, { method: "GET" });
+
+		if (!upstream.ok) {
+			return res
+				.status(upstream.status)
+				.json({ message: `Gagal memuat file (${upstream.status})` });
+		}
+
+		const contentType = upstream.headers.get("content-type") || "application/octet-stream";
+		const contentLength = upstream.headers.get("content-length");
+		res.setHeader("Content-Type", contentType);
+		if (contentLength) res.setHeader("Content-Length", contentLength);
+		res.setHeader("Cache-Control", "private, max-age=300");
+
+		// Stream body ke client
+		const arrayBuf = await upstream.arrayBuffer();
+		res.end(Buffer.from(arrayBuf));
+	} catch (error) {
+		console.error("[proxyIKMDocument] Error:", error);
+		if (!res.headersSent) {
+			res.status(500).json({ message: error.message || "Gagal mengambil dokumen" });
+		}
+	}
+};
+
 export const setIKMEmployeeLeaderRole = async (req, res) => {
 	try {
 		const id = Number(req.params.id);
