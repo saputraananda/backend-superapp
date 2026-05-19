@@ -172,7 +172,7 @@ export const updateEmployee = async (req, res) => {
       exit_date, exit_reason, education_level_id, school_name, religion_id,
       marital_status, bpjs_health_number, bpjs_employment_number, npwp_number,
       bank_id, bank_account_number, emergency_contact, notes, employee_code,
-      username, mother_name,
+      username, mother_name, email,
     } = req.body;
 
     if (!employee_code?.trim()) {
@@ -185,6 +185,17 @@ export const updateEmployee = async (req, res) => {
     );
     if (existing) {
       return res.status(400).json({ message: "Nomor Induk Karyawan sudah digunakan oleh karyawan lain." });
+    }
+
+    // Validasi email unik jika diisi
+    if (email?.trim()) {
+      const [[existEmail]] = await safeQuery(
+        "SELECT employee_id FROM mst_employee WHERE email = ? AND employee_id != ? AND is_deleted = 0",
+        [email.trim(), id]
+      );
+      if (existEmail) {
+        return res.status(400).json({ message: "Email sudah digunakan oleh karyawan lain." });
+      }
     }
 
     // ← Cek username unik jika diisi
@@ -201,6 +212,13 @@ export const updateEmployee = async (req, res) => {
       }
     }
 
+    // Ambil email lama sebelum update (untuk sinkronisasi tabel users)
+    const [[empBefore]] = await safeQuery(
+      "SELECT email FROM mst_employee WHERE employee_id = ? AND is_deleted = 0", [id]
+    );
+    const oldEmail = empBefore?.email ?? null;
+    const newEmail = email?.trim() || oldEmail;
+
     await safeQuery(
       `UPDATE mst_employee SET
         full_name = ?, gender = ?, birth_place = ?, birth_date = ?,
@@ -211,7 +229,8 @@ export const updateEmployee = async (req, res) => {
         education_level_id = ?, school_name = ?, religion_id = ?,
         marital_status = ?, bpjs_health_number = ?, bpjs_employment_number = ?,
         npwp_number = ?, bank_id = ?, bank_account_number = ?,
-        emergency_contact = ?, notes = ?, employee_code = ?, mother_name = ?
+        emergency_contact = ?, notes = ?, employee_code = ?, mother_name = ?,
+        email = ?
        WHERE employee_id = ? AND is_deleted = 0`,
       [
         full_name, gender, birth_place, birth_date, address, ktp_number,
@@ -221,21 +240,37 @@ export const updateEmployee = async (req, res) => {
         education_level_id, school_name, religion_id, marital_status,
         bpjs_health_number, bpjs_employment_number, npwp_number,
         bank_id, bank_account_number, emergency_contact, notes, employee_code,
-        mother_name || null, id,
+        mother_name || null, newEmail, id,
       ]
     );
 
-    // ← Update username di tabel users
-    if (typeof username === "string") {
-      const [[emp]] = await safeQuery(
-        "SELECT email FROM mst_employee WHERE employee_id = ? AND is_deleted = 0", [id]
-      );
-      if (emp?.email) {
+    // Sinkronisasi email & username di tabel users
+    if (oldEmail) {
+      const updates = [];
+      const uParams = [];
+
+      if (newEmail && newEmail !== oldEmail) {
+        updates.push("email = ?");
+        uParams.push(newEmail);
+      }
+      if (typeof username === "string") {
+        updates.push("username = ?");
+        uParams.push(username.trim() || null);
+      }
+
+      if (updates.length > 0) {
+        uParams.push(oldEmail);
         await safeQuery(
-          "UPDATE users SET username = ? WHERE email = ?",
-          [username.trim() || null, emp.email]
+          `UPDATE users SET ${updates.join(", ")} WHERE email = ?`,
+          uParams
         );
       }
+    } else if (typeof username === "string" && newEmail) {
+      // Tidak ada email lama, coba update berdasarkan email baru
+      await safeQuery(
+        "UPDATE users SET username = ? WHERE email = ?",
+        [username.trim() || null, newEmail]
+      );
     }
 
     res.json({ message: "Data karyawan berhasil diperbarui." });

@@ -81,7 +81,7 @@ export const updateProfile = async (req, res) => {
     education_level_id, school_name, religion_id, marital_status,
     bpjs_health_number, bpjs_employment_number, npwp_number,
     bank_id, bank_account_number, emergency_contact, notes, employee_code,
-    username, mother_name,
+    username, mother_name, email,
   } = req.body;
 
   if (!employee_code?.trim()) {
@@ -101,20 +101,34 @@ export const updateProfile = async (req, res) => {
     return res.status(400).json({ message: "Format nomor telepon tidak valid. Gunakan format 08xxxxxxxxxx, contoh: 087770597000" });
   }
 
+  const oldEmail = req.session.userEmail;
+  const newEmail = email?.trim() || oldEmail;
+
   try {
     const [existing] = await safeQuery(
       "SELECT employee_id FROM mst_employee WHERE employee_code = ? AND email != ? AND is_deleted = 0",
-      [employee_code, req.session.userEmail]
+      [employee_code, oldEmail]
     );
     if (existing.length > 0) {
       return res.status(400).json({ message: "Nomor Induk Karyawan sudah digunakan oleh karyawan lain." });
+    }
+
+    // Validasi email unik jika berubah
+    if (newEmail !== oldEmail) {
+      const [existEmail] = await safeQuery(
+        "SELECT employee_id FROM mst_employee WHERE email = ? AND is_deleted = 0",
+        [newEmail]
+      );
+      if (existEmail.length > 0) {
+        return res.status(400).json({ message: "Email sudah digunakan oleh karyawan lain." });
+      }
     }
 
     // ← Cek username unik jika diisi
     if (username?.trim()) {
       const [existUsername] = await safeQuery(
         "SELECT id FROM users WHERE username = ? AND email != ?",
-        [username.trim(), req.session.userEmail]
+        [username.trim(), oldEmail]
       );
       if (existUsername.length > 0) {
         return res.status(400).json({ message: "Username sudah digunakan oleh pengguna lain." });
@@ -131,7 +145,7 @@ export const updateProfile = async (req, res) => {
         religion_id = ?, marital_status = ?, bpjs_health_number = ?,
         bpjs_employment_number = ?, npwp_number = ?, bank_id = ?,
         bank_account_number = ?, emergency_contact = ?, notes = ?, employee_code = ?,
-        mother_name = ?
+        mother_name = ?, email = ?
        WHERE email = ? AND is_deleted = 0`,
       [
         full_name, gender, birth_place, toNull(birth_date), address, ktp_number,
@@ -140,24 +154,38 @@ export const updateProfile = async (req, res) => {
         toNull(education_level_id), school_name, toNull(religion_id), marital_status,
         bpjs_health_number, bpjs_employment_number, npwp_number,
         toNull(bank_id), bank_account_number, emergency_contact, notes,
-        employee_code, mother_name || null, req.session.userEmail,
+        employee_code, mother_name || null, newEmail, oldEmail,
       ]
     );
 
-    // ← Update name & username di tabel users
+    // Sinkronisasi tabel users
+    const userUpdates = [];
+    const userParams = [];
+
     if (typeof full_name === "string" && full_name.trim() !== "") {
-      await safeQuery("UPDATE users SET name = ? WHERE email = ?", [full_name, req.session.userEmail]);
+      userUpdates.push("name = ?");
+      userParams.push(full_name);
+    }
+    if (typeof username === "string") {
+      userUpdates.push("username = ?");
+      userParams.push(username.trim() || null);
+    }
+    if (newEmail !== oldEmail) {
+      userUpdates.push("email = ?");
+      userParams.push(newEmail);
     }
 
-    if (typeof username === "string") {
-      const newUsername = username.trim() || null;
+    if (userUpdates.length > 0) {
+      userParams.push(oldEmail);
       await safeQuery(
-        "UPDATE users SET username = ? WHERE email = ?",
-        [newUsername, req.session.userEmail]
+        `UPDATE users SET ${userUpdates.join(", ")} WHERE email = ?`,
+        userParams
       );
-      // Sync session
-      req.session.userName = newUsername;
     }
+
+    // Update session jika email atau username berubah
+    if (newEmail !== oldEmail) req.session.userEmail = newEmail;
+    if (typeof username === "string") req.session.userName = username.trim() || null;
 
     res.json({ message: "Profile updated successfully" });
   } catch (error) {
