@@ -49,6 +49,7 @@ import kasbonRoutes from "./routes/IKM/kasbonRoutes.js";
 import operationalRoutes from "./routes/operationalRoutes.js";
 import internalRoutes from "./routes/internalRoutes.js";
 import complaintRoutes from "./routes/complaintRoutes.js";
+import pengajuanRoutes from "./routes/pengajuanRoutes.js";
 
 import { sendIdulFitriBlastCleanoxProd } from "./utils/waBlastCustomerProd.js";
 
@@ -211,6 +212,7 @@ app.use("/assets/ikm_linen", express.static(path.join(ASSETS_BASE, "ikm_linen"))
 app.use("/assets/ikm_briefing", express.static(path.join(ASSETS_BASE, "ikm_briefing")));
 app.use("/assets/complaint_docs", express.static(path.join(ASSETS_BASE, "complaint_docs")));
 app.use("/assets/kasbon", express.static(path.join(ASSETS_BASE, "kasbon")));
+app.use("/assets/purchase", express.static(path.join(ASSETS_BASE, "purchase")));
 
 // =========================
 // Routes
@@ -290,6 +292,7 @@ app.use("/ikm/kasbon", kasbonRoutes);
 app.use("/operational", operationalRoutes);
 app.use("/internal", internalRoutes);
 app.use("/complaints", complaintRoutes);
+app.use("/pengajuan", pengajuanRoutes);
 
 // 404
 app.use((req, res) => {

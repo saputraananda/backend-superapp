@@ -78,7 +78,11 @@ export async function login(req, res) {
     }
 
     const [empRows] = await safeQuery(
-      `SELECT * FROM mst_employee WHERE email = ? AND is_deleted = 0 AND exit_date IS NULL`,
+      `SELECT e.*,
+              b.bank_name
+       FROM mst_employee e
+       LEFT JOIN mst_bank b ON b.bank_id = e.bank_id
+       WHERE e.email = ? AND e.is_deleted = 0 AND exit_date IS NULL`,
       [user.email]
     );
 
@@ -149,11 +153,13 @@ export async function me(req, res) {
     const [empRows] = await safeQuery(
       `SELECT 
          e.*,
+         b.bank_name,
          c.company_name,
          d.department_name,
          jl.job_level_name,
          p.position_name
        FROM mst_employee e
+       LEFT JOIN mst_bank       b  ON b.bank_id       = e.bank_id
        LEFT JOIN mst_company    c  ON c.company_id    = e.company_id
        LEFT JOIN mst_department d  ON d.department_id = e.department_id
        LEFT JOIN mst_job_level  jl ON jl.job_level_id = e.job_level_id

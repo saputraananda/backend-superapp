@@ -320,6 +320,32 @@ export const uploadComplaintDoc = multer({
 });
 
 // =========================
+// Upload Purchase Request (Pengajuan/Reimburse) attachment
+// (gambar + PDF, max 10 MB per file)
+// =========================
+const PURCHASE_DIR = path.join(BASE_DIR, "purchase");
+if (!fs.existsSync(PURCHASE_DIR)) fs.mkdirSync(PURCHASE_DIR, { recursive: true });
+
+const purchaseStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, PURCHASE_DIR),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    const baseName = path
+      .basename(file.originalname, ext)
+      .replace(/[^a-zA-Z0-9_\-]/g, "_")
+      .slice(0, 60);
+    const unique = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    cb(null, `${baseName}_${unique}${ext}`);
+  },
+});
+
+export const uploadPurchase = multer({
+  storage: purchaseStorage,
+  fileFilter: documentFilter,
+  limits: { fileSize: 10 * 1024 * 1024 },
+});
+
+// =========================
 // Upload IKM Kasbon proof (gambar + PDF, 10 MB)
 // =========================
 const IKM_KASBON_DIR = path.join(BASE_DIR, "kasbon");
