@@ -114,7 +114,7 @@ export const getLinenReports = async (req, res) => {
     const [rows] = await safeIKMQuery(
       `SELECT lr.id, lr.reporter_name, lr.report_date, lr.area_id,
               a.area_name, lr.hospital_id, h.hospital_name,
-              lr.finding_location, lr.linen_type, lr.finding_type,
+              lr.finding_location, lr.linen_type, lr.ownership_type, lr.finding_type,
               lr.finding_qty, lr.attachment_path, lr.reported_by, lr.created_at,
               lr.status, lr.sending_note,
               lr.process_by, lr.process_by_name, lr.process_note, lr.process_path, lr.process_at,
@@ -188,7 +188,7 @@ export const createLinenReport = async (req, res) => {
   try {
     const {
       reporter_name, report_date, area_id, hospital_id,
-      finding_location, linen_type, finding_type, finding_qty, sending_note,
+      finding_location, linen_type, ownership_type, finding_type, finding_qty, sending_note,
     } = req.body;
 
     if (!reporter_name?.trim())
@@ -214,11 +214,11 @@ export const createLinenReport = async (req, res) => {
     const [result] = await safeIKMQuery(
       `INSERT INTO tr_linen_report
          (reporter_name, report_date, area_id, hospital_id, finding_location,
-          linen_type, finding_type, finding_qty, attachment_path, reported_by, sending_note)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          linen_type, ownership_type, finding_type, finding_qty, attachment_path, reported_by, sending_note)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         reporter_name.trim(), date, Number(area_id), Number(hospital_id),
-        finding_location, linen_type.trim(), finding_type.trim(),
+        finding_location, linen_type.trim(), ownership_type || null, finding_type.trim(),
         qty, attachmentFilename, reportedBy,
         sending_note?.trim() || null,
       ]
@@ -244,7 +244,7 @@ export const updateLinenReport = async (req, res) => {
     const current = exist[0];
     const {
       reporter_name, report_date, area_id, hospital_id,
-      finding_location, linen_type, finding_type, finding_qty, sending_note,
+      finding_location, linen_type, ownership_type, finding_type, finding_qty, sending_note,
     } = req.body;
 
     if (!reporter_name?.trim())
@@ -268,12 +268,12 @@ export const updateLinenReport = async (req, res) => {
     await safeIKMQuery(
       `UPDATE tr_linen_report
        SET reporter_name=?, report_date=?, area_id=?, hospital_id=?,
-           finding_location=?, linen_type=?, finding_type=?, finding_qty=?,
+           finding_location=?, linen_type=?, ownership_type=?, finding_type=?, finding_qty=?,
            attachment_path=?, sending_note=?, updated_at=NOW()
        WHERE id=?`,
       [
         reporter_name.trim(), date, Number(area_id), Number(hospital_id),
-        finding_location, linen_type?.trim(), finding_type?.trim(),
+        finding_location, linen_type?.trim(), ownership_type || null, finding_type?.trim(),
         toUInt(finding_qty, 1), attachmentFilename, sending_note?.trim() || null, id,
       ]
     );
