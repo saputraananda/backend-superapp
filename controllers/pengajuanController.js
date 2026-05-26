@@ -175,6 +175,18 @@ export const getOutlets = async (_req, res) => {
     }
 };
 
+export const getVendors = async (_req, res) => {
+    try {
+        const data = await safeQuery(
+            `SELECT id AS vendor_id, nama_vendor, kategori FROM mst_vendor WHERE status = 'AKTIF' ORDER BY nama_vendor`
+        );
+        res.json({ data });
+    } catch (err) {
+        console.error("[getVendors]", err);
+        res.status(500).json({ message: "Gagal memuat vendor" });
+    }
+};
+
 // ════════════════════════════════════════════════════════════════════════════
 // PERIODS — daftar periode cutoff yang tersedia (untuk dropdown filter)
 //
@@ -205,6 +217,9 @@ export const getPeriods = async (req, res) => {
         if (scope === "me") {
             condition = "pr.employee_id = ?";
             params.push(employeeId);
+        } else if (scope === "all") {
+            // Semua pengajuan tanpa batasan departemen (untuk Finance/GA)
+            condition = "1 = 1";
         } else if (scope === "approval") {
             if (jobLevel === 3) {
                 condition = "pr.department_id = ?";
@@ -834,12 +849,15 @@ export const approvePR = async (req, res) => {
             if (Number(pr.status) !== 1)
                 return res.status(400).json({ message: "Pengajuan ini tidak menunggu approval supervisor" });
 
+            const spvNote = req.body.spv_note ? sanitize(req.body.spv_note) : null;
+
             await safeQuery(
-                `UPDATE tr_purchase_request SET status = 2, approved_spv_by = ?, approved_spv_at = NOW(), updated_at = NOW()
+                `UPDATE tr_purchase_request SET status = 2, approved_spv_by = ?, approved_spv_at = NOW(), spv_note = ?, updated_at = NOW()
                  WHERE pr_id = ?`,
-                [employeeId, id]
+                [employeeId, spvNote, id]
             );
-            await writeLog(id, "approved_spv", employeeId, me.full_name, "Disetujui supervisor");
+            const logNote = spvNote ? `Disetujui supervisor | Catatan: ${spvNote}` : "Disetujui supervisor";
+            await writeLog(id, "approved_spv", employeeId, me.full_name, logNote);
             return res.json({ message: "Pengajuan disetujui" });
         }
 
@@ -945,6 +963,9 @@ export const listAll = async (req, res) => {
         if (status !== null) { conditions.push("pr.status = ?"); params.push(status); }
         if (type)            { conditions.push("pr.type = ?");   params.push(type); }
 
+        const paymentMethod = req.query.payment_method?.trim() || "";
+        if (paymentMethod)   { conditions.push("pr.payment_method = ?"); params.push(paymentMethod); }
+
         const dateFrom = req.query.date_from?.trim() || "";
         const dateTo   = req.query.date_to?.trim()   || "";
         if (dateFrom) { conditions.push("pr.tanggal_pengajuan >= ?"); params.push(dateFrom); }
@@ -1043,25 +1064,54 @@ export const approveGA = async (req, res) => {
             return res.status(400).json({ message: "Pengajuan belum disetujui Supervisor" });
         }
 
-        // GA dapat override qty, merk, vendor, note
-        const gaQty    = req.body.ga_qty    ? Number(req.body.ga_qty)            : null;
-        const gaMerk   = req.body.ga_merk   ? titleCase(sanitize(req.body.ga_merk)) : null;
-        const vendor   = req.body.vendor    ? titleCase(sanitize(req.body.vendor))  : null;
+        // GA dapat override qty, merk, note
+        const gaQty    = req.body.ga_qty    ? Number(req.body.ga_qty)            : Number(pr.qty);
+        const gaMerk   = req.body.ga_merk   ? titleCase(sanitize(req.body.ga_merk)) : (pr.merk ? titleCase(pr.merk) : null);
         const gaNote   = req.body.ga_note   ? sanitize(req.body.ga_note)            : null;
+
+        // Vendor mode: 'vendor' atau 'link'
+        const vendorMode = ["vendor", "link"].includes(req.body.vendor_mode) ? req.body.vendor_mode : null;
+        if (!vendorMode) return res.status(400).json({ message: "Pilihan vendor/link wajib diisi" });
+
+        let vendorName = null;
+        let vendorId   = null;
+        let linkUrl    = null;
+        let linkTitle  = null;
+
+        if (vendorMode === "vendor") {
+            // vendor_id opsional (bisa custom text)
+            vendorId   = req.body.vendor_id ? Number(req.body.vendor_id) : null;
+            vendorName = req.body.vendor ? titleCase(sanitize(req.body.vendor)) : null;
+            if (!vendorName && !vendorId) {
+                return res.status(400).json({ message: "Nama vendor wajib diisi atau pilih dari daftar" });
+            }
+            // Jika vendor_id ada, ambil nama dari mst_vendor
+            if (vendorId && !vendorName) {
+                const vRows = await safeQuery(`SELECT nama_vendor FROM mst_vendor WHERE id = ?`, [vendorId]);
+                vendorName = vRows.length ? vRows[0].nama_vendor : null;
+            }
+        } else {
+            // link mode
+            linkUrl   = req.body.link_url   ? sanitize(req.body.link_url)   : null;
+            linkTitle = req.body.link_title  ? sanitize(req.body.link_title) : null;
+            if (!linkUrl)   return res.status(400).json({ message: "Link URL wajib diisi" });
+            if (!linkTitle) return res.status(400).json({ message: "Judul link wajib diisi" });
+        }
 
         await safeQuery(
             `UPDATE tr_purchase_request SET
                 status = 4,
                 approved_ga_by = ?, approved_ga_at = NOW(),
-                ga_qty = ?, ga_merk = ?, vendor = ?, ga_note = ?,
+                ga_qty = ?, ga_merk = ?, vendor = ?, vendor_mode = ?, vendor_id = ?,
+                link_url = ?, link_title = ?, ga_note = ?,
                 updated_at = NOW()
              WHERE pr_id = ?`,
-            [employeeId, gaQty, gaMerk, vendor, gaNote, id]
+            [employeeId, gaQty, gaMerk, vendorName, vendorMode, vendorId, linkUrl, linkTitle, gaNote, id]
         );
 
         const noteText = [
             "Disetujui GA",
-            vendor  ? `Vendor: ${vendor}` : null,
+            vendorMode === "vendor" ? `Vendor: ${vendorName}` : `Link: ${linkTitle} (${linkUrl})`,
             gaQty   ? `Qty direvisi: ${gaQty}` : null,
             gaMerk  ? `Merk direvisi: ${gaMerk}` : null,
             gaNote  ? `Catatan: ${gaNote}` : null,
@@ -1147,7 +1197,10 @@ export const getPOData = async (req, res) => {
                     bod_e.full_name AS bod_name,
                     ga_e.full_name  AS ga_name,
                     fin_e.full_name AS finance_spv_name,
-                    dir_e.full_name AS director_name
+                    dir_e.full_name AS director_name,
+                    v.nama_vendor   AS vendor_nama_from_master,
+                    v.alamat        AS vendor_alamat,
+                    v.no_telepon_1  AS vendor_telepon
              FROM tr_purchase_request pr
              LEFT JOIN mst_employee   e     ON e.employee_id     = pr.employee_id
              LEFT JOIN mst_department d     ON d.department_id   = pr.department_id
@@ -1160,6 +1213,7 @@ export const getPOData = async (req, res) => {
              LEFT JOIN mst_employee   ga_e  ON ga_e.employee_id  = pr.approved_ga_by
              LEFT JOIN mst_employee   fin_e ON fin_e.employee_id = pr.approved_finance_by
              LEFT JOIN mst_employee   dir_e ON dir_e.employee_id = 2
+             LEFT JOIN mst_vendor     v     ON v.id              = pr.vendor_id
              WHERE pr.pr_id = ? AND pr.is_deleted = 0`,
             [id]
         );
@@ -1365,6 +1419,31 @@ export const processPayment = async (req, res) => {
         const classification = ["inventory", "expense"].includes(req.body.classification) ? req.body.classification : null;
         if (!classification) return res.status(400).json({ message: "Klasifikasi (Inventory/Expense) wajib dipilih" });
 
+        const paymentMethod = ["cash", "kredit"].includes(req.body.payment_method) ? req.body.payment_method : null;
+        if (!paymentMethod) return res.status(400).json({ message: "Metode pembayaran (Cash/Kredit) wajib dipilih" });
+
+        let terminValue = null;
+        let terminUnit  = null;
+        let jatuhTempo  = null;
+
+        if (paymentMethod === "kredit") {
+            terminValue = req.body.termin_value ? Number(req.body.termin_value) : null;
+            terminUnit  = ["hari", "bulan", "tahun"].includes(req.body.termin_unit) ? req.body.termin_unit : null;
+            if (!terminValue || !terminUnit) {
+                return res.status(400).json({ message: "Termin wajib diisi untuk pembayaran kredit" });
+            }
+            // Hitung jatuh tempo dari sekarang
+            const now = new Date();
+            if (terminUnit === "hari") {
+                now.setDate(now.getDate() + terminValue);
+            } else if (terminUnit === "bulan") {
+                now.setMonth(now.getMonth() + terminValue);
+            } else if (terminUnit === "tahun") {
+                now.setFullYear(now.getFullYear() + terminValue);
+            }
+            jatuhTempo = now.toISOString().split("T")[0];
+        }
+
         const paymentNote = req.body.payment_note ? sanitize(req.body.payment_note) : null;
 
         // File bukti bayar dari multer
@@ -1377,15 +1456,18 @@ export const processPayment = async (req, res) => {
             `UPDATE tr_purchase_request SET
                 status = 6,
                 classification = ?,
+                payment_method = ?,
+                termin_value = ?, termin_unit = ?, jatuh_tempo = ?,
                 paid_by = ?, paid_at = NOW(),
                 payment_proof_path = ?,
                 payment_note = ?,
                 updated_at = NOW()
              WHERE pr_id = ?`,
-            [classification, employeeId, proofPath, paymentNote, id]
+            [classification, paymentMethod, terminValue, terminUnit, jatuhTempo, employeeId, proofPath, paymentNote, id]
         );
 
-        const noteText = `Pembayaran dilakukan | Klasifikasi: ${classification}${paymentNote ? ` | ${paymentNote}` : ""}`;
+        const terminLabel = paymentMethod === "kredit" ? ` | Termin: ${terminValue} ${terminUnit} (jatuh tempo: ${jatuhTempo})` : "";
+        const noteText = `Pembayaran dilakukan | Metode: ${paymentMethod} | Klasifikasi: ${classification}${terminLabel}${paymentNote ? ` | ${paymentNote}` : ""}`;
         await writeLog(id, "paid", employeeId, me.full_name, noteText);
 
         res.json({ message: "Pembayaran berhasil dicatat — menunggu invoice dari pengaju" });
@@ -1403,14 +1485,21 @@ export const completePR = async (req, res) => {
         const employeeId = getEmployeeId(req);
         if (!employeeId) return res.status(401).json({ message: "Unauthorized" });
 
+        const me = await fetchEmployee(employeeId);
+        if (!me) return res.status(404).json({ message: "Employee tidak ditemukan" });
+
         const { id } = req.params;
         const rows = await safeQuery(
             `SELECT * FROM tr_purchase_request WHERE pr_id = ? AND is_deleted = 0`,
             [id]
         );
         if (!rows.length) return res.status(404).json({ message: "Data tidak ditemukan" });
-        if (rows[0].employee_id !== employeeId) {
-            return res.status(403).json({ message: "Hanya pengaju yang bisa melengkapi" });
+
+        // Boleh complete: pengaju ATAU GA
+        const isPengaju = rows[0].employee_id === employeeId;
+        const isGAUser  = isGA(me.position_name);
+        if (!isPengaju && !isGAUser) {
+            return res.status(403).json({ message: "Hanya pengaju atau GA yang bisa melengkapi" });
         }
         if (Number(rows[0].status) !== 6) {
             return res.status(400).json({ message: "Pengajuan belum dalam status Terbayar" });
@@ -1430,7 +1519,6 @@ export const completePR = async (req, res) => {
             [employeeId, invoicePath, id]
         );
 
-        const me = await fetchEmployee(employeeId);
         await writeLog(id, "completed", employeeId, me?.full_name, "Pengajuan selesai — invoice dilampirkan");
 
         res.json({ message: "Pengajuan selesai" });

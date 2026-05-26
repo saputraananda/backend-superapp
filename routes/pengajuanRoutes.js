@@ -2,7 +2,7 @@ import { Router } from "express";
 import { requireAuth } from "../middleware/auth.js";
 import { uploadPurchase } from "../middleware/upload.js";
 import {
-    getSatuan, getCompanies, getOutlets, getPeriods,
+    getSatuan, getCompanies, getOutlets, getVendors, getPeriods,
     getDashboard,
     listMy, listDepartment, listApproval, listAll, listGaReview, getDetail,
     listFinanceReview, listPaymentPending,
@@ -19,6 +19,7 @@ const router = Router();
 router.get("/satuan",    requireAuth, getSatuan);
 router.get("/companies", requireAuth, getCompanies);
 router.get("/outlets",   requireAuth, getOutlets);
+router.get("/vendors",   requireAuth, getVendors);
 router.get("/periods",   requireAuth, getPeriods);
 
 // ── Dashboard & list ──
