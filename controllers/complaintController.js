@@ -16,6 +16,25 @@ function removeFile(relativePath) {
   }
 }
 
+// ─── Periods (distinct months from submitted_at for filter dropdown) ──────────
+
+export const getComplaintPeriods = async (_req, res) => {
+  try {
+    const [rows] = await safeQuery(
+      `SELECT DISTINCT
+         YEAR(submitted_at)  AS year,
+         MONTH(submitted_at) AS month
+       FROM tr_complaint
+       WHERE submitted_at IS NOT NULL
+       ORDER BY year DESC, month DESC`,
+      []
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
 // ─── Master data ──────────────────────────────────────────────────────────────
 
 export const getComplaintMeta = async (_req, res) => {
@@ -167,8 +186,8 @@ export const getComplaints = async (req, res) => {
       const s = `%${req.query.search}%`;
       params.push(s, s);
     }
-    if (req.query.start_date) { where.push("DATE(c.created_at) >= ?"); params.push(req.query.start_date); }
-    if (req.query.end_date) { where.push("DATE(c.created_at) <= ?"); params.push(req.query.end_date); }
+    if (req.query.start_date) { where.push("DATE(c.submitted_at) >= ?"); params.push(req.query.start_date); }
+    if (req.query.end_date) { where.push("DATE(c.submitted_at) <= ?"); params.push(req.query.end_date); }
 
     const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
     const orderDir = req.query.order_dir?.toUpperCase() === "ASC" ? "ASC" : "DESC";
@@ -183,14 +202,14 @@ export const getComplaints = async (req, res) => {
          c.topic_id, cp.topic_name,
          c.complaint_name, c.nota_number, c.qty, c.description,
          c.deduction, c.pic_employee_id, c.pic_name,
-         c.progress, c.created_at, c.updated_at
+         c.progress, c.submitted_at, c.created_at, c.updated_at
        FROM tr_complaint c
        LEFT JOIN mst_outlet           o  ON o.id         = c.outlet_id
        LEFT JOIN mst_complaint_type   ct ON ct.type_id   = c.type_id
        LEFT JOIN mst_complaint_category cc ON cc.category_id = c.category_id
        LEFT JOIN mst_complaint_topic  cp ON cp.topic_id  = c.topic_id
        ${whereClause}
-       ORDER BY c.created_at ${orderDir}
+       ORDER BY c.submitted_at ${orderDir}
        LIMIT ? OFFSET ?`,
       [...params, limit, offset]
     );

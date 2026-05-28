@@ -605,6 +605,12 @@ export const createPR = async (req, res) => {
             if (!atasNama) return res.status(400).json({ message: "Atas Nama wajib diisi" });
         }
 
+        // Link referensi (opsional, diisi karyawan)
+        const linkUrl   = req.body.link_url   ? sanitize(req.body.link_url)   : null;
+        const linkTitle = req.body.link_title  ? sanitize(req.body.link_title) : null;
+        // Jika karyawan mengisi link, set vendor_mode = 'link' secara default
+        const vendorMode = linkUrl ? "link" : null;
+
         const prCode = await generatePrCode();
 
         // Jika pengaju adalah Supervisor / Manager / Direktur (job_level <= 3),
@@ -619,11 +625,13 @@ export const createPR = async (req, res) => {
                  company_id, outlet_id,
                  nama_barang, deskripsi, merk, qty, satuan_id, estimasi_harga, alasan_pembelian,
                  bank_id, nomor_rekening, atas_nama,
+                 vendor_mode, link_url, link_title,
                  status,
                  approved_spv_by, approved_spv_at)
              VALUES (?, ?, ?, ?, ?,
                      ?, ?,
                      ?, ?, ?, ?, ?, ?, ?,
+                     ?, ?, ?,
                      ?, ?, ?,
                      ?,
                      ?, ${autoApproveSpv ? "NOW()" : "NULL"})`,
@@ -631,6 +639,7 @@ export const createPR = async (req, res) => {
              companyId, outletId,
              namaBarang, deskripsi, merk, qty, satuanId, estimasiHarga, alasanPembelian,
              bankId, nomorRekening, atasNama,
+             vendorMode, linkUrl, linkTitle,
              initialStatus,
              autoApproveSpv ? employeeId : null]
         );
@@ -715,6 +724,12 @@ export const updatePR = async (req, res) => {
             if (!atasNama) return res.status(400).json({ message: "Atas Nama wajib diisi" });
         }
 
+        // Link referensi (opsional, diisi karyawan)
+        const linkUrl   = req.body.link_url   ? sanitize(req.body.link_url)   : null;
+        const linkTitle = req.body.link_title  ? sanitize(req.body.link_title) : null;
+        // Jika karyawan mengisi link, set vendor_mode = 'link'; jika dikosongkan, clear vendor_mode
+        const vendorMode = linkUrl ? "link" : null;
+
         // jika sebelumnya rejected, set kembali ke 1 (Telah Diajukan)
         const newStatus = Number(row.status) === 9 ? 1 : row.status;
 
@@ -724,12 +739,14 @@ export const updatePR = async (req, res) => {
                 nama_barang = ?, deskripsi = ?, merk = ?, qty = ?, satuan_id = ?,
                 estimasi_harga = ?, alasan_pembelian = ?,
                 bank_id = ?, nomor_rekening = ?, atas_nama = ?,
+                vendor_mode = ?, link_url = ?, link_title = ?,
                 status = ?, rejection_reason = NULL, rejected_at = NULL, rejected_by = NULL,
                 updated_at = NOW()
              WHERE pr_id = ?`,
             [type, tanggalPengajuan, companyId, outletId,
              namaBarang, deskripsi, merk, qty, satuanId, estimasiHarga, alasanPembelian,
              bankId, nomorRekening, atasNama,
+             vendorMode, linkUrl, linkTitle,
              newStatus, id]
         );
 
@@ -1091,7 +1108,7 @@ export const approveGA = async (req, res) => {
                 vendorName = vRows.length ? vRows[0].nama_vendor : null;
             }
         } else {
-            // link mode
+            // link mode — GA bisa edit link yang sudah diisi karyawan
             linkUrl   = req.body.link_url   ? sanitize(req.body.link_url)   : null;
             linkTitle = req.body.link_title  ? sanitize(req.body.link_title) : null;
             if (!linkUrl)   return res.status(400).json({ message: "Link URL wajib diisi" });
@@ -1191,7 +1208,9 @@ export const getPOData = async (req, res) => {
                     d.department_name,
                     s.satuan_name,
                     c.company_name,
+                    c.address     AS company_address,
                     o.full_name AS outlet_name,
+                    o.address     AS outlet_address,
                     bnk.bank_name,
                     spv_e.full_name AS spv_name,
                     bod_e.full_name AS bod_name,
@@ -1218,8 +1237,9 @@ export const getPOData = async (req, res) => {
             [id]
         );
         if (!rows.length) return res.status(404).json({ message: "Data tidak ditemukan" });
-        // PR/PO tersedia mulai status 4 (GA approved) ke atas, kecuali 9 (ditolak)
-        if (Number(rows[0].status) < 4 || Number(rows[0].status) === 9) {
+        // PR tersedia mulai status 2 (SPV approved), PO mulai status 4 (GA approved)
+        // Endpoint ini melayani keduanya — frontend menentukan dokumen mana yang ditampilkan
+        if (Number(rows[0].status) < 2 || Number(rows[0].status) === 9) {
             return res.status(400).json({ message: "Dokumen belum tersedia pada status ini" });
         }
 
@@ -1300,13 +1320,19 @@ export const approveFinance = async (req, res) => {
                 status = 5,
                 approved_finance_by = ?, approved_finance_at = NOW(),
                 finance_note = ?,
+                approved_bod_by = ?, approved_bod_at = NOW(),
                 updated_at = NOW()
              WHERE pr_id = ?`,
-            [employeeId, finNote, id]
+            [employeeId, finNote, 2, id]
         );
 
         await writeLog(id, "approved_finance", employeeId, me.full_name,
             finNote ? `Disetujui SPV Finance | ${finNote}` : "Disetujui SPV Finance — menunggu pembayaran");
+
+        // Direktur otomatis approve bersamaan dengan SPV Finance
+        const dirRows = await safeQuery(`SELECT full_name FROM mst_employee WHERE employee_id = 2 LIMIT 1`);
+        const dirName = dirRows.length ? dirRows[0].full_name : "Direktur";
+        await writeLog(id, "approved_bod", 2, dirName, "Disetujui Direktur (otomatis bersamaan dengan SPV Finance)");
 
         res.json({ message: "Disetujui SPV Finance — menunggu pembayaran" });
     } catch (err) {
@@ -1446,6 +1472,10 @@ export const processPayment = async (req, res) => {
 
         const paymentNote = req.body.payment_note ? sanitize(req.body.payment_note) : null;
 
+        // Nominal bayar aktual (default = estimasi_harga * qty jika tidak diisi)
+        const nominalBayarRaw = req.body.nominal_bayar ? Number(req.body.nominal_bayar) : null;
+        const nominalBayar = nominalBayarRaw || null;
+
         // File bukti bayar dari multer
         const file = req.files?.[0] || null;
         const proofPath = file ? `purchase/${file.filename}` : null;
@@ -1458,16 +1488,18 @@ export const processPayment = async (req, res) => {
                 classification = ?,
                 payment_method = ?,
                 termin_value = ?, termin_unit = ?, jatuh_tempo = ?,
+                nominal_bayar = ?,
                 paid_by = ?, paid_at = NOW(),
                 payment_proof_path = ?,
                 payment_note = ?,
                 updated_at = NOW()
              WHERE pr_id = ?`,
-            [classification, paymentMethod, terminValue, terminUnit, jatuhTempo, employeeId, proofPath, paymentNote, id]
+            [classification, paymentMethod, terminValue, terminUnit, jatuhTempo, nominalBayar, employeeId, proofPath, paymentNote, id]
         );
 
         const terminLabel = paymentMethod === "kredit" ? ` | Termin: ${terminValue} ${terminUnit} (jatuh tempo: ${jatuhTempo})` : "";
-        const noteText = `Pembayaran dilakukan | Metode: ${paymentMethod} | Klasifikasi: ${classification}${terminLabel}${paymentNote ? ` | ${paymentNote}` : ""}`;
+        const nominalLabel = nominalBayar ? ` | Nominal Bayar: Rp ${new Intl.NumberFormat("id-ID").format(nominalBayar)}` : "";
+        const noteText = `Pembayaran dilakukan | Metode: ${paymentMethod} | Klasifikasi: ${classification}${terminLabel}${nominalLabel}${paymentNote ? ` | ${paymentNote}` : ""}`;
         await writeLog(id, "paid", employeeId, me.full_name, noteText);
 
         res.json({ message: "Pembayaran berhasil dicatat — menunggu invoice dari pengaju" });
