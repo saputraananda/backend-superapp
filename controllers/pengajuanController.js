@@ -21,6 +21,14 @@
 //   - Karyawan upload inv   -> status = 7 (Selesai)
 //   - Reject (any auth)     -> status = 9
 //
+// MULTI-INSTALLMENT PAYMENT (cicilan) — KREDIT:
+//   - Pembayaran kredit dapat dilakukan beberapa kali (cicilan) sampai lunas.
+//   - Setiap cicilan disimpan di tr_purchase_request_payment.
+//   - Total dibayar = SUM(nominal_bayar) di tabel payment.
+//   - Sisa = tr_purchase_request.nominal_bayar (target) - total dibayar.
+//   - Status tetap = 6 selama sisa > 0 (frontend menampilkan "Belum Lunas" /
+//     "Belum Terbayar"). Pembayaran cash juga tercatat 1 baris (lunas sekali bayar).
+//
 // Aturan edit/hapus oleh pengaju: hanya saat status IN (1, 2, 9)
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -229,12 +237,28 @@ export const getPeriods = async (req, res) => {
             }
         } else {
             // department (default)
-            if (deptId) {
-                condition = "pr.department_id = ?";
-                params.push(deptId);
+            // Finance/GA bisa override target departemen via ?department_id=
+            // Nilai "all" = semua departemen tanpa filter
+            const requestedDeptIdRaw = req.query.department_id;
+            const isFinanceGA = isGAFinance(me.position_name);
+
+            if (requestedDeptIdRaw === "all" && isFinanceGA) {
+                condition = "1 = 1";
             } else {
-                condition = "pr.employee_id = ?";
-                params.push(employeeId);
+                const requestedDeptId = (requestedDeptIdRaw && requestedDeptIdRaw !== "all")
+                    ? Number(requestedDeptIdRaw)
+                    : null;
+                const targetDeptId = (requestedDeptId && isFinanceGA)
+                    ? requestedDeptId
+                    : deptId;
+
+                if (targetDeptId) {
+                    condition = "pr.department_id = ?";
+                    params.push(targetDeptId);
+                } else {
+                    condition = "pr.employee_id = ?";
+                    params.push(employeeId);
+                }
             }
         }
 
@@ -260,7 +284,28 @@ export const getPeriods = async (req, res) => {
 };
 
 // ════════════════════════════════════════════════════════════════════════════
+// DEPARTMENTS — list semua departemen (untuk dropdown filter Finance/GA)
+// ════════════════════════════════════════════════════════════════════════════
+export const getDepartments = async (_req, res) => {
+    try {
+        const data = await safeQuery(
+            `SELECT department_id, department_name FROM mst_department
+             WHERE is_active = 1 ORDER BY department_name`
+        );
+        res.json({ data });
+    } catch (err) {
+        console.error("[getDepartments]", err);
+        res.status(500).json({ message: "Gagal memuat departemen" });
+    }
+};
+
+// ════════════════════════════════════════════════════════════════════════════
 // DASHBOARD (riwayat pengajuan satu departemen)
+//
+// Untuk Finance / GA: dapat memberi query param ?department_id=<id>
+// untuk memonitor departemen lain. Nilai khusus "all" = semua departemen
+// (tanpa filter). Jika tidak diisi, default ke departemen pengguna sendiri
+// (sama seperti karyawan biasa).
 // ════════════════════════════════════════════════════════════════════════════
 export const getDashboard = async (req, res) => {
     try {
@@ -270,9 +315,46 @@ export const getDashboard = async (req, res) => {
         const me = await fetchEmployee(employeeId);
         if (!me) return res.status(404).json({ message: "Employee tidak ditemukan" });
 
-        const departmentId = me.department_id;
-        const dptCondition = departmentId ? "pr.department_id = ?" : "pr.employee_id = ?";
-        const dptParam     = departmentId ? departmentId          : employeeId;
+        // Override departmen utk Finance/GA
+        const requestedDeptIdRaw = req.query.department_id;
+        let departmentId = me.department_id;
+        let departmentName = me.department_name;
+        let showAll = false;
+
+        if (requestedDeptIdRaw === "all") {
+            if (!isGAFinance(me.position_name)) {
+                return res.status(403).json({ message: "Tidak diizinkan memonitor semua departemen" });
+            }
+            showAll = true;
+            departmentId = null;
+            departmentName = "Semua Departemen";
+        } else if (requestedDeptIdRaw && Number(requestedDeptIdRaw) !== me.department_id) {
+            // Pastikan boleh override
+            if (!isGAFinance(me.position_name)) {
+                return res.status(403).json({ message: "Tidak diizinkan memonitor departemen lain" });
+            }
+            // Validasi & ambil nama
+            const dRows = await safeQuery(
+                `SELECT department_id, department_name FROM mst_department WHERE department_id = ?`,
+                [Number(requestedDeptIdRaw)]
+            );
+            if (dRows.length) {
+                departmentId   = dRows[0].department_id;
+                departmentName = dRows[0].department_name;
+            }
+        }
+
+        let dptCondition;
+        const dptCondParams = [];
+        if (showAll) {
+            dptCondition = "1 = 1";
+        } else if (departmentId) {
+            dptCondition = "pr.department_id = ?";
+            dptCondParams.push(departmentId);
+        } else {
+            dptCondition = "pr.employee_id = ?";
+            dptCondParams.push(employeeId);
+        }
 
         // ── filter tanggal opsional (cutoff period dari frontend) ──────────
         const dateFrom = req.query.date_from?.trim() || "";
@@ -288,7 +370,7 @@ export const getDashboard = async (req, res) => {
              FROM tr_purchase_request pr
              WHERE pr.is_deleted = 0 AND ${dptCondition}${dateClause}
              GROUP BY type, status`,
-            [dptParam, ...dateParams]
+            [...dptCondParams, ...dateParams]
         );
 
         const summary = {
@@ -314,11 +396,11 @@ export const getDashboard = async (req, res) => {
              WHERE pr.is_deleted = 0 AND ${dptCondition}${dateClause}
              ORDER BY pr.created_at DESC
              LIMIT 8`,
-            [dptParam, ...dateParams]
+            [...dptCondParams, ...dateParams]
         );
 
         res.json({
-            department: { id: departmentId, name: me.department_name },
+            department: { id: departmentId, name: departmentName },
             summary,
             recent,
         });
@@ -384,6 +466,9 @@ export const listMy = async (req, res) => {
 
 // ════════════════════════════════════════════════════════════════════════════
 // LIST se-DEPARTEMEN (semua pengajuan teman sedepartemen, untuk dashboard)
+//
+// Untuk Finance / GA: bisa override ?department_id=<id> untuk monitoring,
+// atau ?department_id=all untuk semua departemen.
 // ════════════════════════════════════════════════════════════════════════════
 export const listDepartment = async (req, res) => {
     try {
@@ -393,7 +478,32 @@ export const listDepartment = async (req, res) => {
         const me = await fetchEmployee(employeeId);
         if (!me) return res.status(404).json({ message: "Employee tidak ditemukan" });
 
-        const departmentId = me.department_id;
+        // Override departmen utk Finance/GA
+        const requestedDeptIdRaw = req.query.department_id;
+        let departmentId = me.department_id;
+        let departmentName = me.department_name;
+        let showAll = false;
+
+        if (requestedDeptIdRaw === "all") {
+            if (!isGAFinance(me.position_name)) {
+                return res.status(403).json({ message: "Tidak diizinkan memonitor semua departemen" });
+            }
+            showAll = true;
+            departmentId = null;
+            departmentName = "Semua Departemen";
+        } else if (requestedDeptIdRaw && Number(requestedDeptIdRaw) !== me.department_id) {
+            if (!isGAFinance(me.position_name)) {
+                return res.status(403).json({ message: "Tidak diizinkan memonitor departemen lain" });
+            }
+            const dRows = await safeQuery(
+                `SELECT department_id, department_name FROM mst_department WHERE department_id = ?`,
+                [Number(requestedDeptIdRaw)]
+            );
+            if (dRows.length) {
+                departmentId   = dRows[0].department_id;
+                departmentName = dRows[0].department_name;
+            }
+        }
 
         const page   = Math.max(1, parseInt(req.query.page) || 1);
         const limit  = Math.min(100, parseInt(req.query.limit) || 10);
@@ -405,7 +515,9 @@ export const listDepartment = async (req, res) => {
         // Jika tidak punya departemen, fallback ke milik sendiri agar tetap konsisten
         const conditions = ["pr.is_deleted = 0"];
         const params = [];
-        if (departmentId) {
+        if (showAll) {
+            // tanpa filter departemen — semua pengajuan
+        } else if (departmentId) {
             conditions.push("pr.department_id = ?");
             params.push(departmentId);
         } else {
@@ -457,7 +569,7 @@ export const listDepartment = async (req, res) => {
             total,
             page,
             limit,
-            department: { id: departmentId, name: me.department_name },
+            department: { id: departmentId, name: departmentName },
         });
     } catch (err) {
         console.error("[listDepartment]", err);
@@ -1497,12 +1609,33 @@ export const processPayment = async (req, res) => {
             [classification, paymentMethod, terminValue, terminUnit, jatuhTempo, nominalBayar, employeeId, proofPath, paymentNote, id]
         );
 
+        // Catat di tabel payment HANYA untuk metode CASH (langsung lunas).
+        // Untuk KREDIT: nominal_bayar di tabel PR adalah TARGET yang harus
+        // dibayar, bukan jumlah yg sudah dibayar. Pembayaran kredit dicatat
+        // satu per satu lewat endpoint addInstallment supaya sisa terhitung
+        // benar dan riwayat akurat.
+        if (paymentMethod === "cash") {
+            await safeQuery(
+                `INSERT INTO tr_purchase_request_payment
+                    (pr_id, nominal_bayar, proof_path, note, paid_by, paid_by_name, paid_at)
+                 VALUES (?, ?, ?, ?, ?, ?, NOW())`,
+                [id, nominalBayar || 0, proofPath, paymentNote, employeeId, me.full_name]
+            );
+        }
+
         const terminLabel = paymentMethod === "kredit" ? ` | Termin: ${terminValue} ${terminUnit} (jatuh tempo: ${jatuhTempo})` : "";
-        const nominalLabel = nominalBayar ? ` | Nominal Bayar: Rp ${new Intl.NumberFormat("id-ID").format(nominalBayar)}` : "";
-        const noteText = `Pembayaran dilakukan | Metode: ${paymentMethod} | Klasifikasi: ${classification}${terminLabel}${nominalLabel}${paymentNote ? ` | ${paymentNote}` : ""}`;
+        const nominalLabel = nominalBayar
+            ? (paymentMethod === "kredit"
+                ? ` | Total Tagihan Kredit: Rp ${new Intl.NumberFormat("id-ID").format(nominalBayar)}`
+                : ` | Nominal Bayar: Rp ${new Intl.NumberFormat("id-ID").format(nominalBayar)}`)
+            : "";
+        const noteText = `${paymentMethod === "kredit" ? "PR diterbitkan (Kredit)" : "Pembayaran dilakukan"} | Metode: ${paymentMethod} | Klasifikasi: ${classification}${terminLabel}${nominalLabel}${paymentNote ? ` | ${paymentNote}` : ""}`;
         await writeLog(id, "paid", employeeId, me.full_name, noteText);
 
-        res.json({ message: "Pembayaran berhasil dicatat — menunggu invoice dari pengaju" });
+        const successMsg = paymentMethod === "kredit"
+            ? "PR diterbitkan sebagai kredit — cicilan dapat dicatat melalui menu pelunasan"
+            : "Pembayaran berhasil dicatat — menunggu invoice dari pengaju";
+        res.json({ message: successMsg });
     } catch (err) {
         console.error("[processPayment]", err);
         res.status(500).json({ message: "Gagal memproses pembayaran" });
@@ -1557,5 +1690,285 @@ export const completePR = async (req, res) => {
     } catch (err) {
         console.error("[completePR]", err);
         res.status(500).json({ message: "Gagal menyelesaikan pengajuan" });
+    }
+};
+
+// ════════════════════════════════════════════════════════════════════════════
+// LIST KREDIT  (Finance / GA — daftar PR kredit beserta status pelunasan)
+//
+// Mengembalikan setiap PR kredit + kolom turunan:
+//   total_paid   = SUM(payment.nominal_bayar)
+//   sisa         = nominal_bayar - total_paid
+//   is_lunas     = sisa <= 0
+//
+// Filter:
+//   ?status=unpaid  → hanya yang belum lunas
+//   ?status=paid    → hanya yang sudah lunas
+//   ?department_id  → filter per departemen
+//   ?date_from / ?date_to → filter rentang tanggal pengajuan
+// ════════════════════════════════════════════════════════════════════════════
+export const listCredit = async (req, res) => {
+    try {
+        const employeeId = getEmployeeId(req);
+        if (!employeeId) return res.status(401).json({ message: "Unauthorized" });
+
+        const me = await fetchEmployee(employeeId);
+        if (!me) return res.status(404).json({ message: "Employee tidak ditemukan" });
+        if (!isGAFinance(me.position_name)) {
+            return res.status(403).json({ message: "Akses ditolak: hanya Finance / GA" });
+        }
+
+        const conditions = [
+            "pr.is_deleted = 0",
+            "pr.payment_method = 'kredit'",
+            "pr.status >= 6",
+            "pr.status != 9",
+        ];
+        const params = [];
+
+        const search = req.query.search?.trim() || "";
+        if (search) {
+            conditions.push("(pr.nama_barang LIKE ? OR pr.pr_code LIKE ? OR e.full_name LIKE ?)");
+            params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+        }
+
+        const departmentIdRaw = req.query.department_id;
+        // Skip filter jika "all" atau kosong
+        const departmentId = (departmentIdRaw && departmentIdRaw !== "all")
+            ? Number(departmentIdRaw)
+            : null;
+        if (departmentId) {
+            conditions.push("pr.department_id = ?");
+            params.push(departmentId);
+        }
+
+        const dateFrom = req.query.date_from?.trim() || "";
+        const dateTo   = req.query.date_to?.trim()   || "";
+        if (dateFrom) { conditions.push("pr.tanggal_pengajuan >= ?"); params.push(dateFrom); }
+        if (dateTo)   { conditions.push("pr.tanggal_pengajuan <= ?"); params.push(dateTo); }
+
+        const where = `WHERE ${conditions.join(" AND ")}`;
+
+        const data = await safeQuery(
+            `SELECT pr.*,
+                    e.full_name AS pengaju_name,
+                    d.department_name,
+                    s.satuan_name,
+                    c.company_name,
+                    o.full_name AS outlet_name,
+                    COALESCE((SELECT SUM(p.nominal_bayar)
+                              FROM tr_purchase_request_payment p
+                              WHERE p.pr_id = pr.pr_id), 0) AS total_paid
+             FROM tr_purchase_request pr
+             LEFT JOIN mst_employee   e ON e.employee_id   = pr.employee_id
+             LEFT JOIN mst_department d ON d.department_id = pr.department_id
+             LEFT JOIN mst_satuan     s ON s.satuan_id     = pr.satuan_id
+             LEFT JOIN mst_company    c ON c.company_id    = pr.company_id
+             LEFT JOIN mst_outlet     o ON o.id            = pr.outlet_id
+             ${where}
+             ORDER BY pr.created_at DESC`,
+            params
+        );
+
+        // hitung sisa & is_lunas per row
+        // Lunas jika sisa = 0 DAN sudah ada pembayaran (totalPaid > 0).
+        // target boleh 0 (kalau Finance approve tanpa set nominal target)
+        // — yang penting ada record pembayaran berarti sudah dibayar.
+        const filterStatus = req.query.status?.trim() || ""; // "unpaid" | "paid" | ""
+        const enriched = data.map(r => {
+            const target = Number(r.nominal_bayar) || 0;
+            const paid   = Number(r.total_paid)    || 0;
+            const sisa   = Math.max(0, target - paid);
+            const isLunas = sisa <= 0 && (target > 0 || paid > 0);
+            return { ...r, total_paid: paid, sisa, is_lunas: isLunas };
+        });
+
+        const filtered = filterStatus === "unpaid"
+            ? enriched.filter(r => !r.is_lunas)
+            : filterStatus === "paid"
+            ? enriched.filter(r =>  r.is_lunas)
+            : enriched;
+
+        // aggregate
+        const totalTarget = enriched.reduce((s, r) => s + (Number(r.nominal_bayar) || 0), 0);
+        const totalPaid   = enriched.reduce((s, r) => s + r.total_paid, 0);
+        const totalSisa   = Math.max(0, totalTarget - totalPaid);
+
+        res.json({
+            data: filtered,
+            total: filtered.length,
+            summary: {
+                totalTarget,
+                totalPaid,
+                totalSisa,
+                countAll:    enriched.length,
+                countUnpaid: enriched.filter(r => !r.is_lunas).length,
+                countPaid:   enriched.filter(r =>  r.is_lunas).length,
+            },
+        });
+    } catch (err) {
+        console.error("[listCredit]", err);
+        res.status(500).json({ message: "Gagal memuat data kredit" });
+    }
+};
+
+// ════════════════════════════════════════════════════════════════════════════
+// PAYMENT HISTORY  (Finance / GA — riwayat cicilan untuk satu PR)
+// ════════════════════════════════════════════════════════════════════════════
+export const getPaymentHistory = async (req, res) => {
+    try {
+        const employeeId = getEmployeeId(req);
+        if (!employeeId) return res.status(401).json({ message: "Unauthorized" });
+
+        const me = await fetchEmployee(employeeId);
+        if (!me) return res.status(404).json({ message: "Employee tidak ditemukan" });
+
+        const { id } = req.params;
+        const prRows = await safeQuery(
+            `SELECT pr.pr_id, pr.pr_code, pr.nama_barang, pr.qty, pr.estimasi_harga,
+                    pr.payment_method, pr.nominal_bayar, pr.termin_value, pr.termin_unit,
+                    pr.jatuh_tempo, pr.status, pr.employee_id,
+                    e.full_name AS pengaju_name,
+                    d.department_name
+             FROM tr_purchase_request pr
+             LEFT JOIN mst_employee   e ON e.employee_id   = pr.employee_id
+             LEFT JOIN mst_department d ON d.department_id = pr.department_id
+             WHERE pr.pr_id = ? AND pr.is_deleted = 0`,
+            [id]
+        );
+        if (!prRows.length) return res.status(404).json({ message: "Data tidak ditemukan" });
+        const pr = prRows[0];
+
+        const payments = await safeQuery(
+            `SELECT * FROM tr_purchase_request_payment
+             WHERE pr_id = ?
+             ORDER BY paid_at ASC, payment_id ASC`,
+            [id]
+        );
+
+        const totalPaid = payments.reduce((s, p) => s + Number(p.nominal_bayar || 0), 0);
+        const target    = Number(pr.nominal_bayar) || 0;
+        const sisa      = Math.max(0, target - totalPaid);
+        const isLunas   = sisa <= 0 && (target > 0 || totalPaid > 0);
+
+        res.json({
+            pr,
+            payments,
+            summary: {
+                target,
+                totalPaid,
+                sisa,
+                isLunas,
+            },
+        });
+    } catch (err) {
+        console.error("[getPaymentHistory]", err);
+        res.status(500).json({ message: "Gagal memuat riwayat pembayaran" });
+    }
+};
+
+// ════════════════════════════════════════════════════════════════════════════
+// ADD INSTALLMENT  (Finance — tambah cicilan/pelunasan untuk PR kredit)
+//
+// Body (multipart/form-data):
+//   - nominal_bayar  (required, numeric)
+//   - note           (optional)
+//   - attachments    (file, required: bukti bayar)
+//
+// Aturan:
+//   - PR harus payment_method = 'kredit' dan status = 6 (Terbayar) — masih
+//     dianggap "belum lunas" selama sisa > 0.
+//   - Hanya Finance (staff/spv) yang boleh.
+//   - Jika nominal cicilan ≥ sisa, PR otomatis dianggap LUNAS (tetapi status
+//     tetap 6, frontend menampilkan "Lunas (Kredit)").
+// ════════════════════════════════════════════════════════════════════════════
+export const addInstallment = async (req, res) => {
+    try {
+        const employeeId = getEmployeeId(req);
+        if (!employeeId) return res.status(401).json({ message: "Unauthorized" });
+
+        const me = await fetchEmployee(employeeId);
+        if (!me) return res.status(404).json({ message: "Employee tidak ditemukan" });
+        if (!isFinance(me.position_name)) {
+            return res.status(403).json({ message: "Akses ditolak: hanya Finance" });
+        }
+
+        const { id } = req.params;
+        const rows = await safeQuery(
+            `SELECT * FROM tr_purchase_request WHERE pr_id = ? AND is_deleted = 0`,
+            [id]
+        );
+        if (!rows.length) return res.status(404).json({ message: "Data tidak ditemukan" });
+        const pr = rows[0];
+
+        if (pr.payment_method !== "kredit") {
+            return res.status(400).json({ message: "Hanya pembayaran kredit yang dapat dicicil" });
+        }
+        if (Number(pr.status) !== 6) {
+            return res.status(400).json({ message: "PR ini tidak dalam tahap pembayaran" });
+        }
+
+        // validasi sisa
+        const paidRows = await safeQuery(
+            `SELECT COALESCE(SUM(nominal_bayar), 0) AS total_paid
+             FROM tr_purchase_request_payment WHERE pr_id = ?`,
+            [id]
+        );
+        const totalPaid = Number(paidRows[0]?.total_paid) || 0;
+        const target    = Number(pr.nominal_bayar) || 0;
+        const sisa      = Math.max(0, target - totalPaid);
+
+        if (sisa <= 0) {
+            return res.status(400).json({ message: "PR ini sudah lunas" });
+        }
+
+        const nominalBayarRaw = req.body.nominal_bayar ? Number(req.body.nominal_bayar) : 0;
+        if (!nominalBayarRaw || nominalBayarRaw <= 0) {
+            return res.status(400).json({ message: "Nominal bayar wajib diisi" });
+        }
+        if (nominalBayarRaw > sisa + 0.01) {
+            return res.status(400).json({
+                message: `Nominal bayar (Rp ${new Intl.NumberFormat("id-ID").format(nominalBayarRaw)}) melebihi sisa hutang (Rp ${new Intl.NumberFormat("id-ID").format(sisa)})`,
+            });
+        }
+
+        const note = req.body.note ? sanitize(req.body.note) : null;
+
+        // bukti bayar
+        const file = req.files?.[0] || null;
+        const proofPath = file ? `purchase/${file.filename}` : null;
+        if (!proofPath) {
+            return res.status(400).json({ message: "Bukti pembayaran wajib dilampirkan" });
+        }
+
+        await safeQuery(
+            `INSERT INTO tr_purchase_request_payment
+                (pr_id, nominal_bayar, proof_path, note, paid_by, paid_by_name, paid_at)
+             VALUES (?, ?, ?, ?, ?, ?, NOW())`,
+            [id, nominalBayarRaw, proofPath, note, employeeId, me.full_name]
+        );
+
+        // update timestamp PR
+        await safeQuery(
+            `UPDATE tr_purchase_request SET updated_at = NOW() WHERE pr_id = ?`,
+            [id]
+        );
+
+        const newSisa = Math.max(0, sisa - nominalBayarRaw);
+        const isLunas = newSisa <= 0;
+
+        const noteText = isLunas
+            ? `Pelunasan kredit | Cicilan: Rp ${new Intl.NumberFormat("id-ID").format(nominalBayarRaw)} (LUNAS)${note ? ` | ${note}` : ""}`
+            : `Cicilan kredit | Bayar: Rp ${new Intl.NumberFormat("id-ID").format(nominalBayarRaw)} | Sisa: Rp ${new Intl.NumberFormat("id-ID").format(newSisa)}${note ? ` | ${note}` : ""}`;
+        await writeLog(id, isLunas ? "paid_full" : "paid_installment", employeeId, me.full_name, noteText);
+
+        res.json({
+            message: isLunas ? "Pembayaran lunas" : "Cicilan tercatat",
+            sisa: newSisa,
+            is_lunas: isLunas,
+        });
+    } catch (err) {
+        console.error("[addInstallment]", err);
+        res.status(500).json({ message: "Gagal mencatat pembayaran" });
     }
 };
