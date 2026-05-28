@@ -447,7 +447,10 @@ export const listMy = async (req, res) => {
         const total = Number(countRows[0].total);
 
         const data = await safeQuery(
-            `SELECT pr.*, s.satuan_name, c.company_name, o.full_name AS outlet_name
+            `SELECT pr.*, s.satuan_name, c.company_name, o.full_name AS outlet_name,
+                    COALESCE((SELECT SUM(p.nominal_bayar)
+                              FROM tr_purchase_request_payment p
+                              WHERE p.pr_id = pr.pr_id), 0) AS total_paid
              FROM tr_purchase_request pr
              LEFT JOIN mst_satuan  s ON s.satuan_id  = pr.satuan_id
              LEFT JOIN mst_company c ON c.company_id = pr.company_id
@@ -551,7 +554,10 @@ export const listDepartment = async (req, res) => {
 
         const data = await safeQuery(
             `SELECT pr.*, e.full_name AS pengaju_name, d.department_name,
-                    s.satuan_name, c.company_name, o.full_name AS outlet_name
+                    s.satuan_name, c.company_name, o.full_name AS outlet_name,
+                    COALESCE((SELECT SUM(p.nominal_bayar)
+                              FROM tr_purchase_request_payment p
+                              WHERE p.pr_id = pr.pr_id), 0) AS total_paid
              FROM tr_purchase_request pr
              LEFT JOIN mst_employee   e ON e.employee_id   = pr.employee_id
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
@@ -1113,7 +1119,10 @@ export const listAll = async (req, res) => {
 
         const data = await safeQuery(
             `SELECT pr.*, e.full_name AS pengaju_name, d.department_name,
-                    s.satuan_name, c.company_name, o.full_name AS outlet_name
+                    s.satuan_name, c.company_name, o.full_name AS outlet_name,
+                    COALESCE((SELECT SUM(p.nominal_bayar)
+                              FROM tr_purchase_request_payment p
+                              WHERE p.pr_id = pr.pr_id), 0) AS total_paid
              FROM tr_purchase_request pr
              LEFT JOIN mst_employee   e ON e.employee_id   = pr.employee_id
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
@@ -1934,6 +1943,29 @@ export const addInstallment = async (req, res) => {
 
         const note = req.body.note ? sanitize(req.body.note) : null;
 
+        // Tanggal bayar (opsional). Format YYYY-MM-DD. Default: NOW().
+        // Tidak boleh di masa depan.
+        let paidAtSql = "NOW()";
+        const paidAtParams = [];
+        const paidAtRaw = req.body.paid_at?.trim();
+        if (paidAtRaw) {
+            // Validasi format YYYY-MM-DD
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(paidAtRaw)) {
+                return res.status(400).json({ message: "Format tanggal bayar tidak valid (YYYY-MM-DD)" });
+            }
+            const paidDate = new Date(`${paidAtRaw}T00:00:00`);
+            const today = new Date();
+            today.setHours(23, 59, 59, 999);
+            if (Number.isNaN(paidDate.getTime())) {
+                return res.status(400).json({ message: "Tanggal bayar tidak valid" });
+            }
+            if (paidDate > today) {
+                return res.status(400).json({ message: "Tanggal bayar tidak boleh di masa depan" });
+            }
+            paidAtSql = "?";
+            paidAtParams.push(`${paidAtRaw} ${new Date().toTimeString().slice(0, 8)}`);
+        }
+
         // bukti bayar
         const file = req.files?.[0] || null;
         const proofPath = file ? `purchase/${file.filename}` : null;
@@ -1944,8 +1976,8 @@ export const addInstallment = async (req, res) => {
         await safeQuery(
             `INSERT INTO tr_purchase_request_payment
                 (pr_id, nominal_bayar, proof_path, note, paid_by, paid_by_name, paid_at)
-             VALUES (?, ?, ?, ?, ?, ?, NOW())`,
-            [id, nominalBayarRaw, proofPath, note, employeeId, me.full_name]
+             VALUES (?, ?, ?, ?, ?, ?, ${paidAtSql})`,
+            [id, nominalBayarRaw, proofPath, note, employeeId, me.full_name, ...paidAtParams]
         );
 
         // update timestamp PR
