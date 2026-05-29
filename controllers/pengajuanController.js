@@ -727,7 +727,25 @@ export const createPR = async (req, res) => {
         const linkUrl   = req.body.link_url   ? sanitize(req.body.link_url)   : null;
         const linkTitle = req.body.link_title  ? sanitize(req.body.link_title) : null;
         // Jika karyawan mengisi link, set vendor_mode = 'link' secara default
-        const vendorMode = linkUrl ? "link" : null;
+        let vendorMode = linkUrl ? "link" : null;
+
+        // GA bisa langsung isi vendor info saat create (untuk fast-track)
+        let vendorName = null;
+        let vendorId   = null;
+        const gaVendorMode = req.body.vendor_mode; // 'vendor' | 'link' | null
+        if (isGA(me.position_name) && gaVendorMode) {
+            vendorMode = gaVendorMode;
+            if (gaVendorMode === "vendor") {
+                vendorId   = req.body.vendor_id ? Number(req.body.vendor_id) : null;
+                vendorName = req.body.vendor ? titleCase(sanitize(req.body.vendor)) : null;
+                // Jika vendor_id ada, ambil nama dari mst_vendor
+                if (vendorId && !vendorName) {
+                    const vRows = await safeQuery(`SELECT nama_vendor FROM mst_vendor WHERE id = ?`, [vendorId]);
+                    vendorName = vRows.length ? vRows[0].nama_vendor : null;
+                }
+            }
+            // link mode: linkUrl & linkTitle sudah di-set di atas
+        }
 
         const prCode = await generatePrCode();
 
@@ -735,7 +753,26 @@ export const createPR = async (req, res) => {
         // langsung skip approval supervisor → status = 2, approved_spv_by = diri sendiri
         const jobLevel      = Number(me.job_level_id);
         const autoApproveSpv = jobLevel <= 3;
-        const initialStatus  = autoApproveSpv ? 2 : 1;
+
+        // ── FITUR KHUSUS GA ──────────────────────────────────────────────────
+        // Jika pengaju adalah General Affair DAN company_id != 1:
+        //   - Total estimasi < 500.000 → langsung status = 4 (PR Ready),
+        //     skip SPV + Direktur + GA approval. Langsung ke Finance.
+        //   - Total estimasi >= 500.000 → tetap butuh approval SPV (flow normal).
+        const isGAUser       = isGA(me.position_name);
+        const totalEstimasi  = (estimasiHarga || 0) * qty;
+        const gaFastTrack    = isGAUser && companyId !== 1 && totalEstimasi < 500000;
+
+        let initialStatus;
+        if (gaFastTrack) {
+            // GA fast-track: langsung PR Ready (status 4) → menunggu Finance
+            // TIDAK set approved_spv — karena memang tidak ada approval SPV
+            initialStatus = 4;
+        } else if (autoApproveSpv) {
+            initialStatus = 2;
+        } else {
+            initialStatus = 1;
+        }
 
         const insertResult = await safeQuery(
             `INSERT INTO tr_purchase_request
@@ -743,23 +780,26 @@ export const createPR = async (req, res) => {
                  company_id, outlet_id,
                  nama_barang, deskripsi, merk, qty, satuan_id, estimasi_harga, alasan_pembelian,
                  bank_id, nomor_rekening, atas_nama,
-                 vendor_mode, link_url, link_title,
+                 vendor_mode, vendor, vendor_id, link_url, link_title,
                  status,
-                 approved_spv_by, approved_spv_at)
+                 approved_spv_by, approved_spv_at,
+                 approved_ga_by, approved_ga_at)
              VALUES (?, ?, ?, ?, ?,
                      ?, ?,
                      ?, ?, ?, ?, ?, ?, ?,
                      ?, ?, ?,
-                     ?, ?, ?,
+                     ?, ?, ?, ?, ?,
                      ?,
-                     ?, ${autoApproveSpv ? "NOW()" : "NULL"})`,
+                     ?, ${autoApproveSpv && !gaFastTrack ? "NOW()" : "NULL"},
+                     ?, ${gaFastTrack ? "NOW()" : "NULL"})`,
             [prCode, type, employeeId, me.department_id, tanggalPengajuan,
              companyId, outletId,
              namaBarang, deskripsi, merk, qty, satuanId, estimasiHarga, alasanPembelian,
              bankId, nomorRekening, atasNama,
-             vendorMode, linkUrl, linkTitle,
+             vendorMode, vendorName, vendorId, linkUrl, linkTitle,
              initialStatus,
-             autoApproveSpv ? employeeId : null]
+             (autoApproveSpv && !gaFastTrack) ? employeeId : null,
+             gaFastTrack ? employeeId : null]
         );
 
         const prId = insertResult.insertId;
@@ -779,7 +819,11 @@ export const createPR = async (req, res) => {
         await writeLog(prId, "created", employeeId, me.full_name,
             `${typeLabel} dibuat & diajukan`);
 
-        if (autoApproveSpv) {
+        if (gaFastTrack) {
+            // GA fast-track: hanya catat GA approval (tanpa SPV)
+            await writeLog(prId, "approved_ga", employeeId, me.full_name,
+                "PR diterbitkan langsung oleh GA (fast-track: estimasi < Rp 500.000, company ≠ PT Waschen)");
+        } else if (autoApproveSpv) {
             await writeLog(prId, "approved_spv", employeeId, me.full_name,
                 "Disetujui supervisor (otomatis — pengaju adalah supervisor)");
         }
@@ -1198,9 +1242,12 @@ export const approveGA = async (req, res) => {
         if (!rows.length) return res.status(404).json({ message: "Data tidak ditemukan" });
         const pr = rows[0];
 
-        if (![2, 3].includes(Number(pr.status))) {
+        if (![2, 3, 4].includes(Number(pr.status))) {
             return res.status(400).json({ message: "Pengajuan belum disetujui Supervisor" });
         }
+
+        // Jika status sudah 4 (fast-track), ini hanya update vendor info, bukan approval
+        const isVendorUpdateOnly = Number(pr.status) === 4;
 
         // GA dapat override qty, merk, note
         const gaQty    = req.body.ga_qty    ? Number(req.body.ga_qty)            : Number(pr.qty);
@@ -1236,28 +1283,41 @@ export const approveGA = async (req, res) => {
             if (!linkTitle) return res.status(400).json({ message: "Judul link wajib diisi" });
         }
 
-        await safeQuery(
-            `UPDATE tr_purchase_request SET
-                status = 4,
-                approved_ga_by = ?, approved_ga_at = NOW(),
-                ga_qty = ?, ga_merk = ?, vendor = ?, vendor_mode = ?, vendor_id = ?,
-                link_url = ?, link_title = ?, ga_note = ?,
-                updated_at = NOW()
-             WHERE pr_id = ?`,
-            [employeeId, gaQty, gaMerk, vendorName, vendorMode, vendorId, linkUrl, linkTitle, gaNote, id]
-        );
+        if (isVendorUpdateOnly) {
+            // Hanya update vendor info (status tetap 4)
+            await safeQuery(
+                `UPDATE tr_purchase_request SET
+                    ga_qty = ?, ga_merk = ?, vendor = ?, vendor_mode = ?, vendor_id = ?,
+                    link_url = ?, link_title = ?, ga_note = ?,
+                    updated_at = NOW()
+                 WHERE pr_id = ?`,
+                [gaQty, gaMerk, vendorName, vendorMode, vendorId, linkUrl, linkTitle, gaNote, id]
+            );
+        } else {
+            // Full GA approval: set status 4
+            await safeQuery(
+                `UPDATE tr_purchase_request SET
+                    status = 4,
+                    approved_ga_by = ?, approved_ga_at = NOW(),
+                    ga_qty = ?, ga_merk = ?, vendor = ?, vendor_mode = ?, vendor_id = ?,
+                    link_url = ?, link_title = ?, ga_note = ?,
+                    updated_at = NOW()
+                 WHERE pr_id = ?`,
+                [employeeId, gaQty, gaMerk, vendorName, vendorMode, vendorId, linkUrl, linkTitle, gaNote, id]
+            );
+        }
 
         const noteText = [
-            "Disetujui GA",
+            isVendorUpdateOnly ? "Info vendor dilengkapi" : "Disetujui GA",
             vendorMode === "vendor" ? `Vendor: ${vendorName}` : `Link: ${linkTitle} (${linkUrl})`,
             gaQty   ? `Qty direvisi: ${gaQty}` : null,
             gaMerk  ? `Merk direvisi: ${gaMerk}` : null,
             gaNote  ? `Catatan: ${gaNote}` : null,
         ].filter(Boolean).join(" | ");
 
-        await writeLog(id, "approved_ga", employeeId, me.full_name, noteText);
+        await writeLog(id, isVendorUpdateOnly ? "vendor_updated" : "approved_ga", employeeId, me.full_name, noteText);
 
-        res.json({ message: "Pengajuan disetujui GA — PO siap diterbitkan" });
+        res.json({ message: isVendorUpdateOnly ? "Info vendor berhasil dilengkapi" : "Pengajuan disetujui GA — PO siap diterbitkan" });
     } catch (err) {
         console.error("[approveGA]", err);
         res.status(500).json({ message: "Gagal approve GA" });
