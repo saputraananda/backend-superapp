@@ -58,7 +58,7 @@ router.post("/:id/approve-finance", requireAuth, approveFinance);
 router.post("/:id/reject-finance",  requireAuth, rejectFinance);
 
 // ── Payment & Completion ──
-router.post("/:id/pay",      requireAuth, uploadPurchase.array("attachments", 1), processPayment);
+router.post("/:id/pay",      requireAuth, uploadPurchase.array("attachments", 5), processPayment);
 router.post("/:id/complete",  requireAuth, uploadPurchase.array("attachments", 1), completePR);
 
 export default router;

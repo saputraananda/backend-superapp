@@ -1597,11 +1597,10 @@ export const processPayment = async (req, res) => {
         const nominalBayarRaw = req.body.nominal_bayar ? Number(req.body.nominal_bayar) : null;
         const nominalBayar = nominalBayarRaw || null;
 
-        // File bukti bayar dari multer
-        const file = req.files?.[0] || null;
-        const proofPath = file ? `purchase/${file.filename}` : null;
-
-        if (!proofPath) return res.status(400).json({ message: "Bukti pembayaran wajib dilampirkan" });
+        // File bukti bayar dari multer (bisa multi-file, max 5)
+        const files = req.files || [];
+        if (!files.length) return res.status(400).json({ message: "Bukti pembayaran wajib dilampirkan" });
+        const proofPath = `purchase/${files[0].filename}`; // path utama (file pertama)
 
         await safeQuery(
             `UPDATE tr_purchase_request SET
@@ -1629,6 +1628,16 @@ export const processPayment = async (req, res) => {
                     (pr_id, nominal_bayar, proof_path, note, paid_by, paid_by_name, paid_at)
                  VALUES (?, ?, ?, ?, ?, ?, NOW())`,
                 [id, nominalBayar || 0, proofPath, paymentNote, employeeId, me.full_name]
+            );
+        }
+
+        // Simpan semua file bukti sebagai attachment PR (termasuk file pertama)
+        for (const f of files) {
+            await safeQuery(
+                `INSERT INTO tr_purchase_request_attachment
+                    (pr_id, file_path, original_name, mime_type, file_size_kb)
+                 VALUES (?, ?, ?, ?, ?)`,
+                [id, `purchase/${f.filename}`, f.originalname, f.mimetype, Math.round(f.size / 1024)]
             );
         }
 
