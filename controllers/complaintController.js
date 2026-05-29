@@ -20,10 +20,13 @@ function removeFile(relativePath) {
 
 export const getComplaintPeriods = async (_req, res) => {
   try {
+    // Period is bucketed by the cutoff used on the frontend (cutoff day = 26):
+    // a complaint submitted on/after the 26th belongs to the NEXT month's period.
+    // e.g. submitted_at 2026-05-28 → "Juni 2026" (cutoff 2026-05-26 s/d 2026-06-25).
     const [rows] = await safeQuery(
       `SELECT DISTINCT
-         YEAR(submitted_at)  AS year,
-         MONTH(submitted_at) AS month
+         YEAR(DATE_ADD(submitted_at,  INTERVAL IF(DAY(submitted_at) >= 26, 1, 0) MONTH)) AS year,
+         MONTH(DATE_ADD(submitted_at, INTERVAL IF(DAY(submitted_at) >= 26, 1, 0) MONTH)) AS month
        FROM tr_complaint
        WHERE submitted_at IS NOT NULL
        ORDER BY year DESC, month DESC`,
