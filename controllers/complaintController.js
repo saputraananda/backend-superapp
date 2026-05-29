@@ -97,11 +97,11 @@ export const getComplaintSummary = async (req, res) => {
   try {
     const dateWhere = [];
     const dateParams = [];
-    if (req.query.start_date) { dateWhere.push("DATE(created_at) >= ?"); dateParams.push(req.query.start_date); }
-    if (req.query.end_date) { dateWhere.push("DATE(created_at) <= ?"); dateParams.push(req.query.end_date); }
+    if (req.query.start_date) { dateWhere.push("DATE(submitted_at) >= ?"); dateParams.push(req.query.start_date); }
+    if (req.query.end_date) { dateWhere.push("DATE(submitted_at) <= ?"); dateParams.push(req.query.end_date); }
     const dw = dateWhere.length ? `WHERE ${dateWhere.join(" AND ")}` : "";
     const cJoinWhere = dateWhere.length
-      ? `WHERE ${dateWhere.map(s => s.replace("created_at", "c.created_at")).join(" AND ")}`
+      ? `WHERE ${dateWhere.map(s => s.replace("submitted_at", "c.submitted_at")).join(" AND ")}`
       : "";
 
     const [[totals]] = await safeQuery(
@@ -159,9 +159,9 @@ export const getComplaintSummary = async (req, res) => {
     );
 
     const [recentTrend] = await safeQuery(
-      `SELECT DATE_FORMAT(created_at,'%Y-%m') AS month, COUNT(*) AS total
+      `SELECT DATE_FORMAT(submitted_at,'%Y-%m') AS month, COUNT(*) AS total
        FROM tr_complaint
-       WHERE created_at >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
+       WHERE submitted_at >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
        GROUP BY month
        ORDER BY month ASC`,
       []
