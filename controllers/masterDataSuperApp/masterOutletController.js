@@ -16,28 +16,28 @@ export const getOutletById = async (req, res) => {
 };
 
 export const createOutlet = async (req, res) => {
-  const { name, full_name, lat, lon } = req.body;
+  const { name, full_name, address = "", lat, lon } = req.body;
   if (!name?.trim()) return res.status(400).json({ message: "Nama outlet wajib diisi" });
   if (!full_name?.trim()) return res.status(400).json({ message: "Nama lengkap outlet wajib diisi" });
   if (lat == null || lon == null) return res.status(400).json({ message: "Koordinat lat/lon wajib diisi" });
   try {
     const [r] = await safeQuery(
-      `INSERT INTO mst_outlet (name, full_name, lat, lon) VALUES (?, ?, ?, ?)`,
-      [name.trim(), full_name.trim(), Number(lat), Number(lon)]
+      `INSERT INTO mst_outlet (name, full_name, address, lat, lon) VALUES (?, ?, ?, ?, ?)`,
+      [name.trim(), full_name.trim(), address.trim(), Number(lat), Number(lon)]
     );
     res.status(201).json({ message: "Outlet berhasil ditambahkan", id: r.insertId });
   } catch (err) { res.status(500).json({ message: err.message }); }
 };
 
 export const updateOutlet = async (req, res) => {
-  const { name, full_name, lat, lon } = req.body;
+  const { name, full_name, address, lat, lon } = req.body;
   if (!name?.trim()) return res.status(400).json({ message: "Nama outlet wajib diisi" });
   if (!full_name?.trim()) return res.status(400).json({ message: "Nama lengkap outlet wajib diisi" });
   if (lat == null || lon == null) return res.status(400).json({ message: "Koordinat lat/lon wajib diisi" });
   try {
     await safeQuery(
-      `UPDATE mst_outlet SET name = ?, full_name = ?, lat = ?, lon = ? WHERE id = ?`,
-      [name.trim(), full_name.trim(), Number(lat), Number(lon), req.params.id]
+      `UPDATE mst_outlet SET name = ?, full_name = ?, address = ?, lat = ?, lon = ? WHERE id = ?`,
+      [name.trim(), full_name.trim(), (address || "").trim(), Number(lat), Number(lon), req.params.id]
     );
     res.json({ message: "Outlet berhasil diperbarui" });
   } catch (err) { res.status(500).json({ message: err.message }); }
