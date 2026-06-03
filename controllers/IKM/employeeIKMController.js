@@ -169,8 +169,9 @@ export const listIKMEmployees = async (req, res) => {
 			[...params, limit, offset]
 		);
 
-		// mst_leader ada di IKM DB (server berbeda) → query terpisah lalu merge
+		// mst_leader & mst_floor ada di IKM DB (server berbeda) → query terpisah lalu merge
 		let leaderMap = {};
+		let floorMap = {};
 		if (rows.length > 0) {
 			const employeeIds = rows.map((r) => r.employee_id);
 			const placeholders = employeeIds.map(() => "?").join(", ");
@@ -181,8 +182,19 @@ export const listIKMEmployees = async (req, res) => {
 			for (const lr of leaderRows) {
 				leaderMap[lr.employee_id] = lr.role;
 			}
+			const [floorRows] = await safeIKMQuery(
+				`SELECT employee_id, floor FROM mst_floor WHERE employee_id IN (${placeholders})`,
+				employeeIds
+			);
+			for (const fr of floorRows) {
+				floorMap[fr.employee_id] = fr.floor;
+			}
 		}
-		const data = rows.map((r) => ({ ...r, leader_role: leaderMap[r.employee_id] ?? null }));
+		const data = rows.map((r) => ({
+			...r,
+			leader_role: leaderMap[r.employee_id] ?? null,
+			employee_floor: floorMap[r.employee_id] ?? null,
+		}));
 
 		return res.json({
 			success: true,
@@ -234,11 +246,13 @@ export const exportIKMEmployees = async (req, res) => {
 					e.family_card_number,
 					e.phone_number,
 					e.email,
+					e.private_email,
 					e.join_date,
 					e.contract_end_date,
 					e.exit_date,
 					e.exit_reason,
 					e.school_name,
+					e.major_name,
 					e.marital_status,
 					e.bpjs_health_number,
 					e.bpjs_employment_number,
@@ -513,5 +527,45 @@ export const registerIKMEmployee = async (req, res) => {
 			success: false,
 			message: error.message || "Gagal menambahkan karyawan IKM",
 		});
+	}
+};
+
+export const setIKMEmployeeFloor = async (req, res) => {
+	try {
+		const id = Number(req.params.id);
+		if (!Number.isInteger(id) || id <= 0) {
+			return res.status(400).json({ message: "ID tidak valid" });
+		}
+
+		// Verify employee exists in company
+		const [empRows] = await safeQuery(
+			"SELECT employee_id FROM mst_employee WHERE employee_id = ? AND company_id = ? AND is_deleted = 0 LIMIT 1",
+			[id, FIXED_COMPANY_ID]
+		);
+		if (empRows.length === 0) {
+			return res.status(404).json({ message: "Karyawan tidak ditemukan" });
+		}
+
+		const floorInput = String(req.body?.floor || "").trim().toUpperCase();
+		const ALLOWED_FLOORS = new Set(["1", "2", "3", "4", "5", "ALL"]);
+
+		if (!floorInput || !ALLOWED_FLOORS.has(floorInput)) {
+			// kosong / tidak valid → hapus dari mst_floor
+			await safeIKMQuery("DELETE FROM mst_floor WHERE employee_id = ?", [id]);
+			return res.json({ message: "Data lantai karyawan dihapus", employee_floor: null });
+		}
+
+		// upsert ke mst_floor
+		await safeIKMQuery(
+			`INSERT INTO mst_floor (employee_id, floor)
+			 VALUES (?, ?)
+			 ON DUPLICATE KEY UPDATE floor = VALUES(floor), updated_at = NOW()`,
+			[id, floorInput]
+		);
+
+		return res.json({ message: `Lantai karyawan berhasil diset ke ${floorInput}`, employee_floor: floorInput });
+	} catch (error) {
+		console.error("[setIKMEmployeeFloor] Error:", error);
+		return res.status(500).json({ message: error.message || "Gagal mengubah lantai karyawan" });
 	}
 };

@@ -87,10 +87,10 @@ export const updateProfile = async (req, res) => {
     full_name, gender, birth_place, birth_date, address, ktp_number,
     family_card_number, phone_number, company_id, job_level_id, position_id,
     department_id, join_date, employment_status_id, contract_end_date,
-    education_level_id, school_name, religion_id, marital_status,
+    education_level_id, school_name, major_name, religion_id, marital_status,
     bpjs_health_number, bpjs_employment_number, npwp_number,
     bank_id, bank_account_number, emergency_contact, notes, employee_code,
-    username, mother_name, email,
+    username, mother_name, email, private_email,
   } = req.body;
 
   if (!employee_code?.trim()) {
@@ -150,20 +150,20 @@ export const updateProfile = async (req, res) => {
         address = ?, ktp_number = ?, family_card_number = ?,
         phone_number = ?, company_id = ?, job_level_id = ?, position_id = ?,
         department_id = ?, join_date = ?, employment_status_id = ?,
-        contract_end_date = ?, education_level_id = ?, school_name = ?,
+        contract_end_date = ?, education_level_id = ?, school_name = ?, major_name = ?,
         religion_id = ?, marital_status = ?, bpjs_health_number = ?,
         bpjs_employment_number = ?, npwp_number = ?, bank_id = ?,
         bank_account_number = ?, emergency_contact = ?, notes = ?, employee_code = ?,
-        mother_name = ?, email = ?
+        mother_name = ?, email = ?, private_email = ?
        WHERE email = ? AND is_deleted = 0`,
       [
         full_name, gender, birth_place, toNull(birth_date), address, ktp_number,
         family_card_number, phone_number, toNull(company_id), toNull(job_level_id), toNull(position_id),
         toNull(department_id), toNull(join_date), toNull(employment_status_id), toNull(contract_end_date),
-        toNull(education_level_id), school_name, toNull(religion_id), marital_status,
+        toNull(education_level_id), school_name, major_name || null, toNull(religion_id), marital_status,
         bpjs_health_number, bpjs_employment_number, npwp_number,
         toNull(bank_id), bank_account_number, emergency_contact, notes,
-        employee_code, mother_name || null, newEmail, oldEmail,
+        employee_code, mother_name || null, newEmail, private_email || null, oldEmail,
       ]
     );
 

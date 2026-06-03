@@ -179,10 +179,10 @@ export const updateEmployee = async (req, res) => {
       full_name, gender, birth_place, birth_date, address, ktp_number,
       family_card_number, phone_number, company_id, job_level_id, position_id,
       department_id, join_date, employment_status_id, contract_end_date,
-      exit_date, exit_reason, education_level_id, school_name, religion_id,
+      exit_date, exit_reason, education_level_id, school_name, major_name, religion_id,
       marital_status, bpjs_health_number, bpjs_employment_number, npwp_number,
       bank_id, bank_account_number, emergency_contact, notes, employee_code,
-      username, mother_name, email,
+      username, mother_name, email, private_email,
     } = req.body;
 
     if (!employee_code?.trim()) {
@@ -236,21 +236,21 @@ export const updateEmployee = async (req, res) => {
         phone_number = ?, company_id = ?, job_level_id = ?, position_id = ?,
         department_id = ?, join_date = ?, employment_status_id = ?,
         contract_end_date = ?, exit_date = ?, exit_reason = ?,
-        education_level_id = ?, school_name = ?, religion_id = ?,
+        education_level_id = ?, school_name = ?, major_name = ?, religion_id = ?,
         marital_status = ?, bpjs_health_number = ?, bpjs_employment_number = ?,
         npwp_number = ?, bank_id = ?, bank_account_number = ?,
         emergency_contact = ?, notes = ?, employee_code = ?, mother_name = ?,
-        email = ?
+        email = ?, private_email = ?
        WHERE employee_id = ? AND is_deleted = 0`,
       [
         full_name, gender, birth_place, birth_date, address, ktp_number,
         family_card_number, phone_number, company_id, job_level_id, position_id,
         department_id, join_date, employment_status_id, contract_end_date,
         exit_date || null, exit_reason || null,
-        education_level_id, school_name, religion_id, marital_status,
+        education_level_id, school_name, major_name || null, religion_id, marital_status,
         bpjs_health_number, bpjs_employment_number, npwp_number,
         bank_id, bank_account_number, emergency_contact, notes, employee_code,
-        mother_name || null, newEmail, id,
+        mother_name || null, newEmail, private_email || null, id,
       ]
     );
 

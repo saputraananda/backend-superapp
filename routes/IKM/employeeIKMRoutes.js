@@ -4,6 +4,7 @@ import {
 	listIKMEmployees,
 	registerIKMEmployee,
 	setIKMEmployeeLeaderRole,
+	setIKMEmployeeFloor,
 	exportIKMEmployees,
 	proxyIKMDocument,
 } from "../../controllers/IKM/employeeIKMController.js";
@@ -19,5 +20,6 @@ router.get("/export", requireAuth, exportIKMEmployees);
 router.get("/document-proxy", requireAuth, proxyIKMDocument);
 router.post("/register", requireAuth, registerIKMEmployee);
 router.put("/:id/leader", requireAuth, setIKMEmployeeLeaderRole);
+router.put("/:id/floor", requireAuth, setIKMEmployeeFloor);
 
 export default router;

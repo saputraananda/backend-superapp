@@ -71,7 +71,7 @@ function buildAttachmentUrl(filename) {
 // ── GET list ───────────────────────────────────────────────────────────────
 export const getLinenReports = async (req, res) => {
   try {
-    const { startDate, endDate, area_id, hospital_id, finding_location, search, page, limit } = req.query;
+    const { startDate, endDate, area_id, hospital_id, finding_location, floor, search, page, limit } = req.query;
 
     const defaultCutoff = getDefaultCutoffDates();
     const start = toISODateString(startDate) || defaultCutoff.start;
@@ -91,13 +91,17 @@ export const getLinenReports = async (req, res) => {
       where.push("lr.finding_location = ?");
       params.push(finding_location);
     }
+    if (floor) {
+      where.push("f.floor = ?");
+      params.push(floor);
+    }
     if (search?.trim()) {
       const like = `%${search.trim()}%`;
       where.push(
         "(lr.reporter_name LIKE ? OR lr.linen_type LIKE ? OR lr.finding_type LIKE ?" +
-        " OR h.hospital_name LIKE ? OR a.area_name LIKE ? OR lr.finding_location LIKE ? OR lr.status LIKE ?)"
+        " OR h.hospital_name LIKE ? OR a.area_name LIKE ? OR lr.finding_location LIKE ? OR lr.status LIKE ? OR f.floor LIKE ?)"
       );
-      params.push(like, like, like, like, like, like, like);
+      params.push(like, like, like, like, like, like, like, like);
     }
 
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
@@ -107,6 +111,7 @@ export const getLinenReports = async (req, res) => {
        FROM tr_linen_report lr
        LEFT JOIN mst_area a ON a.id = lr.area_id
        LEFT JOIN mst_hospital h ON h.id = lr.hospital_id
+       LEFT JOIN mst_floor f ON f.employee_id = lr.reported_by
        ${whereSql}`,
       params
     );
@@ -118,18 +123,17 @@ export const getLinenReports = async (req, res) => {
               lr.finding_qty, lr.attachment_path, lr.reported_by, lr.created_at,
               lr.status, lr.sending_note,
               lr.process_by, lr.process_by_name, lr.process_note, lr.process_path, lr.process_at,
-              lr.completed_by, lr.completed_by_name, lr.completed_note, lr.completed_path, lr.completed_at
+              lr.completed_by, lr.completed_by_name, lr.completed_note, lr.completed_path, lr.completed_at,
+              f.floor
        FROM tr_linen_report lr
        LEFT JOIN mst_area a ON a.id = lr.area_id
        LEFT JOIN mst_hospital h ON h.id = lr.hospital_id
+       LEFT JOIN mst_floor f ON f.employee_id = lr.reported_by
        ${whereSql}
        ORDER BY lr.report_date DESC, lr.id DESC
        LIMIT ? OFFSET ?`,
       [...params, lm, offset]
     );
-
-    // NOTE: COUNT query also needs LEFT JOIN for hospital search to work
-    // Re-running count with joins when search is active is handled above via whereSql
 
     // enrich reported_by with employee name
     const reportedByIds = [...new Set(rows.map((r) => r.reported_by).filter(Boolean))];
@@ -158,12 +162,16 @@ export const getLinenReports = async (req, res) => {
     const [hospitals] = await safeIKMQuery(
       "SELECT id, hospital_name FROM mst_hospital ORDER BY hospital_name ASC"
     );
+    const [floors] = await safeIKMQuery(
+      "SELECT DISTINCT floor FROM mst_floor WHERE floor IS NOT NULL AND floor != '' ORDER BY floor ASC"
+    );
 
     res.json({
       data: records,
       pagination: { page: pg, limit: lm, total, totalPages: Math.ceil(total / lm) },
       areas,
       hospitals,
+      floors,
     });
   } catch (err) {
     console.error("getLinenReports:", err);
@@ -176,7 +184,8 @@ export const getLinenReportMeta = async (req, res) => {
   try {
     const [areas] = await safeIKMQuery("SELECT id, area_name FROM mst_area ORDER BY area_name ASC");
     const [hospitals] = await safeIKMQuery("SELECT id, hospital_name FROM mst_hospital ORDER BY hospital_name ASC");
-    res.json({ areas, hospitals });
+    const [floors] = await safeIKMQuery("SELECT DISTINCT floor FROM mst_floor WHERE floor IS NOT NULL AND floor != '' ORDER BY floor ASC");
+    res.json({ areas, hospitals, floors });
   } catch (err) {
     console.error("getLinenReportMeta:", err);
     res.status(500).json({ message: err.message });
