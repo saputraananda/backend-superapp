@@ -16,6 +16,26 @@ function removeFile(relativePath) {
   }
 }
 
+function getLastCutoffPeriods(count = 6) {
+  const now = new Date();
+  const currentPeriod = new Date(
+    now.getFullYear(),
+    now.getMonth() + (now.getDate() > 25 ? 1 : 0),
+    1
+  );
+
+  return Array.from({ length: count }, (_, index) => {
+    const period = new Date(
+      currentPeriod.getFullYear(),
+      currentPeriod.getMonth() - (count - 1 - index),
+      1
+    );
+    const year = period.getFullYear();
+    const month = period.getMonth() + 1;
+    return `${year}-${String(month).padStart(2, "0")}`;
+  });
+}
+
 // ─── Periods (distinct months from submitted_at for filter dropdown) ──────────
 
 export const getComplaintPeriods = async (_req, res) => {
@@ -129,7 +149,7 @@ export const getComplaintSummary = async (req, res) => {
     );
 
     const [byTopic] = await safeQuery(
-      `SELECT t.topic_name, COUNT(*) AS total
+      `SELECT c.topic_id, t.topic_name, COUNT(*) AS total
        FROM tr_complaint c
        JOIN mst_complaint_topic t ON t.topic_id = c.topic_id
        ${cJoinWhere}
@@ -139,7 +159,7 @@ export const getComplaintSummary = async (req, res) => {
     );
 
     const [byType] = await safeQuery(
-      `SELECT t.type_name, COUNT(*) AS total
+      `SELECT c.type_id, t.type_name, COUNT(*) AS total
        FROM tr_complaint c
        JOIN mst_complaint_type t ON t.type_id = c.type_id
        ${cJoinWhere}
@@ -149,7 +169,7 @@ export const getComplaintSummary = async (req, res) => {
     );
 
     const [byCategory] = await safeQuery(
-      `SELECT cat.category_name, COUNT(*) AS total
+      `SELECT c.category_id, cat.category_name, COUNT(*) AS total
        FROM tr_complaint c
        JOIN mst_complaint_category cat ON cat.category_id = c.category_id
        ${cJoinWhere}
@@ -158,21 +178,31 @@ export const getComplaintSummary = async (req, res) => {
       dateParams
     );
 
-    const [recentTrend] = await safeQuery(
-      `SELECT DATE_FORMAT(submitted_at,'%Y-%m') AS month, COUNT(*) AS total
+    const cutoffPeriods = getLastCutoffPeriods(6);
+    const [recentTrendRows] = await safeQuery(
+      `SELECT
+         DATE_FORMAT(DATE_ADD(submitted_at, INTERVAL IF(DAY(submitted_at) >= 26, 1, 0) MONTH), '%Y-%m') AS month,
+         COUNT(*) AS total
        FROM tr_complaint
-       WHERE submitted_at >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
+       WHERE submitted_at IS NOT NULL
        GROUP BY month
+       HAVING month IN (${cutoffPeriods.map(() => "?").join(",")})
        ORDER BY month ASC`,
-      []
+      cutoffPeriods
     );
+    const trendByMonth = new Map(
+      recentTrendRows.map((row) => [row.month, Number(row.total) || 0])
+    );
+    const recentTrend = cutoffPeriods.map((month) => ({
+      month,
+      total: trendByMonth.get(month) || 0,
+    }));
 
     res.json({ totals: totals[0] || totals, byOutlet, byTopic, byType, byCategory, recentTrend });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 };
-
 // ─── List complaints ──────────────────────────────────────────────────────────
 
 export const getComplaints = async (req, res) => {
@@ -183,6 +213,7 @@ export const getComplaints = async (req, res) => {
     if (req.query.outlet_id) { where.push("c.outlet_id = ?"); params.push(Number(req.query.outlet_id)); }
     if (req.query.progress) { where.push("c.progress = ?"); params.push(req.query.progress); }
     if (req.query.type_id) { where.push("c.type_id = ?"); params.push(Number(req.query.type_id)); }
+    if (req.query.category_id) { where.push("c.category_id = ?"); params.push(Number(req.query.category_id)); }
     if (req.query.topic_id) { where.push("c.topic_id = ?"); params.push(Number(req.query.topic_id)); }
     if (req.query.search) {
       where.push("(c.complaint_name LIKE ? OR c.nota_number LIKE ?)");
