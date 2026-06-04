@@ -1,5 +1,40 @@
 import { safeQuery, safeSmartlinkQuery } from "../db/pool.js";
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Employee Stats — data real dari mst_employee
+// ═══════════════════════════════════════════════════════════════════════════
+export const getEmployeeStats = async (req, res) => {
+  try {
+    const [rows] = await safeQuery(`
+      SELECT
+        SUM(CASE WHEN company_id = 1 AND exit_date IS NULL THEN 1 ELSE 0 END) AS alora,
+        SUM(CASE WHEN company_id = 2 AND exit_date IS NULL THEN 1 ELSE 0 END) AS ikm,
+        SUM(CASE WHEN company_id = 3 AND exit_date IS NULL THEN 1 ELSE 0 END) AS cleanox,
+        SUM(CASE WHEN company_id = 5 AND exit_date IS NULL THEN 1 ELSE 0 END) AS waschen,
+        SUM(CASE WHEN company_id IN (1,2,3,5) AND exit_date IS NULL THEN 1 ELSE 0 END) AS total,
+        SUM(CASE WHEN join_date IS NOT NULL AND MONTH(join_date) = MONTH(CURDATE()) AND YEAR(join_date) = YEAR(CURDATE()) THEN 1 ELSE 0 END) AS new_this_month
+      FROM mst_employee
+      WHERE is_deleted = 0
+    `);
+
+    const data = rows[0] || {};
+    res.json({
+      success: true,
+      data: {
+        total:          Number(data.total   || 0),
+        alora:          Number(data.alora   || 0),
+        ikm:            Number(data.ikm     || 0),
+        cleanox:        Number(data.cleanox || 0),
+        waschen:        Number(data.waschen || 0),
+        new_this_month: Number(data.new_this_month || 0),
+      },
+    });
+  } catch (err) {
+    console.error("[getEmployeeStats] Error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 export const getApps = async (req, res) => {
   console.log("[API] /apps endpoint hit");
 
