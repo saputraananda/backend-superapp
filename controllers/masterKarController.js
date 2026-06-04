@@ -1,4 +1,39 @@
 import { safeQuery } from "../db/pool.js";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Base dir (DEV vs PROD)
+const isProd = process.env.NODE_ENV === "production";
+const DEFAULT_DEV_BASE = path.join(__dirname, "..", "assets");
+const DEFAULT_PROD_BASE = process.env.UPLOAD_BASE_DIR || "/home/u420573163/domains/api.waschenalora.com/storage/assets/";
+const BASE_DIR = isProd ? DEFAULT_PROD_BASE : DEFAULT_DEV_BASE;
+
+const AVATAR_DIR   = path.join(BASE_DIR, "avatars");
+const DOCUMENT_DIR = path.join(BASE_DIR, "documents");
+
+const deleteOldFile = (filePath, dir) => {
+  if (!filePath) return;
+  const abs = path.join(dir, path.basename(filePath));
+  if (fs.existsSync(abs)) {
+    try { fs.unlinkSync(abs); } catch (_) {}
+  }
+};
+
+const DOC_MAP = {
+  profile:    { nameCol: "profile_name",    pathCol: "profile_path",    dir: AVATAR_DIR,    urlPrefix: "/assets/avatars/" },
+  ktp:        { nameCol: "ktp_name",        pathCol: "ktp_path",        dir: DOCUMENT_DIR,  urlPrefix: "/assets/documents/" },
+  kk:         { nameCol: "kk_name",         pathCol: "kk_path",         dir: DOCUMENT_DIR,  urlPrefix: "/assets/documents/" },
+  npwp:       { nameCol: "npwp_name",       pathCol: "npwp_path",       dir: DOCUMENT_DIR,  urlPrefix: "/assets/documents/" },
+  bpjs:       { nameCol: "bpjs_name",       pathCol: "bpjs_path",       dir: DOCUMENT_DIR,  urlPrefix: "/assets/documents/" },
+  bpjs_tk:    { nameCol: "bpjs_tk_name",    pathCol: "bpjs_tk_path",    dir: DOCUMENT_DIR,  urlPrefix: "/assets/documents/" },
+  ijazah:     { nameCol: "ijazah_name",     pathCol: "ijazah_path",     dir: DOCUMENT_DIR,  urlPrefix: "/assets/documents/" },
+  sert:       { nameCol: "sertifikat_name", pathCol: "sertifikat_path", dir: DOCUMENT_DIR,  urlPrefix: "/assets/documents/" },
+  rekom:      { nameCol: "rekomkerja_name", pathCol: "rekomkerja_path", dir: DOCUMENT_DIR,  urlPrefix: "/assets/documents/" },
+};
 
 // ── DASHBOARD SUMMARY ──────────────────────────────────────────────────────
 export const getDashboardSummary = async (req, res) => {
@@ -487,6 +522,95 @@ export const resignEmployee = async (req, res) => {
     res.json({ message: "Status karyawan berhasil diperbarui." });
   } catch (err) {
     console.error("resignEmployee error:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ── UPLOAD DOCUMENT ────────────────────────────────────────────────────────
+export const uploadEmployeeDoc = async (req, res) => {
+  try {
+    const { id, docType } = req.params;
+
+    const docMeta = DOC_MAP[docType];
+    if (!docMeta) return res.status(400).json({ message: "Tipe dokumen tidak valid." });
+    if (!req.file) return res.status(400).json({ message: "Tidak ada file yang diupload." });
+
+    // Cek apakah karyawan ada
+    const [rows] = await safeQuery(
+      `SELECT ${docMeta.pathCol}, email FROM mst_employee WHERE employee_id = ? AND is_deleted = 0`,
+      [id]
+    );
+    if (rows.length === 0) return res.status(404).json({ message: "Karyawan tidak ditemukan." });
+
+    const emp = rows[0];
+
+    // Hapus file lama jika ada
+    deleteOldFile(emp[docMeta.pathCol], docMeta.dir);
+
+    const filePath = `${docMeta.urlPrefix}${req.file.filename}`;
+
+    // Update DB
+    await safeQuery(
+      `UPDATE mst_employee SET ${docMeta.nameCol} = ?, ${docMeta.pathCol} = ? WHERE employee_id = ? AND is_deleted = 0`,
+      [req.file.originalname, filePath, id]
+    );
+
+    // Update user avatar jika profile photo
+    if (docType === "profile" && emp.email) {
+      await safeQuery(
+        "UPDATE users SET avatar = ? WHERE email = ?",
+        [filePath, emp.email]
+      );
+    }
+
+    res.json({
+      message: "Dokumen berhasil diupload.",
+      name: req.file.originalname,
+      path: filePath,
+    });
+  } catch (err) {
+    console.error("uploadEmployeeDoc error:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ── DELETE DOCUMENT ────────────────────────────────────────────────────────
+export const deleteEmployeeDoc = async (req, res) => {
+  try {
+    const { id, docType } = req.params;
+
+    const docMeta = DOC_MAP[docType];
+    if (!docMeta) return res.status(400).json({ message: "Tipe dokumen tidak valid." });
+
+    // Cek apakah karyawan ada
+    const [rows] = await safeQuery(
+      `SELECT ${docMeta.pathCol}, email FROM mst_employee WHERE employee_id = ? AND is_deleted = 0`,
+      [id]
+    );
+    if (rows.length === 0) return res.status(404).json({ message: "Karyawan tidak ditemukan." });
+
+    const emp = rows[0];
+
+    // Hapus file lama jika ada
+    deleteOldFile(emp[docMeta.pathCol], docMeta.dir);
+
+    // Update DB
+    await safeQuery(
+      `UPDATE mst_employee SET ${docMeta.nameCol} = NULL, ${docMeta.pathCol} = NULL WHERE employee_id = ? AND is_deleted = 0`,
+      [id]
+    );
+
+    // Update user avatar jika profile photo
+    if (docType === "profile" && emp.email) {
+      await safeQuery(
+        "UPDATE users SET avatar = NULL WHERE email = ?",
+        [emp.email]
+      );
+    }
+
+    res.json({ message: "Dokumen berhasil dihapus." });
+  } catch (err) {
+    console.error("deleteEmployeeDoc error:", err);
     res.status(500).json({ message: err.message });
   }
 };
