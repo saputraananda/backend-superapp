@@ -11,6 +11,7 @@ import {
   deleteComplaint,
   addProgressLog,
   getComplaintPeriods,
+  getComplaintSameDayComparison,
 } from "../controllers/complaintController.js";
 import { requireAuth } from "../middleware/auth.js";
 import { uploadComplaintDoc } from "../middleware/upload.js";
@@ -29,6 +30,9 @@ router.get("/employees", requireAuth, getComplaintEmployees);
 
 // Dashboard summary
 router.get("/summary", requireAuth, getComplaintSummary);
+
+// Same-day comparison across months
+router.get("/same-day-comparison", requireAuth, getComplaintSameDayComparison);
 
 // CRUD complaints
 router.get("/",        requireAuth, getComplaints);

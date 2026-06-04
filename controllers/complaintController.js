@@ -203,6 +203,59 @@ export const getComplaintSummary = async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 };
+
+// ─── Cumulative range comparison (26th → today) across months ──────────
+
+export const getComplaintSameDayComparison = async (req, res) => {
+  try {
+    const today = req.query.date ? new Date(req.query.date) : new Date();
+    const day = today.getDate();
+    const curYear = today.getFullYear();
+    const curMonth = today.getMonth() + 1; // 1-indexed
+
+    // Build 7 ranges: current + 6 previous months
+    const ranges = [];
+    for (let i = 6; i >= 0; i--) {
+      let endMonth = curMonth - i;
+      let endYear = curYear;
+      if (endMonth < 1) { endMonth += 12; endYear -= 1; }
+      const daysInEnd = new Date(endYear, endMonth, 0).getDate();
+      const endDay = Math.min(day, daysInEnd);
+
+      let startMonth = curMonth - i - 1;
+      let startYear = curYear;
+      if (startMonth < 1) { startMonth += 12; startYear -= 1; }
+      const daysInStart = new Date(startYear, startMonth, 0).getDate();
+      const startDay = Math.min(26, daysInStart);
+
+      const start = `${startYear}-${String(startMonth).padStart(2, "0")}-${String(startDay).padStart(2, "0")}`;
+      const end   = `${endYear}-${String(endMonth).padStart(2, "0")}-${String(endDay).padStart(2, "0")}`;
+
+      ranges.push({ idx: i, start, end, label: `${endYear}-${String(endMonth).padStart(2, "0")}` });
+    }
+
+    // Parallel queries — each range separately (avoids complex CASE WHEN binding issues)
+    const queries = ranges.map((r) =>
+      safeQuery(
+        `SELECT COUNT(*) AS total FROM tr_complaint WHERE DATE(submitted_at) >= ? AND DATE(submitted_at) <= ?`,
+        [r.start, r.end]
+      )
+    );
+    const results = await Promise.all(queries);
+
+    const data = ranges.map((r, i) => ({
+      start: r.start,
+      end: r.end,
+      label: r.label,
+      total: Number(results[i][0][0]?.total || 0),
+    }));
+
+    res.json({ data, today: today.toISOString() });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
 // ─── List complaints ──────────────────────────────────────────────────────────
 
 export const getComplaints = async (req, res) => {
