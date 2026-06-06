@@ -35,10 +35,39 @@ function computeDateRange(asOfDate) {
   return { dateStart: fmt(dateStart), dateEnd: fmt(dateEnd) };
 }
 
+// Helper: build IN clause and params for multi-outlet filtering
+function buildOutletFilter(outlets) {
+  if (!outlets || outlets.length === 0) {
+    return { clause: "1=1", params: [] };
+  }
+  const placeholders = outlets.map(() => "?").join(",");
+  return {
+    clause: `LOWER(outlet) IN (${outlets.map(o => "LOWER(?)").join(",")})`,
+    params: [...outlets, ...outlets],
+  };
+}
+
+// Build IN clause for target_period
+function buildTargetOutletFilter(outlets) {
+  if (!outlets || outlets.length === 0) {
+    return { clause: "1=1", params: [] };
+  }
+  return {
+    clause: outlets.map(() => "?").join(","),
+    params: outlets,
+  };
+}
+
 export const getPenjualan = async (req, res) => {
   try {
     const dateRe = /^\d{4}-\d{2}-\d{2}$/;
-    let { asOfDate, startDate, endDate, outlet = "all" } = req.query;
+    let { asOfDate, startDate, endDate, outlets } = req.query;
+
+    // Support outlets as array (from query string: ?outlets=x&outlets=y)
+    if (typeof outlets === "string") {
+      outlets = outlets.split(",").map(o => o.trim()).filter(Boolean);
+    }
+    if (!Array.isArray(outlets)) outlets = [];
 
     if (asOfDate   && !dateRe.test(asOfDate))   return res.status(400).json({ message: "Format asOfDate harus YYYY-MM-DD" });
     if (startDate  && !dateRe.test(startDate))  return res.status(400).json({ message: "Format startDate harus YYYY-MM-DD" });
@@ -76,6 +105,14 @@ export const getPenjualan = async (req, res) => {
     }
 
     const EP = EXCLUDED_NOTAS.map(() => "?").join(",");
+    const hasOutletFilter = outlets.length > 0;
+
+    // Build outlet filter clauses
+    const regulerOutletFilter = buildOutletFilter(outlets);
+    const emoneyOutletFilter = buildOutletFilter(outlets);
+    const cleanoxOutletFilter = buildOutletFilter(outlets);
+    const customerOutletFilter = buildOutletFilter(outlets);
+    const targetOutletFilter = buildTargetOutletFilter(outlets);
 
     // ── Main per-outlet query ────────────────────────────────────────────
     const mainSql = `
@@ -95,7 +132,7 @@ reguler_daily AS (
     JOIN param p ON DATE(rtrp.waktu_pembayaran) BETWEEN p.date_start AND p.as_of_date
     WHERE jenis_bayar <> 'e-money'
       AND no_nota NOT IN (${EP})
-      AND (? = 'all' OR LOWER(rtrp.outlet) = LOWER(?))
+      AND (${hasOutletFilter ? regulerOutletFilter.clause : "1=1"})
       AND NOT EXISTS (
             SELECT 1 FROM rekap_transaksi_reguler rtr
             WHERE rtr.no_nota = rtrp.no_nota
@@ -110,7 +147,7 @@ emoney_daily AS (
            SUM(rpe.grand_total) AS total_saldo
     FROM rekap_pembelian_emoney rpe
     JOIN param p ON DATE(rpe.tanggal_beli) BETWEEN p.date_start AND p.as_of_date
-    WHERE (? = 'all' OR LOWER(rpe.outlet) = LOWER(?))
+    WHERE (${hasOutletFilter ? emoneyOutletFilter.clause : "1=1"})
     GROUP BY outlet, tanggal
 ),
 combined_daily AS (
@@ -154,7 +191,7 @@ cleanox_actual AS (
     WHERE rtrp.jenis_bayar <> 'e-money'
       AND nf.is_cleanox = 1
       AND rtrp.no_nota NOT IN (${EP})
-      AND (? = 'all' OR LOWER(rtrp.outlet) = LOWER(?))
+      AND (${hasOutletFilter ? cleanoxOutletFilter.clause : "1=1"})
       AND NOT EXISTS (
             SELECT 1 FROM rekap_transaksi_reguler rtr2
             WHERE rtr2.no_nota = rtrp.no_nota
@@ -172,7 +209,7 @@ customer_status AS (
     WHERE c.nama NOT LIKE '%dumm%' AND c.nama NOT LIKE '%tes%'
       AND c.nama NOT LIKE '%haiyun%' AND c.nama NOT LIKE '%kiyalalala%'
       AND c.nama NOT LIKE '%puspaaa%' AND c.nama NOT LIKE '%haji%'
-      AND (? = 'all' OR LOWER(c.outlet) = LOWER(?))
+      AND (${hasOutletFilter ? customerOutletFilter.clause : "1=1"})
 ),
 customer_activity AS (
     SELECT cs.customer_nama, cs.outlet, cs.status_pelanggan,
@@ -211,6 +248,7 @@ target_period AS (
       AND
           (YEAR(DATE_ADD(p.date_end, INTERVAL IF(DAY(p.date_end) >= 26, 1, 0) MONTH)) * 100
          + MONTH(DATE_ADD(p.date_end, INTERVAL IF(DAY(p.date_end) >= 26, 1, 0) MONTH)))
+      AND (${hasOutletFilter ? `ts.outlet IN (${targetOutletFilter.clause})` : "1=1"})
     GROUP BY ts.outlet
 )
 SELECT
@@ -236,18 +274,19 @@ LEFT JOIN actual               a   ON a.outlet   COLLATE utf8mb4_unicode_ci = t.
 LEFT JOIN actual_yesterday     ay  ON ay.outlet  COLLATE utf8mb4_unicode_ci = t.outlet COLLATE utf8mb4_unicode_ci
 LEFT JOIN cleanox_actual       ca  ON ca.outlet  COLLATE utf8mb4_unicode_ci = t.outlet COLLATE utf8mb4_unicode_ci
 LEFT JOIN customer_segment_counts csc ON csc.outlet COLLATE utf8mb4_unicode_ci = t.outlet COLLATE utf8mb4_unicode_ci
-WHERE (? = 'all' OR LOWER(t.outlet) = LOWER(?))
+WHERE (${hasOutletFilter ? `t.outlet IN (${targetOutletFilter.clause})` : "1=1"})
 ORDER BY t.outlet`;
 
+    // Build params for main query
     const mainParams = [
       effectiveAsOfDate, dateStart, dateEnd, effectiveAsOfDate, // param CTE
       ...EXCLUDED_NOTAS,                                         // NOT IN (reguler_daily)
-      outlet, outlet,                                            // filter reguler_daily
-      outlet, outlet,                                            // filter emoney_daily
+      ...(hasOutletFilter ? regulerOutletFilter.params : []),  // reguler_daily outlet filter
       ...EXCLUDED_NOTAS,                                         // NOT IN (cleanox_actual)
-      outlet, outlet,                                            // filter cleanox_actual
-      outlet, outlet,                                            // filter customer_status
-      outlet, outlet,                                            // WHERE t.outlet
+      ...(hasOutletFilter ? cleanoxOutletFilter.params : []),  // cleanox_actual outlet filter
+      ...(hasOutletFilter ? customerOutletFilter.params : []),  // customer_status outlet filter
+      ...(hasOutletFilter ? targetOutletFilter.params : []),    // target_period outlet filter
+      ...(hasOutletFilter ? targetOutletFilter.params : []),    // WHERE t.outlet
     ];
 
     // ── Daily trend query ────────────────────────────────────────────────
@@ -263,7 +302,7 @@ FROM (
     WHERE DATE(rtrp.waktu_pembayaran) BETWEEN ? AND ?
       AND jenis_bayar <> 'e-money'
       AND no_nota NOT IN (${EP})
-      AND (? = 'all' OR LOWER(rtrp.outlet) = LOWER(?))
+      AND (${hasOutletFilter ? regulerOutletFilter.clause : "1=1"})
       AND NOT EXISTS (
             SELECT 1 FROM rekap_transaksi_reguler rtr
             WHERE rtr.no_nota = rtrp.no_nota
@@ -277,7 +316,7 @@ FROM (
            SUM(rpe.grand_total)   AS total
     FROM rekap_pembelian_emoney rpe
     WHERE DATE(rpe.tanggal_beli) BETWEEN ? AND ?
-      AND (? = 'all' OR LOWER(rpe.outlet) = LOWER(?))
+      AND (${hasOutletFilter ? emoneyOutletFilter.clause : "1=1"})
     GROUP BY outlet, tanggal
 ) x
 GROUP BY tanggal
@@ -286,9 +325,9 @@ ORDER BY tanggal`;
     const trendParams = [
       dateStart, effectiveAsOfDate,  // reguler range
       ...EXCLUDED_NOTAS,
-      outlet, outlet,                // filter reguler
+      ...(hasOutletFilter ? regulerOutletFilter.params : []),  // filter reguler
       dateStart, effectiveAsOfDate,  // emoney range
-      outlet, outlet,                // filter emoney
+      ...(hasOutletFilter ? emoneyOutletFilter.params : []),   // filter emoney
     ];
 
     // ── Waschen-only trend (excludes cleanox notas) ──────────────────────
@@ -313,7 +352,7 @@ FROM (
     WHERE DATE(rtrp.waktu_pembayaran) BETWEEN ? AND ?
       AND jenis_bayar <> 'e-money'
       AND rtrp.no_nota NOT IN (${EP})
-      AND (? = 'all' OR LOWER(rtrp.outlet) = LOWER(?))
+      AND (${hasOutletFilter ? regulerOutletFilter.clause : "1=1"})
       AND COALESCE(nf.is_cleanox, 0) = 0
       AND NOT EXISTS (
             SELECT 1 FROM rekap_transaksi_reguler rtr
@@ -328,7 +367,7 @@ FROM (
            SUM(rpe.grand_total)   AS total
     FROM rekap_pembelian_emoney rpe
     WHERE DATE(rpe.tanggal_beli) BETWEEN ? AND ?
-      AND (? = 'all' OR LOWER(rpe.outlet) = LOWER(?))
+      AND (${hasOutletFilter ? emoneyOutletFilter.clause : "1=1"})
     GROUP BY outlet, tanggal
 ) x
 GROUP BY tanggal
@@ -337,9 +376,9 @@ ORDER BY tanggal`;
     const trendWaschenParams = [
       dateStart, effectiveAsOfDate,  // reguler range
       ...EXCLUDED_NOTAS,
-      outlet, outlet,                // filter reguler
+      ...(hasOutletFilter ? regulerOutletFilter.params : []),  // filter reguler
       dateStart, effectiveAsOfDate,  // emoney range
-      outlet, outlet,                // filter emoney
+      ...(hasOutletFilter ? emoneyOutletFilter.params : []),   // filter emoney
     ];
 
     const [[outletRows], [trendRows], [trendWaschenRows]] = await Promise.all([
