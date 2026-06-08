@@ -11,7 +11,7 @@
 //   7 = Selesai — karyawan upload invoice
 //   9 = Ditolak
 //
-// Flow approval:
+// Flow approval PENGAJUAN:
 //   - Staff create          -> status = 1
 //   - Supervisor approve    -> status = 2
 //   - Direktur approve      -> status = 3 (default auto)
@@ -20,6 +20,21 @@
 //   - Staff Finance bayar   -> status = 6 (Paid/Terbayar)
 //   - Karyawan upload inv   -> status = 7 (Selesai)
 //   - Reject (any auth)     -> status = 9
+//
+// Flow approval REIMBURSE (berbeda):
+//   - Staff create           -> status = 1
+//   - SPV Departemen approve -> status = 2
+//   - SPV Finance approve    -> status = 5 (BoD auto-approve bersamaan,
+//                                            langsung ke "Menunggu Pembayaran")
+//   - Team Finance bayar     -> status = 7 (Selesai — finance upload bukti
+//                                            sekaligus = penyelesaian)
+//   - Reject (SPV Dept / SPV Finance) -> status = 9
+//
+//   NOTE penting:
+//     • Reimburse TIDAK melewati Direktur manual (status 3): BoD auto via SPV Finance.
+//     • Reimburse TIDAK melewati GA (status 4): Tidak ada PO/vendor.
+//     • Reimburse TIDAK melalui status 6: Pembayaran finance LANGSUNG selesai (7).
+//     • Pembayaran reimburse selalu CASH (sekali bayar). Tidak ada cicilan.
 //
 // MULTI-INSTALLMENT PAYMENT (cicilan) — KREDIT:
 //   - Pembayaran kredit dapat dilakukan beberapa kali (cicilan) sampai lunas.
@@ -72,9 +87,12 @@ const titleCase = (str) => {
         .trim();
 };
 
-const generatePrCode = async () => {
+const generatePrCode = async (type = "pengajuan") => {
     const ym = new Date();
-    const prefix = `PR-${ym.getFullYear()}${String(ym.getMonth() + 1).padStart(2, "0")}-`;
+    const codeType = type === "reimburse" ? "RM" : "PR";
+    const yy = String(ym.getFullYear()).slice(-2);
+    const mm = String(ym.getMonth() + 1).padStart(2, "0");
+    const prefix = `${codeType}-${yy}${mm}`;
     const rows = await safeQuery(
         `SELECT pr_code FROM tr_purchase_request
          WHERE pr_code LIKE ? ORDER BY pr_id DESC LIMIT 1`,
@@ -85,7 +103,7 @@ const generatePrCode = async () => {
         const last = rows[0].pr_code.split("-").pop();
         seq = (parseInt(last, 10) || 0) + 1;
     }
-    return `${prefix}${String(seq).padStart(4, "0")}`;
+    return `${prefix}${String(seq).padStart(3, "0")}`;
 };
 
 const fetchEmployee = async (employeeId) => {
@@ -604,15 +622,17 @@ export const listApproval = async (req, res) => {
         const params = [];
 
         if (jobLevel === 3) {
-            // Supervisor: lihat hanya departemennya sendiri yang status 1
+            // Supervisor: lihat departemennya sendiri yang status 1
             conditions.push("pr.department_id = ?", "pr.status = 1");
             params.push(me.department_id);
+            const type = req.query.type?.trim() || "";
+            if (type) { conditions.push("pr.type = ?"); params.push(type); }
         } else if (jobLevel === 2) {
-            // Manager: status 1 atau 2 (approval lanjutan), departemen tidak dibatasi (manager lintas dept)
-            conditions.push("pr.status IN (1, 2)");
+            // Manager: status 1 atau 2, hanya pengajuan biasa (bukan reimburse)
+            conditions.push("pr.status IN (1, 2)", "pr.type = 'pengajuan'");
         } else {
-            // Direktur (1): status 2 (sudah disetujui SPV), butuh approval direktur
-            conditions.push("pr.status = 2");
+            // Direktur (1): status 2, hanya pengajuan biasa (reimburse tidak ke Direktur manual)
+            conditions.push("pr.status = 2", "pr.type = 'pengajuan'");
         }
 
         const where = `WHERE ${conditions.join(" AND ")}`;
@@ -717,12 +737,66 @@ export const createPR = async (req, res) => {
         // Reimburse-only fields
         let bankId = null, nomorRekening = null, atasNama = null;
         if (type === "reimburse") {
-            bankId        = me.bank_id || null;
-            nomorRekening = me.bank_account_number || null;
+            bankId        = req.body.bank_id ? Number(req.body.bank_id) : (me.bank_id || null);
+            nomorRekening = sanitize(req.body.bank_account_number) || me.bank_account_number || null;
             atasNama      = titleCase(sanitize(req.body.atas_nama));
             if (!atasNama) return res.status(400).json({ message: "Atas Nama wajib diisi" });
         }
 
+        const prCode = await generatePrCode(type);
+
+        const jobLevel = Number(me.job_level_id);
+
+
+        // ── FLOW REIMBURSE: tidak ada GA, tidak ada auto-approve SPV level ──────
+        // Reimburse selalu mulai dari status 1 (menunggu SPV Departemen), kecuali
+        // pengaju sendiri adalah SPV dept (job_level 3) → auto-approve SPV.
+        if (type === "reimburse") {
+            const autoSpvReimburse = jobLevel <= 3;
+            const initialStatus    = autoSpvReimburse ? 2 : 1;
+
+            const insertResult = await safeQuery(
+                `INSERT INTO tr_purchase_request
+                    (pr_code, type, employee_id, department_id, tanggal_pengajuan,
+                     company_id, outlet_id,
+                     nama_barang, deskripsi, merk, qty, satuan_id, estimasi_harga, alasan_pembelian,
+                     bank_id, nomor_rekening, atas_nama,
+                     status,
+                     approved_spv_by, approved_spv_at)
+                 VALUES (?, ?, ?, ?, ?,
+                         ?, ?,
+                         ?, ?, ?, ?, ?, ?, ?,
+                         ?, ?, ?,
+                         ?,
+                         ?, ${autoSpvReimburse ? "NOW()" : "NULL"})`,
+                [prCode, type, employeeId, me.department_id, tanggalPengajuan,
+                 companyId, outletId,
+                 namaBarang, deskripsi, merk, qty, satuanId, estimasiHarga, alasanPembelian,
+                 bankId, nomorRekening, atasNama,
+                 initialStatus,
+                 autoSpvReimburse ? employeeId : null]
+            );
+            const prId = insertResult.insertId;
+
+            const files = req.files || [];
+            for (const file of files) {
+                await safeQuery(
+                    `INSERT INTO tr_purchase_request_attachment
+                        (pr_id, file_path, original_name, mime_type, file_size_kb)
+                     VALUES (?, ?, ?, ?, ?)`,
+                    [prId, `purchase/${file.filename}`, file.originalname, file.mimetype, Math.round(file.size / 1024)]
+                );
+            }
+
+            await writeLog(prId, "created", employeeId, me.full_name, "Reimburse dibuat & diajukan");
+            if (autoSpvReimburse) {
+                await writeLog(prId, "approved_spv", employeeId, me.full_name,
+                    "Disetujui SPV Departemen (otomatis — pengaju adalah supervisor)");
+            }
+            return res.status(201).json({ message: "Reimburse berhasil dibuat", pr_id: prId, pr_code: prCode });
+        }
+
+        // ── FLOW PENGAJUAN BIASA ────────────────────────────────────────────────
         // Link referensi (opsional, diisi karyawan)
         const linkUrl   = req.body.link_url   ? sanitize(req.body.link_url)   : null;
         const linkTitle = req.body.link_title  ? sanitize(req.body.link_title) : null;
@@ -738,35 +812,24 @@ export const createPR = async (req, res) => {
             if (gaVendorMode === "vendor") {
                 vendorId   = req.body.vendor_id ? Number(req.body.vendor_id) : null;
                 vendorName = req.body.vendor ? titleCase(sanitize(req.body.vendor)) : null;
-                // Jika vendor_id ada, ambil nama dari mst_vendor
                 if (vendorId && !vendorName) {
                     const vRows = await safeQuery(`SELECT nama_vendor FROM mst_vendor WHERE id = ?`, [vendorId]);
                     vendorName = vRows.length ? vRows[0].nama_vendor : null;
                 }
             }
-            // link mode: linkUrl & linkTitle sudah di-set di atas
         }
 
-        const prCode = await generatePrCode();
-
         // Jika pengaju adalah Supervisor / Manager / Direktur (job_level <= 3),
-        // langsung skip approval supervisor → status = 2, approved_spv_by = diri sendiri
-        const jobLevel      = Number(me.job_level_id);
+        // langsung skip approval supervisor → status = 2
         const autoApproveSpv = jobLevel <= 3;
 
-        // ── FITUR KHUSUS GA ──────────────────────────────────────────────────
-        // Jika pengaju adalah General Affair DAN company_id != 1:
-        //   - Total estimasi < 500.000 → langsung status = 4 (PR Ready),
-        //     skip SPV + Direktur + GA approval. Langsung ke Finance.
-        //   - Total estimasi >= 500.000 → tetap butuh approval SPV (flow normal).
-        const isGAUser       = isGA(me.position_name);
-        const totalEstimasi  = (estimasiHarga || 0) * qty;
-        const gaFastTrack    = isGAUser && companyId !== 1 && totalEstimasi < 500000;
+        // Reimburse TIDAK eligible untuk fast-track GA (alur reimburse berbeda — tidak melalui GA)
+        const isGAUser      = isGA(me.position_name);
+        const totalEstimasi = (estimasiHarga || 0) * qty;
+        const gaFastTrack   = type !== "reimburse" && isGAUser && companyId !== 1 && totalEstimasi < 500000;
 
         let initialStatus;
         if (gaFastTrack) {
-            // GA fast-track: langsung PR Ready (status 4) → menunggu Finance
-            // TIDAK set approved_spv — karena memang tidak ada approval SPV
             initialStatus = 4;
         } else if (autoApproveSpv) {
             initialStatus = 2;
@@ -795,7 +858,7 @@ export const createPR = async (req, res) => {
             [prCode, type, employeeId, me.department_id, tanggalPengajuan,
              companyId, outletId,
              namaBarang, deskripsi, merk, qty, satuanId, estimasiHarga, alasanPembelian,
-             bankId, nomorRekening, atasNama,
+             null, null, null,
              vendorMode, vendorName, vendorId, linkUrl, linkTitle,
              initialStatus,
              (autoApproveSpv && !gaFastTrack) ? employeeId : null,
@@ -804,7 +867,6 @@ export const createPR = async (req, res) => {
 
         const prId = insertResult.insertId;
 
-        // simpan lampiran (multer handler array name = "attachments")
         const files = req.files || [];
         for (const file of files) {
             await safeQuery(
@@ -815,12 +877,9 @@ export const createPR = async (req, res) => {
             );
         }
 
-        const typeLabel = type === "reimburse" ? "Reimburse" : "Pengajuan";
-        await writeLog(prId, "created", employeeId, me.full_name,
-            `${typeLabel} dibuat & diajukan`);
+        await writeLog(prId, "created", employeeId, me.full_name, "Pengajuan dibuat & diajukan");
 
         if (gaFastTrack) {
-            // GA fast-track: hanya catat GA approval (tanpa SPV)
             await writeLog(prId, "approved_ga", employeeId, me.full_name,
                 "PR diterbitkan langsung oleh GA (fast-track: estimasi < Rp 500.000, company ≠ PT Waschen)");
         } else if (autoApproveSpv) {
@@ -1022,6 +1081,7 @@ export const approvePR = async (req, res) => {
         const pr = rows[0];
 
         // Supervisor → approve status 1 → status 2 (hanya untuk dept yang sama)
+        // Berlaku untuk pengajuan maupun reimburse
         if (jobLevel === 3) {
             if (pr.department_id !== me.department_id)
                 return res.status(403).json({ message: "Hanya supervisor departemen terkait yang bisa approve" });
@@ -1035,13 +1095,16 @@ export const approvePR = async (req, res) => {
                  WHERE pr_id = ?`,
                 [employeeId, spvNote, id]
             );
-            const logNote = spvNote ? `Disetujui supervisor | Catatan: ${spvNote}` : "Disetujui supervisor";
+            const logNote = spvNote ? `Disetujui SPV Departemen | Catatan: ${spvNote}` : "Disetujui SPV Departemen";
             await writeLog(id, "approved_spv", employeeId, me.full_name, logNote);
             return res.json({ message: "Pengajuan disetujui" });
         }
 
         // Direktur (1) atau Manager (2) → approve status 2 → status 3
+        // Hanya untuk pengajuan biasa (reimburse tidak melewati BoD manual)
         if (jobLevel === 1 || jobLevel === 2) {
+            if (pr.type === "reimburse")
+                return res.status(400).json({ message: "Reimburse tidak memerlukan approval Direktur manual" });
             if (Number(pr.status) !== 2)
                 return res.status(400).json({ message: "Pengajuan ini tidak menunggu approval direktur" });
 
@@ -1090,7 +1153,10 @@ export const rejectPR = async (req, res) => {
             if (Number(pr.status) !== 1)
                 return res.status(400).json({ message: "Pengajuan tidak bisa ditolak pada status ini" });
         } else if (jobLevel === 1 || jobLevel === 2) {
-            if (![1, 2].includes(Number(pr.status)))
+            // Direktur/Manager hanya bisa reject pengajuan biasa, bukan reimburse
+            if (pr.type === "reimburse")
+                return res.status(403).json({ message: "Reimburse tidak diproses oleh Direktur" });
+            if (![1, 2].includes(Number(pr.status)))    
                 return res.status(400).json({ message: "Pengajuan tidak bisa ditolak pada status ini" });
         } else {
             return res.status(403).json({ message: "Anda tidak memiliki hak menolak" });
@@ -1209,7 +1275,7 @@ export const listGaReview = async (req, res) => {
              LEFT JOIN mst_satuan     s ON s.satuan_id     = pr.satuan_id
              LEFT JOIN mst_company    c ON c.company_id    = pr.company_id
              LEFT JOIN mst_outlet     o ON o.id            = pr.outlet_id
-             WHERE pr.is_deleted = 0 AND pr.status IN (2, 3)
+             WHERE pr.is_deleted = 0 AND pr.status IN (2, 3) AND pr.type = 'pengajuan'
              ORDER BY pr.created_at ASC`
         );
 
@@ -1385,7 +1451,7 @@ export const getPOData = async (req, res) => {
         const { id } = req.params;
         const rows = await safeQuery(
             `SELECT pr.*,
-                    e.full_name AS pengaju_name, e.employee_code,
+                    e.full_name AS pengaju_name, e.employee_code, e.job_level_id AS pengaju_job_level,
                     d.department_name,
                     s.satuan_name,
                     c.company_name,
@@ -1393,38 +1459,44 @@ export const getPOData = async (req, res) => {
                     o.full_name AS outlet_name,
                     o.address     AS outlet_address,
                     bnk.bank_name,
-                    spv_e.full_name AS spv_name,
-                    bod_e.full_name AS bod_name,
-                    ga_e.full_name  AS ga_name,
-                    fin_e.full_name AS finance_spv_name,
-                    dir_e.full_name AS director_name,
-                    v.nama_vendor   AS vendor_nama_from_master,
-                    v.alamat        AS vendor_alamat,
-                    v.no_telepon_1  AS vendor_telepon
+                    spv_e.full_name  AS spv_name,
+                    bod_e.full_name  AS bod_name,
+                    ga_e.full_name   AS ga_name,
+                    fin_e.full_name  AS finance_spv_name,
+                    dir_e.full_name  AS director_name,
+                    paid_e.full_name AS finance_staff_name,
+                    paid_e.job_level_id AS finance_staff_job_level,
+                    v.nama_vendor    AS vendor_nama_from_master,
+                    v.alamat         AS vendor_alamat,
+                    v.no_telepon_1   AS vendor_telepon
              FROM tr_purchase_request pr
-             LEFT JOIN mst_employee   e     ON e.employee_id     = pr.employee_id
-             LEFT JOIN mst_department d     ON d.department_id   = pr.department_id
-             LEFT JOIN mst_satuan     s     ON s.satuan_id       = pr.satuan_id
-             LEFT JOIN mst_company    c     ON c.company_id      = pr.company_id
-             LEFT JOIN mst_outlet     o     ON o.id              = pr.outlet_id
-             LEFT JOIN mst_bank       bnk   ON bnk.bank_id       = pr.bank_id
-             LEFT JOIN mst_employee   spv_e ON spv_e.employee_id = pr.approved_spv_by
-             LEFT JOIN mst_employee   bod_e ON bod_e.employee_id = pr.approved_bod_by
-             LEFT JOIN mst_employee   ga_e  ON ga_e.employee_id  = pr.approved_ga_by
-             LEFT JOIN mst_employee   fin_e ON fin_e.employee_id = pr.approved_finance_by
-             LEFT JOIN mst_employee   dir_e ON dir_e.employee_id = 2
-             LEFT JOIN mst_vendor     v     ON v.id              = pr.vendor_id
+             LEFT JOIN mst_employee   e       ON e.employee_id     = pr.employee_id
+             LEFT JOIN mst_department d       ON d.department_id   = pr.department_id
+             LEFT JOIN mst_satuan     s       ON s.satuan_id       = pr.satuan_id
+             LEFT JOIN mst_company    c       ON c.company_id      = pr.company_id
+             LEFT JOIN mst_outlet     o       ON o.id              = pr.outlet_id
+             LEFT JOIN mst_bank       bnk     ON bnk.bank_id       = pr.bank_id
+             LEFT JOIN mst_employee   spv_e   ON spv_e.employee_id = pr.approved_spv_by
+             LEFT JOIN mst_employee   bod_e   ON bod_e.employee_id = pr.approved_bod_by
+             LEFT JOIN mst_employee   ga_e    ON ga_e.employee_id  = pr.approved_ga_by
+             LEFT JOIN mst_employee   fin_e   ON fin_e.employee_id = pr.approved_finance_by
+             LEFT JOIN mst_employee   dir_e   ON dir_e.employee_id = 2
+             LEFT JOIN mst_employee   paid_e  ON paid_e.employee_id = pr.paid_by
+             LEFT JOIN mst_vendor     v       ON v.id              = pr.vendor_id
              WHERE pr.pr_id = ? AND pr.is_deleted = 0`,
             [id]
         );
         if (!rows.length) return res.status(404).json({ message: "Data tidak ditemukan" });
-        // PR tersedia mulai status 2 (SPV approved), PO mulai status 4 (GA approved)
-        // Endpoint ini melayani keduanya — frontend menentukan dokumen mana yang ditampilkan
-        if (Number(rows[0].status) < 2 || Number(rows[0].status) === 9) {
+
+        const pr = rows[0];
+        // Reimburse: tersedia mulai status 2 (SPV Dept approved)
+        // Pengajuan:  tersedia mulai status 2, PO mulai status 4
+        const minStatus = 2;
+        if (Number(pr.status) < minStatus || Number(pr.status) === 9) {
             return res.status(400).json({ message: "Dokumen belum tersedia pada status ini" });
         }
 
-        res.json({ data: rows[0] });
+        res.json({ data: pr });
     } catch (err) {
         console.error("[getPOData]", err);
         res.status(500).json({ message: "Gagal memuat data PO" });
@@ -1446,6 +1518,9 @@ export const listFinanceReview = async (req, res) => {
             return res.status(403).json({ message: "Akses ditolak: hanya Finance" });
         }
 
+        // SPV Finance melihat:
+        // - Pengajuan biasa: status 4 (sudah disetujui GA)
+        // - Reimburse: status 2 (sudah disetujui SPV Departemen)
         const data = await safeQuery(
             `SELECT pr.*, e.full_name AS pengaju_name, d.department_name,
                     s.satuan_name, c.company_name, o.full_name AS outlet_name
@@ -1455,7 +1530,11 @@ export const listFinanceReview = async (req, res) => {
              LEFT JOIN mst_satuan     s ON s.satuan_id     = pr.satuan_id
              LEFT JOIN mst_company    c ON c.company_id    = pr.company_id
              LEFT JOIN mst_outlet     o ON o.id            = pr.outlet_id
-             WHERE pr.is_deleted = 0 AND pr.status = 4
+             WHERE pr.is_deleted = 0
+               AND (
+                 (pr.type = 'pengajuan' AND pr.status = 4)
+                 OR (pr.type = 'reimburse' AND pr.status = 2)
+               )
              ORDER BY pr.created_at ASC`
         );
 
@@ -1490,12 +1569,37 @@ export const approveFinance = async (req, res) => {
             [id]
         );
         if (!rows.length) return res.status(404).json({ message: "Data tidak ditemukan" });
-        if (Number(rows[0].status) !== 4) {
-            return res.status(400).json({ message: "Pengajuan belum disetujui GA" });
-        }
+        const pr = rows[0];
 
         const finNote = req.body.finance_note ? sanitize(req.body.finance_note) : null;
 
+        // ── REIMBURSE: status 2 → 5, BoD auto-approve bersamaan ─────────────
+        if (pr.type === "reimburse") {
+            if (Number(pr.status) !== 2) {
+                return res.status(400).json({ message: "Reimburse belum disetujui SPV Departemen" });
+            }
+            await safeQuery(
+                `UPDATE tr_purchase_request SET
+                    status = 5,
+                    approved_finance_by = ?, approved_finance_at = NOW(),
+                    finance_note = ?,
+                    approved_bod_by = ?, approved_bod_at = NOW(),
+                    updated_at = NOW()
+                 WHERE pr_id = ?`,
+                [employeeId, finNote, 2, id]
+            );
+            await writeLog(id, "approved_finance", employeeId, me.full_name,
+                finNote ? `Disetujui SPV Finance | ${finNote}` : "Disetujui SPV Finance — menunggu pembayaran");
+            const dirRows = await safeQuery(`SELECT full_name FROM mst_employee WHERE employee_id = 2 LIMIT 1`);
+            const dirName = dirRows.length ? dirRows[0].full_name : "Direktur";
+            await writeLog(id, "approved_bod", 2, dirName, "Disetujui BoD (otomatis bersamaan dengan SPV Finance)");
+            return res.json({ message: "Reimburse disetujui SPV Finance — menunggu pembayaran" });
+        }
+
+        // ── PENGAJUAN BIASA: status 4 → 5 ────────────────────────────────────
+        if (Number(pr.status) !== 4) {
+            return res.status(400).json({ message: "Pengajuan belum disetujui GA" });
+        }
         await safeQuery(
             `UPDATE tr_purchase_request SET
                 status = 5,
@@ -1506,15 +1610,11 @@ export const approveFinance = async (req, res) => {
              WHERE pr_id = ?`,
             [employeeId, finNote, 2, id]
         );
-
         await writeLog(id, "approved_finance", employeeId, me.full_name,
             finNote ? `Disetujui SPV Finance | ${finNote}` : "Disetujui SPV Finance — menunggu pembayaran");
-
-        // Direktur otomatis approve bersamaan dengan SPV Finance
         const dirRows = await safeQuery(`SELECT full_name FROM mst_employee WHERE employee_id = 2 LIMIT 1`);
         const dirName = dirRows.length ? dirRows[0].full_name : "Direktur";
         await writeLog(id, "approved_bod", 2, dirName, "Disetujui Direktur (otomatis bersamaan dengan SPV Finance)");
-
         res.json({ message: "Disetujui SPV Finance — menunggu pembayaran" });
     } catch (err) {
         console.error("[approveFinance]", err);
@@ -1541,11 +1641,15 @@ export const rejectFinance = async (req, res) => {
 
         const { id } = req.params;
         const rows = await safeQuery(
-            `SELECT status FROM tr_purchase_request WHERE pr_id = ? AND is_deleted = 0`,
+            `SELECT status, type FROM tr_purchase_request WHERE pr_id = ? AND is_deleted = 0`,
             [id]
         );
         if (!rows.length) return res.status(404).json({ message: "Data tidak ditemukan" });
-        if (Number(rows[0].status) !== 4) {
+
+        const pr = rows[0];
+        // Pengajuan biasa: tolak di status 4; Reimburse: tolak di status 2
+        const validStatus = pr.type === "reimburse" ? [2] : [4];
+        if (!validStatus.includes(Number(pr.status))) {
             return res.status(400).json({ message: "Pengajuan tidak bisa ditolak pada status ini" });
         }
 
@@ -1579,16 +1683,22 @@ export const listPaymentPending = async (req, res) => {
             return res.status(403).json({ message: "Akses ditolak: hanya Finance" });
         }
 
+        // Finance melihat:
+        // - Pengajuan biasa: status 5 (menunggu pembayaran)
+        // - Reimburse: status 5 (disetujui SPV Finance, menunggu pembayaran)
         const data = await safeQuery(
             `SELECT pr.*, e.full_name AS pengaju_name, d.department_name,
-                    s.satuan_name, c.company_name, o.full_name AS outlet_name
+                    s.satuan_name, c.company_name, o.full_name AS outlet_name,
+                    bnk.bank_name
              FROM tr_purchase_request pr
-             LEFT JOIN mst_employee   e ON e.employee_id   = pr.employee_id
-             LEFT JOIN mst_department d ON d.department_id = pr.department_id
-             LEFT JOIN mst_satuan     s ON s.satuan_id     = pr.satuan_id
-             LEFT JOIN mst_company    c ON c.company_id    = pr.company_id
-             LEFT JOIN mst_outlet     o ON o.id            = pr.outlet_id
-             WHERE pr.is_deleted = 0 AND pr.status = 5
+             LEFT JOIN mst_employee   e   ON e.employee_id   = pr.employee_id
+             LEFT JOIN mst_department d   ON d.department_id = pr.department_id
+             LEFT JOIN mst_satuan     s   ON s.satuan_id     = pr.satuan_id
+             LEFT JOIN mst_company    c   ON c.company_id    = pr.company_id
+             LEFT JOIN mst_outlet     o   ON o.id            = pr.outlet_id
+             LEFT JOIN mst_bank       bnk ON bnk.bank_id     = pr.bank_id
+             WHERE pr.is_deleted = 0
+               AND pr.status = 5
              ORDER BY pr.created_at ASC`
         );
 
@@ -1619,7 +1729,10 @@ export const processPayment = async (req, res) => {
             [id]
         );
         if (!rows.length) return res.status(404).json({ message: "Data tidak ditemukan" });
-        if (Number(rows[0].status) !== 5) {
+        const pr = rows[0];
+
+        const expectedStatus = 5;
+        if (Number(pr.status) !== expectedStatus) {
             return res.status(400).json({ message: "Pengajuan belum siap untuk pembayaran" });
         }
 
@@ -1639,29 +1752,72 @@ export const processPayment = async (req, res) => {
             if (!terminValue || !terminUnit) {
                 return res.status(400).json({ message: "Termin wajib diisi untuk pembayaran kredit" });
             }
-            // Hitung jatuh tempo dari sekarang
             const now = new Date();
-            if (terminUnit === "hari") {
-                now.setDate(now.getDate() + terminValue);
-            } else if (terminUnit === "bulan") {
-                now.setMonth(now.getMonth() + terminValue);
-            } else if (terminUnit === "tahun") {
-                now.setFullYear(now.getFullYear() + terminValue);
-            }
+            if (terminUnit === "hari")        now.setDate(now.getDate() + terminValue);
+            else if (terminUnit === "bulan")  now.setMonth(now.getMonth() + terminValue);
+            else if (terminUnit === "tahun")  now.setFullYear(now.getFullYear() + terminValue);
             jatuhTempo = now.toISOString().split("T")[0];
         }
 
-        const paymentNote = req.body.payment_note ? sanitize(req.body.payment_note) : null;
-
-        // Nominal bayar aktual (default = estimasi_harga * qty jika tidak diisi)
+        const paymentNote    = req.body.payment_note ? sanitize(req.body.payment_note) : null;
         const nominalBayarRaw = req.body.nominal_bayar ? Number(req.body.nominal_bayar) : null;
-        const nominalBayar = nominalBayarRaw || null;
+        const nominalBayar   = nominalBayarRaw || null;
 
-        // File bukti bayar dari multer (bisa multi-file, max 5)
         const files = req.files || [];
         if (!files.length) return res.status(400).json({ message: "Bukti pembayaran wajib dilampirkan" });
-        const proofPath = `purchase/${files[0].filename}`; // path utama (file pertama)
+        const proofPath = `purchase/${files[0].filename}`;
 
+        // ── REIMBURSE: status 5 → 7 (Selesai, finance yang menyelesaikan) ─────
+        if (pr.type === "reimburse") {
+            await safeQuery(
+                `UPDATE tr_purchase_request SET
+                    status = 7,
+                    classification = ?,
+                    payment_method = ?,
+                    termin_value = ?, termin_unit = ?, jatuh_tempo = ?,
+                    nominal_bayar = ?,
+                    paid_by = ?, paid_at = NOW(),
+                    payment_proof_path = ?,
+                    payment_note = ?,
+                    completed_by = ?, completed_at = NOW(),
+                    invoice_proof_path = ?,
+                    updated_at = NOW()
+                 WHERE pr_id = ?`,
+                [classification, paymentMethod, terminValue, terminUnit, jatuhTempo,
+                 nominalBayar, employeeId, proofPath, paymentNote,
+                 employeeId, proofPath, id]
+            );
+
+            if (paymentMethod === "cash") {
+                await safeQuery(
+                    `INSERT INTO tr_purchase_request_payment
+                        (pr_id, nominal_bayar, proof_path, note, paid_by, paid_by_name, paid_at)
+                     VALUES (?, ?, ?, ?, ?, ?, NOW())`,
+                    [id, nominalBayar || 0, proofPath, paymentNote, employeeId, me.full_name]
+                );
+            }
+
+            for (const f of files) {
+                await safeQuery(
+                    `INSERT INTO tr_purchase_request_attachment
+                        (pr_id, file_path, original_name, mime_type, file_size_kb)
+                     VALUES (?, ?, ?, ?, ?)`,
+                    [id, `purchase/${f.filename}`, f.originalname, f.mimetype, Math.round(f.size / 1024)]
+                );
+            }
+
+            const nominalLabel = nominalBayar
+                ? ` | Nominal: Rp ${new Intl.NumberFormat("id-ID").format(nominalBayar)}`
+                : "";
+            await writeLog(id, "paid", employeeId, me.full_name,
+                `Pembayaran reimburse dilakukan | Metode: ${paymentMethod} | Klasifikasi: ${classification}${nominalLabel}${paymentNote ? ` | ${paymentNote}` : ""}`);
+            await writeLog(id, "completed", employeeId, me.full_name,
+                "Reimburse selesai — bukti pembayaran dilampirkan oleh Team Finance");
+
+            return res.json({ message: "Pembayaran reimburse berhasil dicatat — reimburse selesai" });
+        }
+
+        // ── PENGAJUAN BIASA: status 5 → 6 ────────────────────────────────────
         await safeQuery(
             `UPDATE tr_purchase_request SET
                 status = 6,
@@ -1677,11 +1833,6 @@ export const processPayment = async (req, res) => {
             [classification, paymentMethod, terminValue, terminUnit, jatuhTempo, nominalBayar, employeeId, proofPath, paymentNote, id]
         );
 
-        // Catat di tabel payment HANYA untuk metode CASH (langsung lunas).
-        // Untuk KREDIT: nominal_bayar di tabel PR adalah TARGET yang harus
-        // dibayar, bukan jumlah yg sudah dibayar. Pembayaran kredit dicatat
-        // satu per satu lewat endpoint addInstallment supaya sisa terhitung
-        // benar dan riwayat akurat.
         if (paymentMethod === "cash") {
             await safeQuery(
                 `INSERT INTO tr_purchase_request_payment
@@ -1691,7 +1842,6 @@ export const processPayment = async (req, res) => {
             );
         }
 
-        // Simpan semua file bukti sebagai attachment PR (termasuk file pertama)
         for (const f of files) {
             await safeQuery(
                 `INSERT INTO tr_purchase_request_attachment
