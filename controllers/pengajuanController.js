@@ -93,18 +93,16 @@ const generatePrCode = async (type = "pengajuan") => {
     const yy = String(ym.getFullYear()).slice(-2);
     const mm = String(ym.getMonth() + 1).padStart(2, "0");
     const prefix = `${codeType}-${yy}${mm}`;
-    // LIKE + LENGTH: hanya kode normal 10 karakter — filter kode corrupt
+    const exactLen = prefix.length + 3; // "PR-2606" (7) + "001" (3) = 10
+    // Ambil seq tertinggi dari kode normal saja (skip kode corrupt yg lebih panjang)
     const rows = await safeQuery(
-        `SELECT pr_code FROM tr_purchase_request
-         WHERE pr_code LIKE ? AND LENGTH(pr_code) = 10
-         ORDER BY pr_id DESC LIMIT 1`,
-        [`${prefix}%`]
+        `SELECT MAX(CAST(SUBSTRING(pr_code, ${exactLen - 2}) AS UNSIGNED)) AS max_seq
+         FROM tr_purchase_request
+         WHERE pr_code LIKE ? AND LENGTH(pr_code) = ?`,
+        [`${prefix}%`, exactLen]
     );
-    let seq = 1;
-    if (rows.length > 0) {
-        const last = rows[0].pr_code.split("-").pop();
-        seq = (parseInt(last, 10) || 0) + 1;
-    }
+    const maxSeq = rows[0]?.max_seq || 0;
+    const seq = maxSeq + 1;
     return `${prefix}${String(seq).padStart(3, "0")}`;
 };
 
