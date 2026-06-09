@@ -93,12 +93,12 @@ const generatePrCode = async (type = "pengajuan") => {
     const yy = String(ym.getFullYear()).slice(-2);
     const mm = String(ym.getMonth() + 1).padStart(2, "0");
     const prefix = `${codeType}-${yy}${mm}`;
-    // REGEXP: hanya kode dengan format PR-YYMMNNN (10 char) — filter kode corrupt
-    const pattern = `${codeType}-${yy}${mm}[0-9]{3}$`;
+    // LIKE + LENGTH: hanya kode normal 10 karakter — filter kode corrupt
     const rows = await safeQuery(
         `SELECT pr_code FROM tr_purchase_request
-         WHERE pr_code REGEXP ? ORDER BY pr_id DESC LIMIT 1`,
-        [pattern]
+         WHERE pr_code LIKE ? AND LENGTH(pr_code) = 10
+         ORDER BY pr_id DESC LIMIT 1`,
+        [`${prefix}%`]
     );
     let seq = 1;
     if (rows.length > 0) {
