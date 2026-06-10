@@ -1,6 +1,7 @@
 import { safeIKMQuery, safeQuery } from "../../db/pool.js";
 
 const ALLOWED_SHIFTS = new Set(["pagi", "siang", "sore", "lembur"]);
+const SHIFT_ORDER = { pagi: 0, siang: 1, sore: 2, lembur: 3 };
 const IKM_COMPANY_ID = 2;
 const ADMIN_EMPLOYEE_ID = 31;
 const ATTENDANCE_WATCH_INTERVAL_MS = 2000;
@@ -87,15 +88,24 @@ function getRecordStatus(row) {
 	return "Lengkap";
 }
 
+async function getManagementEmployeeIds() {
+	const [rows] = await safeIKMQuery("SELECT employee_id FROM mst_leader WHERE role = 'management'", []);
+	return rows.map((r) => Number(r.employee_id));
+}
+
 async function getMatchedEmployeeIdsBySearch(search) {
 	if (!search) return [];
 	const kw = `%${search}%`;
+	const mgmtIds = await getManagementEmployeeIds();
+	const excludeIds = [...new Set([...mgmtIds, ADMIN_EMPLOYEE_ID])];
+
 	const [rows] = await safeQuery(
 		`
 			SELECT e.employee_id
 			FROM mst_employee e
 			WHERE e.is_deleted = 0
 				AND (e.company_id = ? OR e.employee_id = ?)
+				${excludeIds.length > 0 ? `AND e.employee_id NOT IN (${excludeIds.map(() => "?").join(",")})` : ""}
 				AND (
 					e.full_name LIKE ?
 					OR e.employee_code LIKE ?
@@ -103,7 +113,7 @@ async function getMatchedEmployeeIdsBySearch(search) {
 				)
 			LIMIT 2000
 		`,
-		[IKM_COMPANY_ID, ADMIN_EMPLOYEE_ID, kw, kw, kw]
+		[IKM_COMPANY_ID, ADMIN_EMPLOYEE_ID, ...excludeIds, kw, kw, kw]
 	);
 	return rows
 		.map((row) => Number(row.employee_id))
@@ -113,6 +123,15 @@ async function getMatchedEmployeeIdsBySearch(search) {
 function buildWhereSql({ startDate, endDate, shiftType, employeeId, employeeIds, onlyIncomplete, search, matchedEmployeeIds }) {
 	const where = ["work_date BETWEEN ? AND ?"];
 	const params = [startDate, endDate];
+
+	// Exclude Management and Admin
+	where.push(`
+		employee_id NOT IN (
+			SELECT employee_id FROM mst_leader WHERE role = 'management'
+		)
+		AND employee_id <> ?
+	`);
+	params.push(ADMIN_EMPLOYEE_ID);
 
 	if (employeeIds.length > 0) {
 		where.push(`employee_id IN (${employeeIds.map(() => "?").join(",")})`);
@@ -194,6 +213,9 @@ function buildTodayWhereSql({ employeeId, employeeIds, shiftType, search, matche
 }
 
 async function getEmployeeSelectionOptions() {
+	const mgmtIds = await getManagementEmployeeIds();
+	const excludeIds = [...new Set([...mgmtIds, ADMIN_EMPLOYEE_ID])];
+
 	const [rows] = await safeQuery(
 		`
 			SELECT
@@ -203,10 +225,11 @@ async function getEmployeeSelectionOptions() {
 			FROM mst_employee e
 			WHERE e.is_deleted = 0
 				AND (e.company_id = ? OR e.employee_id = ?)
+				${excludeIds.length > 0 ? `AND e.employee_id NOT IN (${excludeIds.map(() => "?").join(",")})` : ""}
 			ORDER BY e.full_name ASC
 			LIMIT 3000
 		`,
-		[IKM_COMPANY_ID, ADMIN_EMPLOYEE_ID]
+		[IKM_COMPANY_ID, ADMIN_EMPLOYEE_ID, ...excludeIds]
 	);
 
 	return rows.map((row) => ({
@@ -438,6 +461,7 @@ export const getAttendanceShiftIKM = async (req, res) => {
 			matchedEmployeeIds,
 		});
 
+		// 1. Fetch Actual Attendance Records (with pagination)
 		const [countRows] = await safeIKMQuery(
 			`SELECT COUNT(*) AS total FROM tr_attendance_shift_ikm WHERE ${whereSql}`,
 			params
@@ -474,6 +498,85 @@ export const getAttendanceShiftIKM = async (req, res) => {
 			[...params, limit, offset]
 		);
 
+		// 2. Generate Absent Records (for separate card)
+		const [allActualInRange] = await safeIKMQuery(
+			`SELECT employee_id, work_date, shift_type FROM tr_attendance_shift_ikm WHERE ${whereSql}`,
+			params
+		);
+		const actualSet = new Set();
+		for (const r of allActualInRange) {
+			actualSet.add(`${r.employee_id}_${toISODateString(r.work_date)}_${r.shift_type}`);
+		}
+
+		const mgmtIds = await getManagementEmployeeIds();
+		const excludeIds = [...new Set([...mgmtIds, ADMIN_EMPLOYEE_ID])];
+
+		const [masterEmps] = await safeQuery(
+			`
+				SELECT
+					e.employee_id,
+					e.employee_code,
+					e.full_name,
+					p.position_name,
+					j.job_level_name
+				FROM mst_employee e
+				LEFT JOIN mst_position p ON p.position_id = e.position_id
+				LEFT JOIN mst_job_level j ON j.job_level_id = e.job_level_id
+				WHERE e.is_deleted = 0
+					AND (e.company_id = ? OR e.employee_id = ?)
+					${excludeIds.length > 0 ? `AND e.employee_id NOT IN (${excludeIds.map(() => "?").join(",")})` : ""}
+			`,
+			[IKM_COMPANY_ID, ADMIN_EMPLOYEE_ID, ...excludeIds]
+		);
+
+		const absentRecords = [];
+		const start = new Date(startDate);
+		let end = new Date(endDate);
+		const todayLimit = new Date();
+		todayLimit.setHours(23, 59, 59, 999);
+		if (end > todayLimit) end = todayLimit;
+
+		const shiftsToGen = shiftType ? [shiftType] : ["pagi", "siang", "sore"];
+
+		for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+			const ds = toISODateString(d.toISOString().slice(0, 10));
+			for (const emp of masterEmps) {
+				const eid = Number(emp.employee_id);
+				if (employeeId && eid !== employeeId) continue;
+				if (employeeIds.length > 0 && !employeeIds.includes(eid)) continue;
+
+				if (search) {
+					const matchSearch =
+						String(emp.employee_id).includes(search) ||
+						String(emp.full_name || "").toLowerCase().includes(search.toLowerCase()) ||
+						String(emp.employee_code || "").toLowerCase().includes(search.toLowerCase());
+					if (!matchSearch) continue;
+				}
+
+				for (const s of shiftsToGen) {
+					if (!actualSet.has(`${eid}_${ds}_${s}`)) {
+						absentRecords.push({
+							employee_id: eid,
+							employee_name: emp.full_name || `ID ${eid}`,
+							employee_code: emp.employee_code || null,
+							jabatan: emp.job_level_name || emp.position_name || "-",
+							work_date: ds,
+							shift_type: s,
+						});
+					}
+				}
+			}
+		}
+
+		// Sort absent records: Date desc, then shift order
+		absentRecords.sort((a, b) => {
+			const dateA = new Date(a.work_date).getTime();
+			const dateB = new Date(b.work_date).getTime();
+			if (dateA !== dateB) return dateB - dateA;
+			return (SHIFT_ORDER[a.shift_type] ?? 99) - (SHIFT_ORDER[b.shift_type] ?? 99);
+		});
+
+		// 3. Fetch summary and other data
 		const [summaryRows] = await safeIKMQuery(
 			`
 				SELECT
@@ -747,6 +850,7 @@ export const getAttendanceShiftIKM = async (req, res) => {
 			employeeOptions,
 			employeeSummary,
 			records,
+			absentRecords,
 		});
 	} catch (error) {
 		console.error("[getAttendanceShiftIKM] Error:", error);
