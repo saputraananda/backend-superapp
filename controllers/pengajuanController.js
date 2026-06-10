@@ -21,6 +21,17 @@
 //   - Karyawan upload inv   -> status = 7 (Selesai)
 //   - Reject (any auth)     -> status = 9
 //
+// Flow approval GA RUTIN (GA memilih "Rutin" saat create):
+//   - GA create langsung    -> status = 4 (skip SPV dept & GA review)
+//   - SPV Finance approve   -> status = 5
+//   - ...sama seperti biasa
+//
+// Flow approval GA TIDAK RUTIN:
+//   - GA create langsung    -> status = 1 (tapi GA fields sudah diisi)
+//   - SPV Dept approve      -> status = 4 (langsung PR Ready, skip GA review & BOD)
+//   - SPV Finance approve   -> status = 5
+//   - ...sama seperti biasa
+//
 // Flow approval REIMBURSE (berbeda):
 //   - Staff create           -> status = 1
 //   - SPV Departemen approve -> status = 2
@@ -44,7 +55,9 @@
 //   - Status tetap = 6 selama sisa > 0 (frontend menampilkan "Belum Lunas" /
 //     "Belum Terbayar"). Pembayaran cash juga tercatat 1 baris (lunas sekali bayar).
 //
-// Aturan edit/hapus oleh pengaju: hanya saat status IN (1, 2, 9)
+// Aturan edit/hapus:
+//   - Karyawan biasa: hanya saat status IN (1, 2, 9)
+//   - GA: bisa edit/hapus kapan pun selama status < 5 (sebelum Finance approve)
 // ════════════════════════════════════════════════════════════════════════════
 
 import fs from "fs";
@@ -747,7 +760,6 @@ export const createPR = async (req, res) => {
 
         const jobLevel = Number(me.job_level_id);
 
-
         // ── FLOW REIMBURSE: tidak ada GA, tidak ada auto-approve SPV level ──────
         // Reimburse selalu mulai dari status 1 (menunggu SPV Departemen), kecuali
         // pengaju sendiri adalah SPV dept (job_level 3) → auto-approve SPV.
@@ -797,72 +809,124 @@ export const createPR = async (req, res) => {
         }
 
         // ── FLOW PENGAJUAN BIASA ────────────────────────────────────────────────
-        // Link referensi (opsional, diisi karyawan)
         const linkUrl   = req.body.link_url   ? sanitize(req.body.link_url)   : null;
         const linkTitle = req.body.link_title  ? sanitize(req.body.link_title) : null;
-        // Jika karyawan mengisi link, set vendor_mode = 'link' secara default
-        let vendorMode = linkUrl ? "link" : null;
+        let vendorMode  = linkUrl ? "link" : null;
+        let vendorName  = null;
+        let vendorId    = null;
+        const isGAUser  = isGA(me.position_name);
 
-        // GA bisa langsung isi vendor info saat create (untuk fast-track)
-        let vendorName = null;
-        let vendorId   = null;
-        const gaVendorMode = req.body.vendor_mode; // 'vendor' | 'link' | null
-        if (isGA(me.position_name) && gaVendorMode) {
-            vendorMode = gaVendorMode;
-            if (gaVendorMode === "vendor") {
-                vendorId   = req.body.vendor_id ? Number(req.body.vendor_id) : null;
-                vendorName = req.body.vendor ? titleCase(sanitize(req.body.vendor)) : null;
-                if (vendorId && !vendorName) {
-                    const vRows = await safeQuery(`SELECT nama_vendor FROM mst_vendor WHERE id = ?`, [vendorId]);
-                    vendorName = vRows.length ? vRows[0].nama_vendor : null;
+        // ── GA-specific flow: rutin/tidak_rutin + GA fills own fields ────────
+        let gaRutin    = null;
+        let gaQtyVal   = null;
+        let gaMerkVal  = null;
+        let gaNoteVal  = null;
+        let autoApproveSpv = jobLevel <= 3;
+        let initialStatus;
+        let isRutin = false;
+
+        if (isGAUser && type === "pengajuan") {
+            gaRutin = ["rutin", "tidak_rutin"].includes(req.body.is_routine) ? req.body.is_routine : null;
+            if (!gaRutin) {
+                return res.status(400).json({ message: "Pilih jenis pengajuan Rutin atau Tidak Rutin" });
+            }
+
+            isRutin = gaRutin === "rutin";
+
+            // GA fills GA fields directly at submission
+            gaQtyVal  = req.body.ga_qty ? Number(req.body.ga_qty) : qty;
+            gaMerkVal = req.body.ga_merk ? titleCase(sanitize(req.body.ga_merk)) : (merk || null);
+            gaNoteVal = req.body.ga_note ? sanitize(req.body.ga_note) : null;
+
+            // Vendor mode untuk GA: vendor / link / offline
+            const gaVendorMode = req.body.vendor_mode;
+            if (gaVendorMode) {
+                vendorMode = gaVendorMode;
+                if (gaVendorMode === "vendor") {
+                    vendorId   = req.body.vendor_id ? Number(req.body.vendor_id) : null;
+                    vendorName = req.body.vendor ? titleCase(sanitize(req.body.vendor)) : null;
+                    if (vendorId && !vendorName) {
+                        const vRows = await safeQuery(`SELECT nama_vendor FROM mst_vendor WHERE id = ?`, [vendorId]);
+                        vendorName = vRows.length ? vRows[0].nama_vendor : null;
+                    }
+                    if (!vendorName && !vendorId) {
+                        return res.status(400).json({ message: "Nama vendor wajib diisi atau pilih dari daftar" });
+                    }
+                } else if (gaVendorMode === "link") {
+                    if (!linkUrl) return res.status(400).json({ message: "Link URL wajib diisi" });
+                    if (!linkTitle) return res.status(400).json({ message: "Judul link wajib diisi" });
+                } else if (gaVendorMode === "offline") {
+                    const offlineDesc = sanitize(req.body.offline_desc);
+                    if (!offlineDesc) {
+                        return res.status(400).json({ message: "Keterangan offline wajib diisi (contoh: Supermarket, Foto Kopi Cendikia)" });
+                    }
+                    vendorName = offlineDesc; // reuse vendor field
                 }
             }
-        }
 
-        // Jika pengaju adalah Supervisor / Manager / Direktur (job_level <= 3),
-        // langsung skip approval supervisor → status = 2
-        const autoApproveSpv = jobLevel <= 3;
-
-        // Reimburse TIDAK eligible untuk fast-track GA (alur reimburse berbeda — tidak melalui GA)
-        const isGAUser      = isGA(me.position_name);
-        const totalEstimasi = (estimasiHarga || 0) * qty;
-        const gaFastTrack   = type !== "reimburse" && isGAUser && companyId !== 1 && totalEstimasi < 500000;
-
-        let initialStatus;
-        if (gaFastTrack) {
-            initialStatus = 4;
-        } else if (autoApproveSpv) {
-            initialStatus = 2;
+            if (isRutin) {
+                // GA Rutin: skip SPV dept → status 4 langsung
+                initialStatus = 4;
+            } else {
+                // GA Tidak Rutin: butuh approval SPV dept → status 1
+                initialStatus = 1;
+            }
         } else {
-            initialStatus = 1;
+            // Non-GA flow — existing logic
+            const gaVendorModeBody = req.body.vendor_mode;
+            if (isGAUser && gaVendorModeBody) {
+                vendorMode = gaVendorModeBody;
+                if (gaVendorModeBody === "vendor") {
+                    vendorId   = req.body.vendor_id ? Number(req.body.vendor_id) : null;
+                    vendorName = req.body.vendor ? titleCase(sanitize(req.body.vendor)) : null;
+                    if (vendorId && !vendorName) {
+                        const vRows = await safeQuery(`SELECT nama_vendor FROM mst_vendor WHERE id = ?`, [vendorId]);
+                        vendorName = vRows.length ? vRows[0].nama_vendor : null;
+                    }
+                }
+            }
+
+            const totalEstimasi = (estimasiHarga || 0) * qty;
+            const gaFastTrack   = isGAUser && companyId !== 1 && totalEstimasi < 500000;
+
+            if (gaFastTrack) {
+                initialStatus = 4;
+            } else if (autoApproveSpv) {
+                initialStatus = 2;
+            } else {
+                initialStatus = 1;
+            }
         }
 
         const insertResult = await safeQuery(
             `INSERT INTO tr_purchase_request
-                (pr_code, type, employee_id, department_id, tanggal_pengajuan,
+                (pr_code, type, is_routine, employee_id, department_id, tanggal_pengajuan,
                  company_id, outlet_id,
                  nama_barang, deskripsi, merk, qty, satuan_id, estimasi_harga, alasan_pembelian,
                  bank_id, nomor_rekening, atas_nama,
                  vendor_mode, vendor, vendor_id, link_url, link_title,
                  status,
                  approved_spv_by, approved_spv_at,
-                 approved_ga_by, approved_ga_at)
-             VALUES (?, ?, ?, ?, ?,
+                 approved_ga_by, approved_ga_at,
+                 ga_qty, ga_merk, ga_note)
+             VALUES (?, ?, ?, ?, ?, ?,
                      ?, ?,
                      ?, ?, ?, ?, ?, ?, ?,
                      ?, ?, ?,
                      ?, ?, ?, ?, ?,
                      ?,
-                     ?, ${autoApproveSpv && !gaFastTrack ? "NOW()" : "NULL"},
-                     ?, ${gaFastTrack ? "NOW()" : "NULL"})`,
-            [prCode, type, employeeId, me.department_id, tanggalPengajuan,
+                     ?, ${isRutin ? "NOW()" : (autoApproveSpv ? "NOW()" : "NULL")},
+                     ?, ${isRutin ? "NOW()" : "NULL"},
+                     ?, ?, ?)`,
+            [prCode, type, gaRutin, employeeId, me.department_id, tanggalPengajuan,
              companyId, outletId,
              namaBarang, deskripsi, merk, qty, satuanId, estimasiHarga, alasanPembelian,
              null, null, null,
              vendorMode, vendorName, vendorId, linkUrl, linkTitle,
              initialStatus,
-             (autoApproveSpv && !gaFastTrack) ? employeeId : null,
-             gaFastTrack ? employeeId : null]
+             isRutin ? employeeId : (autoApproveSpv ? employeeId : null),
+             isRutin ? employeeId : null,
+             gaQtyVal, gaMerkVal, gaNoteVal]
         );
 
         const prId = insertResult.insertId;
@@ -879,9 +943,14 @@ export const createPR = async (req, res) => {
 
         await writeLog(prId, "created", employeeId, me.full_name, "Pengajuan dibuat & diajukan");
 
-        if (gaFastTrack) {
+        if (isRutin) {
+            await writeLog(prId, "approved_spv", employeeId, me.full_name,
+                "Disetujui SPV Departemen (otomatis — GA rutin)");
             await writeLog(prId, "approved_ga", employeeId, me.full_name,
-                "PR diterbitkan langsung oleh GA (fast-track: estimasi < Rp 500.000, company ≠ PT Waschen)");
+                "GA mengisi data langsung — PR siap ke Finance");
+        } else if (isGAUser && gaRutin === "tidak_rutin") {
+            await writeLog(prId, "ga_filled", employeeId, me.full_name,
+                "GA mengisi data langsung, menunggu approval SPV Departemen");
         } else if (autoApproveSpv) {
             await writeLog(prId, "approved_spv", employeeId, me.full_name,
                 "Disetujui supervisor (otomatis — pengaju adalah supervisor)");
@@ -895,7 +964,7 @@ export const createPR = async (req, res) => {
 };
 
 // ════════════════════════════════════════════════════════════════════════════
-// UPDATE  (hanya pengaju, ketika status IN (1, 2, 9))
+// UPDATE  (hanya pengaju, ketika status IN (1, 2, 9), atau GA kapan pun < 5)
 // ════════════════════════════════════════════════════════════════════════════
 export const updatePR = async (req, res) => {
     try {
@@ -912,8 +981,17 @@ export const updatePR = async (req, res) => {
         if (!existing.length) return res.status(404).json({ message: "Data tidak ditemukan" });
         const row = existing[0];
         if (row.employee_id !== employeeId) return res.status(403).json({ message: "Tidak diizinkan" });
-        if (![1, 2, 9].includes(Number(row.status))) {
-            return res.status(400).json({ message: "Pengajuan pada status ini tidak bisa diedit" });
+
+        // GA can edit at any status < 5 (before Finance approve)
+        const isGAUser = isGA(me.position_name);
+        if (isGAUser) {
+            if (Number(row.status) >= 5) {
+                return res.status(400).json({ message: "Pengajuan sudah diproses Finance, tidak bisa diedit" });
+            }
+        } else {
+            if (![1, 2, 9].includes(Number(row.status))) {
+                return res.status(400).json({ message: "Pengajuan pada status ini tidak bisa diedit" });
+            }
         }
 
         const type             = ["pengajuan", "reimburse"].includes(req.body.type) ? req.body.type : row.type;
@@ -948,30 +1026,70 @@ export const updatePR = async (req, res) => {
         // Link referensi (opsional, diisi karyawan)
         const linkUrl   = req.body.link_url   ? sanitize(req.body.link_url)   : null;
         const linkTitle = req.body.link_title  ? sanitize(req.body.link_title) : null;
-        // Jika karyawan mengisi link, set vendor_mode = 'link'; jika dikosongkan, clear vendor_mode
         const vendorMode = linkUrl ? "link" : null;
 
-        // jika sebelumnya rejected, set kembali ke 1 (Telah Diajukan)
+        // Handle is_routine update for GA
+        let gaRutin = row.is_routine;
+        if (isGAUser && ["rutin", "tidak_rutin"].includes(req.body.is_routine)) {
+            gaRutin = req.body.is_routine;
+        }
+
+        // GA fields — only GA can update these
+        let gaQtyVal   = row.ga_qty;
+        let gaMerkVal  = row.ga_merk;
+        let gaNoteVal  = row.ga_note;
+        let vendorName = row.vendor;
+        let vendorId   = row.vendor_id;
+        let vendorModeNew = row.vendor_mode;
+
+        if (isGAUser) {
+            const gaVendorMode = req.body.vendor_mode;
+            if (gaVendorMode) {
+                vendorModeNew = gaVendorMode;
+                if (gaVendorMode === "vendor") {
+                    vendorId   = req.body.vendor_id ? Number(req.body.vendor_id) : null;
+                    vendorName = req.body.vendor ? titleCase(sanitize(req.body.vendor)) : null;
+                    if (vendorId && !vendorName) {
+                        const vRows = await safeQuery(`SELECT nama_vendor FROM mst_vendor WHERE id = ?`, [vendorId]);
+                        vendorName = vRows.length ? vRows[0].nama_vendor : null;
+                    }
+                } else if (gaVendorMode === "offline") {
+                    const offlineDesc = sanitize(req.body.offline_desc);
+                    if (offlineDesc) vendorName = offlineDesc;
+                } else if (gaVendorMode === "link") {
+                    // link captured above
+                }
+            }
+
+            // GA can update ga_qty, ga_merk, ga_note
+            if (req.body.ga_qty != null) gaQtyVal = Number(req.body.ga_qty);
+            if (req.body.ga_merk) gaMerkVal = titleCase(sanitize(req.body.ga_merk));
+            if (req.body.ga_note != null) gaNoteVal = sanitize(req.body.ga_note);
+        }
+
+        // jika sebelumnya rejected, set kembali ke 1
         const newStatus = Number(row.status) === 9 ? 1 : row.status;
 
         await safeQuery(
             `UPDATE tr_purchase_request SET
-                type = ?, tanggal_pengajuan = ?, company_id = ?, outlet_id = ?,
+                type = ?, is_routine = ?, tanggal_pengajuan = ?, company_id = ?, outlet_id = ?,
                 nama_barang = ?, deskripsi = ?, merk = ?, qty = ?, satuan_id = ?,
                 estimasi_harga = ?, alasan_pembelian = ?,
                 bank_id = ?, nomor_rekening = ?, atas_nama = ?,
-                vendor_mode = ?, link_url = ?, link_title = ?,
+                vendor_mode = ?, vendor = ?, vendor_id = ?, link_url = ?, link_title = ?,
+                ga_qty = ?, ga_merk = ?, ga_note = ?,
                 status = ?, rejection_reason = NULL, rejected_at = NULL, rejected_by = NULL,
                 updated_at = NOW()
              WHERE pr_id = ?`,
-            [type, tanggalPengajuan, companyId, outletId,
+            [type, gaRutin, tanggalPengajuan, companyId, outletId,
              namaBarang, deskripsi, merk, qty, satuanId, estimasiHarga, alasanPembelian,
              bankId, nomorRekening, atasNama,
-             vendorMode, linkUrl, linkTitle,
+             vendorModeNew, vendorName, vendorId, linkUrl, linkTitle,
+             gaQtyVal, gaMerkVal, gaNoteVal,
              newStatus, id]
         );
 
-        // tambah lampiran baru (yang lama tetap; dihapus lewat endpoint terpisah)
+        // tambah lampiran baru
         const files = req.files || [];
         for (const file of files) {
             await safeQuery(
@@ -992,7 +1110,7 @@ export const updatePR = async (req, res) => {
 };
 
 // ════════════════════════════════════════════════════════════════════════════
-// DELETE  (soft delete, hanya pengaju, status IN (1, 2, 9))
+// DELETE  (soft delete — hanya pengaju, status IN (1, 2, 9), atau GA kapan pun < 5)
 // ════════════════════════════════════════════════════════════════════════════
 export const deletePR = async (req, res) => {
     try {
@@ -1005,13 +1123,23 @@ export const deletePR = async (req, res) => {
             [id]
         );
         if (!rows.length) return res.status(404).json({ message: "Data tidak ditemukan" });
-        if (rows[0].employee_id !== employeeId) return res.status(403).json({ message: "Tidak diizinkan" });
-        if (![1, 2, 9].includes(Number(rows[0].status))) {
-            return res.status(400).json({ message: "Pengajuan pada status ini tidak bisa dihapus" });
+
+        const me = await fetchEmployee(employeeId);
+        const isGAUser = isGA(me?.position_name);
+
+        // GA dapat menghapus kapan pun selama status < 5
+        if (isGAUser) {
+            if (Number(rows[0].status) >= 5) {
+                return res.status(400).json({ message: "Pengajuan sudah diproses Finance, tidak bisa dihapus" });
+            }
+        } else {
+            if (rows[0].employee_id !== employeeId) return res.status(403).json({ message: "Tidak diizinkan" });
+            if (![1, 2, 9].includes(Number(rows[0].status))) {
+                return res.status(400).json({ message: "Pengajuan pada status ini tidak bisa dihapus" });
+            }
         }
 
         await safeQuery(`UPDATE tr_purchase_request SET is_deleted = 1, updated_at = NOW() WHERE pr_id = ?`, [id]);
-        const me = await fetchEmployee(employeeId);
         await writeLog(id, "deleted", employeeId, me?.full_name, "Pengajuan dihapus");
 
         res.json({ message: "Pengajuan berhasil dihapus" });
@@ -1090,6 +1218,23 @@ export const approvePR = async (req, res) => {
 
             const spvNote = req.body.spv_note ? sanitize(req.body.spv_note) : null;
 
+            // ── GA Tidak Rutin: SPV Dept approve → langsung status 4 (PR Ready) ──
+            // karena GA sudah mengisi semua data, tidak perlu GA review lagi
+            if (pr.is_routine === "tidak_rutin") {
+                await safeQuery(
+                    `UPDATE tr_purchase_request SET status = 4, approved_spv_by = ?, approved_spv_at = NOW(),
+                        spv_note = ?, updated_at = NOW()
+                     WHERE pr_id = ?`,
+                    [employeeId, spvNote, id]
+                );
+                const logNote = spvNote
+                    ? `Disetujui SPV Departemen | Catatan: ${spvNote} — PR langsung ready (GA tidak rutin)`
+                    : "Disetujui SPV Departemen — PR langsung ready (GA tidak rutin)";
+                await writeLog(id, "approved_spv", employeeId, me.full_name, logNote);
+                return res.json({ message: "Pengajuan disetujui — PR siap diproses Finance" });
+            }
+
+            // Normal flow: status 1 → 2
             await safeQuery(
                 `UPDATE tr_purchase_request SET status = 2, approved_spv_by = ?, approved_spv_at = NOW(), spv_note = ?, updated_at = NOW()
                  WHERE pr_id = ?`,
@@ -1156,7 +1301,7 @@ export const rejectPR = async (req, res) => {
             // Direktur/Manager hanya bisa reject pengajuan biasa, bukan reimburse
             if (pr.type === "reimburse")
                 return res.status(403).json({ message: "Reimburse tidak diproses oleh Direktur" });
-            if (![1, 2].includes(Number(pr.status)))    
+            if (![1, 2].includes(Number(pr.status)))
                 return res.status(400).json({ message: "Pengajuan tidak bisa ditolak pada status ini" });
         } else {
             return res.status(403).json({ message: "Anda tidak memiliki hak menolak" });
@@ -1253,8 +1398,10 @@ export const listAll = async (req, res) => {
 };
 
 // ════════════════════════════════════════════════════════════════════════════
-// LIST GA REVIEW  (GA — pengajuan status 2 atau 3 yang menunggu persetujuan GA)
+// LIST GA REVIEW  (GA — pengajuan yang perlu GA review)
 // ════════════════════════════════════════════════════════════════════════════
+// GA yang membuat sendiri sudah isi data langsung, jadi tidak muncul di sini.
+// Hanya pengajuan dari NON-GA yang status 2 atau 3 dan butuh review GA.
 export const listGaReview = async (req, res) => {
     try {
         const employeeId = getEmployeeId(req);
@@ -1275,8 +1422,13 @@ export const listGaReview = async (req, res) => {
              LEFT JOIN mst_satuan     s ON s.satuan_id     = pr.satuan_id
              LEFT JOIN mst_company    c ON c.company_id    = pr.company_id
              LEFT JOIN mst_outlet     o ON o.id            = pr.outlet_id
-             WHERE pr.is_deleted = 0 AND pr.status IN (2, 3) AND pr.type = 'pengajuan'
-             ORDER BY pr.created_at ASC`
+             WHERE pr.is_deleted = 0
+               AND pr.status IN (2, 3)
+               AND pr.type = 'pengajuan'
+               AND pr.employee_id != ?
+               AND pr.is_routine IS NULL
+             ORDER BY pr.created_at ASC`,
+            [employeeId]
         );
 
         res.json({ data });
@@ -1320,9 +1472,9 @@ export const approveGA = async (req, res) => {
         const gaMerk   = req.body.ga_merk   ? titleCase(sanitize(req.body.ga_merk)) : (pr.merk ? titleCase(pr.merk) : null);
         const gaNote   = req.body.ga_note   ? sanitize(req.body.ga_note)            : null;
 
-        // Vendor mode: 'vendor' atau 'link'
-        const vendorMode = ["vendor", "link"].includes(req.body.vendor_mode) ? req.body.vendor_mode : null;
-        if (!vendorMode) return res.status(400).json({ message: "Pilihan vendor/link wajib diisi" });
+        // Vendor mode: 'vendor', 'link', atau 'offline'
+        const vendorMode = ["vendor", "link", "offline"].includes(req.body.vendor_mode) ? req.body.vendor_mode : null;
+        if (!vendorMode) return res.status(400).json({ message: "Pilihan vendor/link/offline wajib diisi" });
 
         let vendorName = null;
         let vendorId   = null;
@@ -1330,23 +1482,23 @@ export const approveGA = async (req, res) => {
         let linkTitle  = null;
 
         if (vendorMode === "vendor") {
-            // vendor_id opsional (bisa custom text)
             vendorId   = req.body.vendor_id ? Number(req.body.vendor_id) : null;
             vendorName = req.body.vendor ? titleCase(sanitize(req.body.vendor)) : null;
             if (!vendorName && !vendorId) {
                 return res.status(400).json({ message: "Nama vendor wajib diisi atau pilih dari daftar" });
             }
-            // Jika vendor_id ada, ambil nama dari mst_vendor
             if (vendorId && !vendorName) {
                 const vRows = await safeQuery(`SELECT nama_vendor FROM mst_vendor WHERE id = ?`, [vendorId]);
                 vendorName = vRows.length ? vRows[0].nama_vendor : null;
             }
-        } else {
-            // link mode — GA bisa edit link yang sudah diisi karyawan
+        } else if (vendorMode === "link") {
             linkUrl   = req.body.link_url   ? sanitize(req.body.link_url)   : null;
             linkTitle = req.body.link_title  ? sanitize(req.body.link_title) : null;
             if (!linkUrl)   return res.status(400).json({ message: "Link URL wajib diisi" });
             if (!linkTitle) return res.status(400).json({ message: "Judul link wajib diisi" });
+        } else if (vendorMode === "offline") {
+            vendorName = sanitize(req.body.vendor);
+            if (!vendorName) return res.status(400).json({ message: "Keterangan offline wajib diisi" });
         }
 
         if (isVendorUpdateOnly) {
@@ -1373,15 +1525,15 @@ export const approveGA = async (req, res) => {
             );
         }
 
-        const noteText = [
+        const noteParts = [
             isVendorUpdateOnly ? "Info vendor dilengkapi" : "Disetujui GA",
-            vendorMode === "vendor" ? `Vendor: ${vendorName}` : `Link: ${linkTitle} (${linkUrl})`,
+            vendorMode === "vendor" ? `Vendor: ${vendorName}` : (vendorMode === "offline" ? `Offline: ${vendorName}` : `Link: ${linkTitle} (${linkUrl})`),
             gaQty   ? `Qty direvisi: ${gaQty}` : null,
             gaMerk  ? `Merk direvisi: ${gaMerk}` : null,
             gaNote  ? `Catatan: ${gaNote}` : null,
         ].filter(Boolean).join(" | ");
 
-        await writeLog(id, isVendorUpdateOnly ? "vendor_updated" : "approved_ga", employeeId, me.full_name, noteText);
+        await writeLog(id, isVendorUpdateOnly ? "vendor_updated" : "approved_ga", employeeId, me.full_name, noteParts);
 
         res.json({ message: isVendorUpdateOnly ? "Info vendor berhasil dilengkapi" : "Pengajuan disetujui GA — PO siap diterbitkan" });
     } catch (err) {

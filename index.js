@@ -34,6 +34,8 @@ import masterJobLevelRoutes from "./routes/masterDataSuperApp/masterJobLevelRout
 import masterOutletRoutes from "./routes/masterDataSuperApp/masterOutletRoutes.js";
 import masterPositionRoutes from "./routes/masterDataSuperApp/masterPositionRoutes.js";
 import masterReligionRoutes from "./routes/masterDataSuperApp/masterReligionRoutes.js";
+import masterSatuanRoutes from "./routes/masterDataSuperApp/masterSatuanRoutes.js";
+import masterVendorRoutes from "./routes/masterDataSuperApp/masterVendorRoutes.js";
 import asetRoutes from "./routes/asetRoutes.js";
 import targetWaschenRoutes from "./routes/targetWaschenRoutes.js";
 import salesRoutes from "./routes/salesRoutes.js";
@@ -280,6 +282,8 @@ app.use("/job-levels", masterJobLevelRoutes);
 app.use("/outlets", masterOutletRoutes);
 app.use("/positions", masterPositionRoutes);
 app.use("/religions", masterReligionRoutes);
+app.use("/satuan", masterSatuanRoutes);
+app.use("/vendors", masterVendorRoutes);
 app.use("/aset", asetRoutes);
 app.use("/target-waschen", targetWaschenRoutes);
 app.use("/sales", salesRoutes);
