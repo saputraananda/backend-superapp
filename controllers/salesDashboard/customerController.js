@@ -2,12 +2,11 @@ import { safeSmartlinkQuery } from "../../db/pool.js";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
-function buildOutletClause(outlet) {
-  if (!outlet || outlet === "all") return { clause: "", params: [] };
-  return {
-    clause: "AND LOWER(outlet) = LOWER(?)",
-    params: [outlet],
-  };
+function buildOutletClause(outlet, alias = "outlet") {
+  if (!outlet || outlet.length === 0 || outlet.includes("all")) return { clause: "", params: [] };
+  const clause = `AND LOWER(${alias}) IN (${outlet.map(() => "?").join(",")})`;
+  const params = outlet.map(o => String(o).toLowerCase());
+  return { clause, params };
 }
 
 const DATE_RE  = /^\d{4}-\d{2}-\d{2}$/;
@@ -51,53 +50,50 @@ const OUTLET_CASE = `
 
 export const getCustomer = async (req, res) => {
   try {
-    const {
-      outlet = "all",
-      filterType,
-      month,
-      year,
-      startDate,
-      endDate,
-    } = req.query;
+    let outlet = req.query.outlet;
+    if (!outlet) { outlet = ["all"]; }
+    else if (typeof outlet === "string") { outlet = [outlet]; }
+
+    const { filterType, month, year, startDate, endDate } = req.query;
 
     const { clause: outletClause, params: outletParams } = buildOutletClause(outlet);
     const { clause: dateClause,  params: dateParams  } = buildDateClause(filterType, month, year, startDate, endDate);
 
-    // base WHERE (excluding the per-outlet breakdown which needs all outlets)
+    // base WHERE
     const baseWhere  = `WHERE nama NOT LIKE '%dummy%' ${outletClause} ${dateClause}`;
     const baseParams = [...outletParams, ...dateParams];
 
     // Build daily-trend query based on filter type
     let dailyTrendSql, dailyTrendParams;
+    const { clause: oCDaily, params: oPDaily } = buildOutletClause(outlet, "outlet");
     if (filterType === "year" && year && YEAR_RE.test(year)) {
-      // For year view: monthly buckets to keep point count reasonable
       dailyTrendSql = `
         SELECT DATE_FORMAT(terdaftar_sejak, '%Y-%m') AS day, COUNT(*) AS count
         FROM customer
-        WHERE nama NOT LIKE '%dummy%' AND YEAR(terdaftar_sejak) = ? ${outletClause}
+        WHERE nama NOT LIKE '%dummy%' AND YEAR(terdaftar_sejak) = ? ${oCDaily}
         GROUP BY day ORDER BY day ASC
       `;
-      dailyTrendParams = [year, ...outletParams];
+      dailyTrendParams = [year, ...oPDaily];
     } else if (dateClause) {
       dailyTrendSql = `
         SELECT DATE(terdaftar_sejak) AS day, COUNT(*) AS count
         FROM customer
-        WHERE nama NOT LIKE '%dummy%' ${outletClause} ${dateClause}
+        WHERE nama NOT LIKE '%dummy%' ${oCDaily} ${dateClause}
         GROUP BY day ORDER BY day ASC
       `;
-      dailyTrendParams = [...outletParams, ...dateParams];
+      dailyTrendParams = [...oPDaily, ...dateParams];
     } else {
       dailyTrendSql = `
         SELECT DATE(terdaftar_sejak) AS day, COUNT(*) AS count
         FROM customer
-        WHERE nama NOT LIKE '%dummy%' ${outletClause}
+        WHERE nama NOT LIKE '%dummy%' ${oCDaily}
           AND terdaftar_sejak >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
         GROUP BY day ORDER BY day ASC
       `;
-      dailyTrendParams = [...outletParams];
+      dailyTrendParams = [...oPDaily];
     }
 
-    // Run all queries in parallel for performance
+    // Run all queries in parallel
     const [
       [kpiRows],
       [outletRows],
@@ -160,12 +156,12 @@ export const getCustomer = async (req, res) => {
         FROM customer
         WHERE nama NOT LIKE '%dummy%'
           AND terdaftar_sejak >= DATE_SUB(NOW(), INTERVAL 12 MONTH)
-          ${outletClause}
+          ${oCDaily}
         GROUP BY month
         ORDER BY month ASC
-      `, [...outletParams]),
+      `, [...oPDaily]),
 
-      // 6. Top 50 customers by total transaction value
+      // 6. Top 50 customers
       safeSmartlinkQuery(`
         SELECT
           TRIM(nama)                                      AS nama,
@@ -187,7 +183,7 @@ export const getCustomer = async (req, res) => {
         LIMIT 50
       `, baseParams),
 
-      // 8. Activity breakdown — not filtered by date (shows current status)
+      // 7. Activity breakdown — not filtered by date
       safeSmartlinkQuery(`
         SELECT
           SUM(CASE WHEN transaksi_terakhir >= DATE_SUB(NOW(), INTERVAL 30 DAY)  THEN 1 ELSE 0 END) AS active_30d,
@@ -196,8 +192,8 @@ export const getCustomer = async (req, res) => {
           SUM(CASE WHEN transaksi_terakhir <  DATE_SUB(NOW(), INTERVAL 90 DAY)
                     OR  transaksi_terakhir IS NULL                              THEN 1 ELSE 0 END) AS churned
         FROM customer
-        WHERE nama NOT LIKE '%dummy%' ${outletClause}
-      `, [...outletParams]),
+        WHERE nama NOT LIKE '%dummy%' ${oCDaily}
+      `, [...oPDaily]),
     ]);
 
     const kpi      = kpiRows[0]      ?? {};

@@ -5,7 +5,17 @@ const GOLD_THRESHOLD    =   525_000;
 
 export const getMembership = async (req, res) => {
   try {
-    const { outlet = "all" } = req.query;
+    let outlet = req.query.outlet;
+    if (!outlet) { outlet = ["all"]; }
+    else if (typeof outlet === "string") { outlet = [outlet]; }
+
+    const isAllOutlets = outlet.length === 0 || outlet.includes("all");
+    let outletClause = "";
+    const outletParams = [];
+    if (!isAllOutlets) {
+      outletClause = `AND LOWER(c.outlet) IN (${outlet.map(() => "?").join(",")})`;
+      outletParams.push(...outlet.map(o => String(o).toLowerCase()));
+    }
 
     const sql = `
       SELECT
@@ -33,14 +43,14 @@ export const getMembership = async (req, res) => {
       ) t
       LEFT JOIN customer c ON TRIM(c.nama) COLLATE utf8mb4_unicode_ci = t.customer
       WHERE TRIM(c.nama) NOT LIKE '%dummy%'
-        AND (? = 'all' OR LOWER(c.outlet) = LOWER(?))
+        ${outletClause}
       ORDER BY t.total_topup DESC
     `;
 
     const [rows] = await safeSmartlinkQuery(sql, [
       DIAMOND_THRESHOLD,
       GOLD_THRESHOLD,
-      outlet, outlet,
+      ...outletParams,
     ]);
 
     const diamond = rows.filter(r => r.tier === "Diamond").length;

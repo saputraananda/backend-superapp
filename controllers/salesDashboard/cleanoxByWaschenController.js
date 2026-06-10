@@ -53,34 +53,31 @@ function buildDateRange(filterType, month, year, startDate, endDate, asOfDate) {
     const ao        = today < yearEnd ? today : yearEnd;
     return { dateStart: yearStart, dateEnd: yearEnd, asOfDate: ao };
   }
-  // asOfDate sent directly by frontend (e.g. month filter → asOfDate=YYYY-MM-25)
   if (asOfDate && DATE_RE.test(asOfDate)) {
     return { ...computeDateRange(asOfDate), asOfDate };
   }
-  // default: current billing cycle up to yesterday
   const yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
   const ao = yesterday.toISOString().split("T")[0];
   return { ...computeDateRange(ao), asOfDate: ao };
 }
 
+/** Bangun outlet filter IN clause — diterapkan di dalam CTE (tabel: rtrp) */
+function buildOutletClause(outlet) {
+  if (!outlet || outlet.length === 0 || outlet.includes("all")) return { clause: "", params: [] };
+  // Di dalam CTE payment_per_nota, outlet ada di tabel rtrp
+  const clause = `AND LOWER(rtrp.outlet) IN (${outlet.map(() => "?").join(",")})`;
+  const params = outlet.map(o => String(o).toLowerCase());
+  return { clause, params };
+}
+
 export const getCleanoxByWaschen = async (req, res) => {
   try {
-    const {
-      outlet = "all",
-      filterType,
-      month,
-      year,
-      startDate,
-      endDate,
-      asOfDate: rawAsOfDate,
-      page = "1",
-      pageSize = "50",
-    } = req.query;
+    let outlet = req.query.outlet;
+    if (!outlet) { outlet = ["all"]; }
+    else if (typeof outlet === "string") { outlet = [outlet]; }
 
-    // Validate outlet
-    if (outlet !== "all" && typeof outlet !== "string")
-      return res.status(400).json({ message: "Parameter outlet tidak valid" });
+    const { filterType, month, year, startDate, endDate, asOfDate: rawAsOfDate, page = "1", pageSize = "50" } = req.query;
 
     const pg   = Math.max(1, parseInt(page)     || 1);
     const size = Math.min(200, Math.max(1, parseInt(pageSize) || 50));
@@ -88,9 +85,9 @@ export const getCleanoxByWaschen = async (req, res) => {
 
     const { dateStart, dateEnd, asOfDate } = buildDateRange(filterType, month, year, startDate, endDate, rawAsOfDate);
 
-    const EP     = EXCLUDED_NOTAS.map(() => "?").join(",");
-    const outletFilter = outlet !== "all" ? "AND LOWER(ppn.outlet) = LOWER(?)" : "";
-    const outletParam  = outlet !== "all" ? [outlet] : [];
+    const EP = EXCLUDED_NOTAS.map(() => "?").join(",");
+    const { clause: outletFilter, params: outletParams } = buildOutletClause(outlet, "ppn.outlet");
+    const baseRangeParams = [dateStart, dateEnd, ...EXCLUDED_NOTAS, ...outletParams];
 
     // ── 1. Detail rows ────────────────────────────────────────────────────
     const detailSql = `
@@ -107,6 +104,7 @@ payment_per_nota AS (
     JOIN param p ON DATE(rtrp.waktu_pembayaran) BETWEEN p.date_start AND p.date_end
     WHERE rtrp.jenis_bayar <> 'e-money'
       AND rtrp.no_nota NOT IN (${EP})
+    ${outletFilter}
     GROUP BY 1, 2
 ),
 nota_flag AS (
@@ -146,7 +144,6 @@ FROM payment_per_nota ppn
 LEFT JOIN nota_flag nf ON ppn.no_nota = nf.no_nota
 LEFT JOIN nota_info ni ON ppn.no_nota = ni.no_nota
 WHERE COALESCE(nf.is_cleanox, 0) = 1
-  ${outletFilter}
 ORDER BY ppn.outlet, ppn.waktu_pembayaran, ppn.no_nota
 LIMIT ? OFFSET ?`;
 
@@ -164,6 +161,7 @@ payment_per_nota AS (
     JOIN param p ON DATE(rtrp.waktu_pembayaran) BETWEEN p.date_start AND p.date_end
     WHERE rtrp.jenis_bayar <> 'e-money'
       AND rtrp.no_nota NOT IN (${EP})
+    ${outletFilter}
     GROUP BY 1, 2
 ),
 nota_flag AS (
@@ -182,7 +180,6 @@ cleanox AS (
     FROM payment_per_nota ppn
     JOIN nota_flag nf ON ppn.no_nota = nf.no_nota
     WHERE COALESCE(nf.is_cleanox, 0) = 1
-      ${outletFilter}
 )
 SELECT
     COUNT(*)                 AS total_nota,
@@ -206,6 +203,7 @@ payment_per_nota AS (
     JOIN param p ON DATE(rtrp.waktu_pembayaran) BETWEEN p.date_start AND p.date_end
     WHERE rtrp.jenis_bayar <> 'e-money'
       AND rtrp.no_nota NOT IN (${EP})
+    ${outletFilter}
     GROUP BY 1, 2
 ),
 nota_flag AS (
@@ -224,7 +222,6 @@ cleanox AS (
     FROM payment_per_nota ppn
     JOIN nota_flag nf ON ppn.no_nota = nf.no_nota
     WHERE COALESCE(nf.is_cleanox, 0) = 1
-      ${outletFilter}
 )
 SELECT
     outlet,
@@ -249,6 +246,7 @@ payment_per_nota AS (
     JOIN param p ON DATE(rtrp.waktu_pembayaran) BETWEEN p.date_start AND p.date_end
     WHERE rtrp.jenis_bayar <> 'e-money'
       AND rtrp.no_nota NOT IN (${EP})
+    ${outletFilter}
     GROUP BY 1, 2
 ),
 nota_flag AS (
@@ -268,7 +266,6 @@ SELECT
 FROM payment_per_nota ppn
 JOIN nota_flag nf ON ppn.no_nota = nf.no_nota
 WHERE COALESCE(nf.is_cleanox, 0) = 1
-  ${outletFilter}
 GROUP BY ppn.tanggal
 ORDER BY ppn.tanggal`;
 
@@ -286,6 +283,7 @@ payment_per_nota AS (
     JOIN param p ON DATE(rtrp.waktu_pembayaran) BETWEEN p.date_start AND p.date_end
     WHERE rtrp.jenis_bayar <> 'e-money'
       AND rtrp.no_nota NOT IN (${EP})
+    ${outletFilter}
     GROUP BY 1, 2
 ),
 nota_flag AS (
@@ -302,8 +300,7 @@ nota_flag AS (
 SELECT COUNT(*) AS total
 FROM payment_per_nota ppn
 JOIN nota_flag nf ON ppn.no_nota = nf.no_nota
-WHERE COALESCE(nf.is_cleanox, 0) = 1
-  ${outletFilter}`;
+WHERE COALESCE(nf.is_cleanox, 0) = 1`;
 
     // ── 6. Klasifikasi per pembuat nota ──────────────────────────────────
     const pembuatSql = `
@@ -319,6 +316,7 @@ payment_per_nota AS (
     JOIN param p ON DATE(rtrp.waktu_pembayaran) BETWEEN p.date_start AND p.date_end
     WHERE rtrp.jenis_bayar <> 'e-money'
       AND rtrp.no_nota NOT IN (${EP})
+    ${outletFilter}
     GROUP BY 1, 2
 ),
 nota_flag AS (
@@ -349,7 +347,6 @@ cleanox AS (
     JOIN nota_flag nf ON ppn.no_nota = nf.no_nota
     JOIN nota_info ni  ON ppn.no_nota = ni.no_nota
     WHERE COALESCE(nf.is_cleanox, 0) = 1
-      ${outletFilter}
 )
 SELECT
     pembuat_nota,
@@ -360,14 +357,12 @@ FROM cleanox
 GROUP BY pembuat_nota
 ORDER BY total_nota DESC, total_omzet DESC`;
 
-    const baseRangeParams = [dateStart, dateEnd, ...EXCLUDED_NOTAS, ...outletParam];
-
     const [[detailRows], [kpiRows], [outletRows], [trendRows], [countRows], [pembuatRows]] = await Promise.all([
-      safeSmartlinkQuery(detailSql,   [dateStart, dateEnd, ...EXCLUDED_NOTAS, ...outletParam, size, offset]),
+      safeSmartlinkQuery(detailSql,   [dateStart, dateEnd, ...EXCLUDED_NOTAS, ...outletParams, size, offset]),
       safeSmartlinkQuery(kpiSql,      baseRangeParams),
       safeSmartlinkQuery(outletSql,   baseRangeParams),
       safeSmartlinkQuery(trendSql,    baseRangeParams),
-      safeSmartlinkQuery(countSql,    [dateStart, dateEnd, ...EXCLUDED_NOTAS, ...outletParam]),
+      safeSmartlinkQuery(countSql,    [dateStart, dateEnd, ...EXCLUDED_NOTAS, ...outletParams]),
       safeSmartlinkQuery(pembuatSql,  baseRangeParams),
     ]);
 

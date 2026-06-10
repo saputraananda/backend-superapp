@@ -23,14 +23,32 @@ function computeDateRange(asOfDate) {
 export const getPiutang = async (req, res) => {
   try {
     const dateRe = /^\d{4}-\d{2}-\d{2}$/;
-    let { asOfDate, startDate, endDate, outlet = "all" } = req.query;
+    let outlet = req.query.outlet;
+    // Single string → array; fallback "all"
+    if (!outlet) {
+      outlet = ["all"];
+    } else if (typeof outlet === "string") {
+      outlet = [outlet];
+    }
 
+    // Build outlet filter: ["all"] → skip filter, otherwise IN clause
+    const isAllOutlets = outlet.length === 0 || outlet.includes("all");
+    let outletCondition;
+    const outletParams = [];
+    if (isAllOutlets) {
+      outletCondition = "1 = 1";
+    } else {
+      outletCondition = `LOWER(rtr.outlet) IN (${outlet.map(() => "?").join(",")})`;
+      outletParams.push(...outlet.map(o => String(o).toLowerCase()));
+    }
+
+    // ── Date parsing ──────────────────────────────────────────────────────────
+    let { asOfDate, startDate, endDate } = req.query;
     if (asOfDate  && !dateRe.test(asOfDate))  return res.status(400).json({ message: "Format asOfDate harus YYYY-MM-DD" });
     if (startDate && !dateRe.test(startDate)) return res.status(400).json({ message: "Format startDate harus YYYY-MM-DD" });
     if (endDate   && !dateRe.test(endDate))   return res.status(400).json({ message: "Format endDate harus YYYY-MM-DD" });
 
     const isRange = !!(startDate && endDate);
-
     let dateStart, dateEnd;
     if (isRange) {
       dateStart = startDate;
@@ -69,7 +87,7 @@ export const getPiutang = async (req, res) => {
           AND rtr.pembayaran = 'Belum Lunas'
           AND rtr.pengambilan IN ('Belum Diambil', 'Diambil Semua')
           AND rtr.tgl_selesai IS NOT NULL
-          AND (? = 'all' OR LOWER(rtr.outlet) = LOWER(?))
+          AND ${outletCondition}
         GROUP BY rtr.no_nota
       )
       SELECT
@@ -98,7 +116,7 @@ export const getPiutang = async (req, res) => {
       ORDER BY tgl_terima ASC, customer_nama ASC, no_nota ASC
     `;
 
-    const [rows] = await safeSmartlinkQuery(sql, [outlet, outlet, dateStart, dateEnd]);
+    const [rows] = await safeSmartlinkQuery(sql, [...outletParams, dateStart, dateEnd]);
 
     const total      = rows.reduce((a, r) => a + Number(r.piutang), 0);
     const jatuhTempo = rows.filter(r => r.status === "Jatuh Tempo").reduce((a, r) => a + Number(r.piutang), 0);
