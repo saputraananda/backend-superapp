@@ -40,9 +40,8 @@ function toPositiveInt(v) {
 function buildProofUrl(req, filename) {
   if (!filename) return null;
   if (/^https?:\/\//i.test(filename)) return filename;
-  const proto = req.protocol;
-  const host = req.get("host");
-  return `${proto}://${host}/assets/kasbon/${path.basename(filename)}`;
+  const baseUrl = process.env.IKM_PHOTO_KASBON_BASE_URL || `${req.protocol}://${req.get("host")}/assets/kasbon`;
+  return `${baseUrl}/${path.basename(filename)}`;
 }
 
 function getCurrentUser(req) {
