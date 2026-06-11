@@ -535,3 +535,68 @@ export const deleteManagementAttendance = async (req, res) => {
 		return res.status(500).json({ success: false, message: error.message || "Gagal menghapus record absensi manajemen" });
 	}
 };
+
+/**
+ * POST /ikm/absensi-manajemen/management
+ * Admin: tambah record absensi manajemen secara manual.
+ */
+export const createManagementAttendance = async (req, res) => {
+	try {
+		const employeeId = toPositiveInt(req.body.employee_id);
+		if (!employeeId) {
+			return res.status(400).json({ success: false, message: "employee_id tidak valid" });
+		}
+
+		// Verify employee exists (IKM company or special employee)
+		const [empRows] = await safeQuery(
+			"SELECT employee_id FROM mst_employee WHERE employee_id = ? AND (company_id = ? OR employee_id = ?) AND is_deleted = 0 LIMIT 1",
+			[employeeId, IKM_COMPANY_ID, ADMIN_EMPLOYEE_ID]
+		);
+		if (empRows.length === 0) {
+			return res.status(404).json({ success: false, message: "Karyawan tidak ditemukan" });
+		}
+
+		const workDate = toISODateString(req.body.work_date);
+		if (!workDate) {
+			return res.status(400).json({ success: false, message: "work_date tidak valid (format: YYYY-MM-DD)" });
+		}
+
+		const checkInRaw = req.body.check_in_time || null;
+		const checkOutRaw = req.body.check_out_time || null;
+		const checkInTime = checkInRaw ? toMySQLDatetime(checkInRaw) : null;
+		const checkOutTime = checkOutRaw ? toMySQLDatetime(checkOutRaw) : null;
+
+		if (checkInRaw && !checkInTime) {
+			return res.status(400).json({ success: false, message: "Format check_in_time tidak valid. Gunakan YYYY-MM-DDTHH:MM" });
+		}
+		if (checkOutRaw && !checkOutTime) {
+			return res.status(400).json({ success: false, message: "Format check_out_time tidak valid. Gunakan YYYY-MM-DDTHH:MM" });
+		}
+		if (checkInTime && checkOutTime && new Date(checkOutTime) <= new Date(checkInTime)) {
+			return res.status(400).json({ success: false, message: "Jam keluar harus lebih besar dari jam masuk" });
+		}
+
+		// Check for duplicate (employee_id + work_date)
+		const [existing] = await safeIKMQuery(
+			"SELECT mgmt_record_id FROM tr_attendance_management_ikm WHERE employee_id = ? AND work_date = ?",
+			[employeeId, workDate]
+		);
+		if (existing.length > 0) {
+			return res.status(409).json({
+				success: false,
+				message: "Record absensi manajemen untuk karyawan dan tanggal ini sudah ada",
+			});
+		}
+
+		await safeIKMQuery(
+			`INSERT INTO tr_attendance_management_ikm (user_id, employee_id, work_date, check_in_time, check_out_time)
+			 VALUES (?, ?, ?, ?, ?)`,
+			[ADMIN_EMPLOYEE_ID, employeeId, workDate, checkInTime, checkOutTime]
+		);
+
+		return res.status(201).json({ success: true, message: "Data absensi manajemen berhasil ditambahkan" });
+	} catch (error) {
+		console.error("[createManagementAttendance] Error:", error);
+		return res.status(500).json({ success: false, message: error.message || "Gagal menambahkan data absensi manajemen" });
+	}
+};

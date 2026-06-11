@@ -4,6 +4,7 @@ import {
 	getManagementAttendance,
 	updateManagementAttendance,
 	deleteManagementAttendance,
+	createManagementAttendance,
 } from "../../controllers/IKM/absensiManajemenIKMController.js";
 
 const router = express.Router();
@@ -13,6 +14,7 @@ router.get("/health", (req, res) => {
 });
 
 router.get("/management", requireAuth, getManagementAttendance);
+router.post("/management", requireAuth, createManagementAttendance);
 router.put("/management/:id", requireAuth, updateManagementAttendance);
 router.delete("/management/:id", requireAuth, deleteManagementAttendance);
 
