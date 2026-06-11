@@ -85,7 +85,7 @@ export async function createProject(req, res) {
 
   try {
     const [r] = await db.query(
-      "INSERT INTO tr_pm_project (title, `desc`, company_id, requestor_employee_id) VALUES (?, ?, ?, ?)",
+      "INSERT INTO tr_pm_project (title, `desc`, company_id, requestor_employee_id, is_deleted) VALUES (?, ?, ?, ?, 0)",
       [title.trim(), desc?.trim() || null, finalCompanyId, emp.employee_id]
     );
     res.status(201).json({ id: r.insertId, title, desc, company_id: finalCompanyId });
@@ -226,7 +226,7 @@ export async function createSemester(req, res) {
   try {
     // id_project sebagai FK
     const [r] = await db.query(
-      "INSERT INTO tr_pm_semester (id_project, semester, title, `desc`, requestor_employee_id) VALUES (?,?,?,?,?)",
+      "INSERT INTO tr_pm_semester (id_project, semester, title, `desc`, requestor_employee_id, is_deleted) VALUES (?,?,?,?,?,0)",
       [req.params.projectId, semester, title.trim(), desc?.trim() || null, emp.employee_id]
     );
     res.status(201).json({ id: r.insertId, semester, title });
@@ -346,7 +346,7 @@ export async function createMonthly(req, res) {
     if (!semRows[0]) return res.status(404).json({ message: "Semester tidak ditemukan" });
 
     const [r] = await db.query(
-      "INSERT INTO tr_pm_monthly (id_project, id_semester, department, title, `desc`, requestor_employee_id) VALUES (?,?,?,?,?,?)",
+      "INSERT INTO tr_pm_monthly (id_project, id_semester, department, title, `desc`, requestor_employee_id, is_deleted) VALUES (?,?,?,?,?,?,0)",
       [semRows[0].id_project, req.params.semesterId, department?.trim() || null, title.trim(), desc?.trim() || null, emp.employee_id]
     );
     res.status(201).json({ id: r.insertId, department, title });
@@ -435,7 +435,7 @@ export async function createTask(req, res) {
   if (!requireAuth(req, res)) return;
   const emp = await getSessionEmployee(req);
   const { monthlyId } = req.params;
-  const { title, desc, startdate, enddate, priority, status, assignee_ids } = req.body;
+  const { title, desc, startdate, enddate, priority, status, pic_id, copic_ids, reviewer_ids } = req.body;
 
   if (!title?.trim()) return res.status(400).json({ message: "Title wajib diisi" });
 
@@ -447,26 +447,24 @@ export async function createTask(req, res) {
     if (!monthRows[0]) return res.status(404).json({ message: "Monthly tidak ditemukan" });
     const monthly = monthRows[0];
 
-    let finalAssignees = [];
-    if (!isSupervisorUp(emp)) {
-      const extra = Array.isArray(assignee_ids)
-        ? assignee_ids.map(Number).filter((id) => id !== emp.employee_id)
-        : [];
-      finalAssignees = [emp.employee_id, ...extra];
-    } else {
-      finalAssignees = Array.isArray(assignee_ids)
-        ? assignee_ids.map(Number)
-        : assignee_ids ? [Number(assignee_ids)] : [];
-    }
+    // ── New role-based assignee structure ──
+    // Creator = automatic owner (stored in owner_employee_id), NOT auto-PIC
+    const picId = pic_id ? Number(pic_id) : null;
+    const copicIds = Array.isArray(copic_ids) ? copic_ids.map(Number) : [];
+    const reviewerIds = Array.isArray(reviewer_ids) ? reviewer_ids.map(Number) : [];
 
-    // PIC = assignee pertama, atau emp sendiri
-    const picId = finalAssignees[0] ?? emp.employee_id;
+    // PIC is required for task creation
+    if (!picId) return res.status(400).json({ message: "PIC wajib dipilih" });
+
+    // Remove duplicates: PIC cannot be in copic or reviewer
+    const cleanCopicIds = copicIds.filter(id => id !== picId && !reviewerIds.includes(id));
+    const cleanReviewerIds = reviewerIds.filter(id => id !== picId);
 
     const [r] = await db.query(
       `INSERT INTO tr_pm_task
        (id_monthly, title, \`desc\`, startdate, enddate, priority, status,
-        owner_employee_id, pic_employee_id)
-       VALUES (?,?,?,?,?,?,?,?,?)`,
+        owner_employee_id, pic_employee_id, is_deleted)
+       VALUES (?,?,?,?,?,?,?,?,?,0)`,
       [
         monthlyId, title.trim(), desc?.trim() || null,
         sanitizeDate(startdate), sanitizeDate(enddate),
@@ -476,14 +474,16 @@ export async function createTask(req, res) {
     );
     const taskId = r.insertId;
 
-    // Insert assignees dengan role
-    if (finalAssignees.length > 0) {
-      const vals = finalAssignees.map((eid, idx) => [taskId, eid, idx === 0 ? "pic" : "co_pic"]);
-      await db.query(
-        "INSERT IGNORE INTO tr_pm_task_assignee (task_id, employee_id, role) VALUES ?",
-        [vals]
-      );
-    }
+    // Insert assignees with explicit roles
+    const vals = [];
+    vals.push([taskId, picId, "pic"]);
+    cleanCopicIds.forEach(eid => vals.push([taskId, eid, "co_pic"]));
+    cleanReviewerIds.forEach(eid => vals.push([taskId, eid, "reviewer"]));
+
+    await db.query(
+      "INSERT IGNORE INTO tr_pm_task_assignee (task_id, employee_id, role) VALUES ?",
+      [vals]
+    );
 
     // Notif ke supervisor (owner monthly) jika yang create adalah staff
     if (!isSupervisorUp(emp) && monthly.requestor_employee_id && monthly.requestor_employee_id !== emp.employee_id) {
@@ -495,20 +495,24 @@ export async function createTask(req, res) {
       );
     }
 
+    // All assignee IDs for notifications
+    const allAssigneeIds = [...new Set([picId, ...cleanCopicIds, ...cleanReviewerIds])];
+
     // Notif ke assignee yang bukan creator
-    for (const eid of finalAssignees) {
+    for (const eid of allAssigneeIds) {
       if (eid !== emp.employee_id) {
+        const roleLabel = eid === picId ? "PIC" : cleanCopicIds.includes(eid) ? "CO-PIC" : "Reviewer";
         await db.query(
           `INSERT INTO tr_pm_task_notif (task_id, recipient_employee_id, sender_employee_id, message)
            VALUES (?, ?, ?, ?)`,
           [taskId, eid, emp.employee_id,
-            `${emp.full_name} menugaskan task "${title.trim()}" kepada Anda`]
+            `${emp.full_name} menugaskan task "${title.trim()}" kepada Anda sebagai ${roleLabel}`]
         );
       }
     }
 
     await sendWaTaskNotif({
-      assigneeIds: finalAssignees.filter(eid => eid !== emp.employee_id),
+      assigneeIds: allAssigneeIds.filter(eid => eid !== emp.employee_id),
       taskTitle: title.trim(),
       monthlyTitle: monthly.title,
       creatorName: emp.full_name,
@@ -527,7 +531,7 @@ export async function updateTask(req, res) {
   if (!requireAuth(req, res)) return;
   const emp = await getSessionEmployee(req);
   const { taskId } = req.params;
-  const { title, desc, startdate, enddate, priority, status, assignee_ids } = req.body;
+  const { title, desc, startdate, enddate, priority, status, pic_id, copic_ids, reviewer_ids } = req.body;
 
   try {
     const [rows] = await db.query(
@@ -538,7 +542,7 @@ export async function updateTask(req, res) {
     const oldTask = rows[0];
     const oldStatus = oldTask.status;
 
-    // ✅ Merge dengan data lama — jika field tidak dikirim, pakai nilai lama
+    // Merge dengan data lama — jika field tidak dikirim, pakai nilai lama
     const finalTitle = title !== undefined ? title?.trim() : oldTask.title;
     const finalDesc = desc !== undefined ? desc?.trim() || null : oldTask.desc;
     const finalStart = startdate !== undefined ? sanitizeDate(startdate) : oldTask.startdate;
@@ -546,7 +550,6 @@ export async function updateTask(req, res) {
     const finalStatus = status !== undefined ? status : oldTask.status;
     const finalPriority = priority !== undefined ? priority : oldTask.priority;
 
-    // Validasi title tidak boleh null/kosong
     if (!finalTitle) return res.status(400).json({ message: "Title wajib diisi" });
 
     await db.query(
@@ -556,53 +559,63 @@ export async function updateTask(req, res) {
       [finalTitle, finalDesc, finalStart, finalEnd, finalPriority, finalStatus, taskId]
     );
 
-    // ✅ Update assignees HANYA jika assignee_ids dikirim (tidak undefined)
-    if (assignee_ids !== undefined) {
+    // Update assignees ONLY if new role-based fields are sent
+    const hasNewFields = pic_id !== undefined || copic_ids !== undefined || reviewer_ids !== undefined;
+    if (hasNewFields) {
+      // Get old assignees for diff notifications
       const [oldAssigneeRows] = await db.query(
-        "SELECT employee_id FROM tr_pm_task_assignee WHERE task_id = ?", [taskId]
+        "SELECT employee_id, role FROM tr_pm_task_assignee WHERE task_id = ?", [taskId]
       );
-      const oldAssigneeSet = new Set(oldAssigneeRows.map((a) => a.employee_id));
+      const oldAssigneeMap = {};
+      oldAssigneeRows.forEach(a => { oldAssigneeMap[a.employee_id] = a.role; });
 
       await db.query("DELETE FROM tr_pm_task_assignee WHERE task_id = ?", [taskId]);
 
-      let finalAssignees = [];
-      if (!isSupervisorUp(emp)) {
-        const extra = Array.isArray(assignee_ids)
-          ? assignee_ids.map(Number).filter((id) => id !== emp.employee_id)
-          : [];
-        finalAssignees = [emp.employee_id, ...extra];
-      } else {
-        finalAssignees = Array.isArray(assignee_ids)
-          ? assignee_ids.map(Number)
-          : assignee_ids ? [Number(assignee_ids)] : [];
-      }
+      // Build new assignee lists
+      const picId = pic_id !== undefined ? (pic_id ? Number(pic_id) : null) : oldTask.pic_employee_id;
+      const copicIds = copic_ids !== undefined
+        ? (Array.isArray(copic_ids) ? copic_ids.map(Number) : [])
+        : oldAssigneeRows.filter(a => a.role === 'co_pic').map(a => a.employee_id);
+      const reviewerIds = reviewer_ids !== undefined
+        ? (Array.isArray(reviewer_ids) ? reviewer_ids.map(Number) : [])
+        : oldAssigneeRows.filter(a => a.role === 'reviewer').map(a => a.employee_id);
 
-      if (finalAssignees.length > 0) {
-        const vals = finalAssignees.map((eid, idx) => [taskId, eid, idx === 0 ? "pic" : "co_pic"]);
+      // Clean duplicates
+      const cleanCopicIds = copicIds.filter(id => id !== picId && !reviewerIds.includes(id));
+      const cleanReviewerIds = reviewerIds.filter(id => id !== picId);
+
+      const vals = [];
+      if (picId) vals.push([taskId, picId, "pic"]);
+      cleanCopicIds.forEach(eid => vals.push([taskId, eid, "co_pic"]));
+      cleanReviewerIds.forEach(eid => vals.push([taskId, eid, "reviewer"]));
+
+      if (vals.length > 0) {
         await db.query(
           "INSERT IGNORE INTO tr_pm_task_assignee (task_id, employee_id, role) VALUES ?",
           [vals]
         );
         await db.query(
           "UPDATE tr_pm_task SET pic_employee_id=? WHERE id=?",
-          [finalAssignees[0], taskId]
+          [picId, taskId]
         );
       }
 
-      // Notif ke assignee baru
-      for (const eid of finalAssignees) {
-        if (eid !== emp.employee_id && !oldAssigneeSet.has(eid)) {
+      // Notif ke assignee baru yang belum pernah di-assign
+      const allNewIds = [...new Set([picId, ...cleanCopicIds, ...cleanReviewerIds].filter(Boolean))];
+      for (const eid of allNewIds) {
+        if (eid !== emp.employee_id && !oldAssigneeMap[eid]) {
+          const roleLabel = eid === picId ? "PIC" : cleanCopicIds.includes(eid) ? "CO-PIC" : "Reviewer";
           await db.query(
             `INSERT INTO tr_pm_task_notif (task_id, recipient_employee_id, sender_employee_id, message)
              VALUES (?, ?, ?, ?)`,
             [taskId, eid, emp.employee_id,
-              `${emp.full_name} menugaskan task "${finalTitle}" kepada Anda`]
+              `${emp.full_name} menugaskan task "${finalTitle}" kepada Anda sebagai ${roleLabel}`]
           );
         }
       }
     }
 
-    // ✅ Notif status change — hanya jika status benar-benar berubah
+    // Notif status change
     if (finalStatus !== oldStatus) {
       const [monthRows] = await db.query(
         "SELECT requestor_employee_id FROM tr_pm_monthly WHERE id = ? AND is_deleted = 0",
