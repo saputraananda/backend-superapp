@@ -2,6 +2,7 @@ import bcrypt from "bcrypt";
 import { pool, safeQuery, safeIKMQuery } from "../../db/pool.js";
 
 const FIXED_COMPANY_ID = 2;
+const SPECIAL_IKM_EMPLOYEE_ID = 25; // Employee yang diizinkan masuk IKM walau company_id != 2
 
 const SORT_COLUMNS = {
   full_name: "e.full_name",
@@ -62,8 +63,8 @@ export const listIKMEmployees = async (req, res) => {
 		const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
 		const offset = (page - 1) * limit;
 
-		const where = ["e.is_deleted = 0", "e.company_id = ?"];
-		const params = [FIXED_COMPANY_ID];
+		const where = ["e.is_deleted = 0", "(e.company_id = ? OR e.employee_id = ?)"];
+		const params = [FIXED_COMPANY_ID, SPECIAL_IKM_EMPLOYEE_ID];
 
 		if (search) {
 			where.push("(e.full_name LIKE ? OR e.employee_code LIKE ? OR e.email LIKE ? OR u.username LIKE ?)");
@@ -290,10 +291,10 @@ export const exportIKMEmployees = async (req, res) => {
 				LEFT JOIN mst_education_level   ed ON e.education_level_id  = ed.education_level_id
 				LEFT JOIN mst_religion          r  ON e.religion_id         = r.religion_id
 				LEFT JOIN mst_bank              b  ON e.bank_id             = b.bank_id
-				WHERE e.is_deleted = 0 AND e.company_id = ?
+				WHERE e.is_deleted = 0 AND (e.company_id = ? OR e.employee_id = ?)
 				ORDER BY e.full_name ASC, e.employee_id ASC
 			`,
-			[FIXED_COMPANY_ID]
+			[FIXED_COMPANY_ID, SPECIAL_IKM_EMPLOYEE_ID]
 		);
 
 		// Merge leader role dari IKM DB
@@ -404,8 +405,8 @@ export const setIKMEmployeeLeaderRole = async (req, res) => {
 
 		// Verify employee exists in company
 		const [empRows] = await safeQuery(
-			"SELECT employee_id FROM mst_employee WHERE employee_id = ? AND company_id = ? AND is_deleted = 0 LIMIT 1",
-			[id, FIXED_COMPANY_ID]
+			"SELECT employee_id FROM mst_employee WHERE employee_id = ? AND (company_id = ? OR employee_id = ?) AND is_deleted = 0 LIMIT 1",
+			[id, FIXED_COMPANY_ID, SPECIAL_IKM_EMPLOYEE_ID]
 		);
 		if (empRows.length === 0) {
 			return res.status(404).json({ message: "Karyawan tidak ditemukan" });
@@ -539,8 +540,8 @@ export const setIKMEmployeeFloor = async (req, res) => {
 
 		// Verify employee exists in company
 		const [empRows] = await safeQuery(
-			"SELECT employee_id FROM mst_employee WHERE employee_id = ? AND company_id = ? AND is_deleted = 0 LIMIT 1",
-			[id, FIXED_COMPANY_ID]
+			"SELECT employee_id FROM mst_employee WHERE employee_id = ? AND (company_id = ? OR employee_id = ?) AND is_deleted = 0 LIMIT 1",
+			[id, FIXED_COMPANY_ID, SPECIAL_IKM_EMPLOYEE_ID]
 		);
 		if (empRows.length === 0) {
 			return res.status(404).json({ message: "Karyawan tidak ditemukan" });
