@@ -2,6 +2,7 @@
 import { safeBackupCleanoxQuery } from "../../../db/pool.js";
 
 const TABLE = "customer_cleanox";
+const TX_TABLE = "rekap_transaksi_reguler";
 const KMP_FILTER = "(nama LIKE '%KMP%' OR instansi LIKE '%KMP%')";
 
 // ─── GET /kmp/customers/stats — summary cards for KMP customers ─────────────
@@ -152,6 +153,60 @@ export const getKmpCustomers = async (req, res) => {
     });
   } catch (err) {
     console.error("getKmpCustomers:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ─── GET /kmp/customers/detail/:id — single customer detail + transactions ──
+export const getKmpCustomerDetail = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Customer info
+    const [customerRows] = await safeBackupCleanoxQuery(
+      `SELECT * FROM ${TABLE} WHERE id_konsumen = ? AND is_active = 1 LIMIT 1`,
+      [id]
+    );
+
+    if (customerRows.length === 0) {
+      return res.status(404).json({ message: "Customer not found" });
+    }
+    const customer = customerRows[0];
+
+    // Transaction history from rekap_transaksi_reguler (KMP only)
+    const [transactions] = await safeBackupCleanoxQuery(
+      `SELECT no_nota, outlet, tgl_terima, tgl_selesai, total_tagihan, pembayaran,
+              jenis_layanan, nama_item, jumlah, satuan_item, total, item_ke
+       FROM ${TX_TABLE}
+       WHERE (customer_nama = ? OR customer_nama LIKE ?)
+         AND (nama_item LIKE '%KMP%' OR customer_nama LIKE '%KMP%')
+         AND is_active = 1
+       ORDER BY tgl_terima DESC, no_nota, item_ke
+       LIMIT 200`,
+      [customer.nama, `%${customer.nama}%`]
+    );
+
+    // Transaction summary
+    const [[txSummary]] = await safeBackupCleanoxQuery(
+      `SELECT COUNT(DISTINCT no_nota) AS total_nota, COUNT(*) AS total_items,
+              COALESCE(SUM(total_tagihan), 0) AS total_tagihan,
+              COALESCE(SUM(total), 0) AS grand_total
+       FROM ${TX_TABLE}
+       WHERE (customer_nama = ? OR customer_nama LIKE ?)
+         AND (nama_item LIKE '%KMP%' OR customer_nama LIKE '%KMP%')
+         AND is_active = 1`,
+      [customer.nama, `%${customer.nama}%`]
+    );
+
+    res.json({
+      data: {
+        customer,
+        transactions,
+        tx_summary: txSummary || {},
+      },
+    });
+  } catch (err) {
+    console.error("getKmpCustomerDetail:", err);
     res.status(500).json({ message: err.message });
   }
 };
