@@ -55,6 +55,8 @@ import complaintRoutes from "./routes/complaintRoutes.js";
 import pengajuanRoutes from "./routes/pengajuanRoutes.js";
 import docAloraRoutes from "./routes/docAloraRoutes.js";
 import csatNpsRoutes from "./routes/csatNpsRoutes.js";
+import b2bKoperasiRoutes from "./routes/B2B/B2B-Koperasi-2026/b2bKoperasiDashboardRoutes.js";
+import b2bKoperasiCustomerRoutes from "./routes/B2B/B2B-Koperasi-2026/b2bKoperasiCustomerRoutes.js";
 
 import { sendIdulFitriBlastCleanoxProd } from "./utils/waBlastCustomerProd.js";
 
@@ -304,6 +306,8 @@ app.use("/complaints", complaintRoutes);
 app.use("/pengajuan", pengajuanRoutes);
 app.use("/doc-alora", docAloraRoutes);
 app.use("/csat-nps", csatNpsRoutes);
+app.use("/b2b", b2bKoperasiRoutes);
+app.use("/b2b", b2bKoperasiCustomerRoutes);
 
 // 404
 app.use((req, res) => {
