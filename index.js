@@ -54,6 +54,7 @@ import internalRoutes from "./routes/internalRoutes.js";
 import complaintRoutes from "./routes/complaintRoutes.js";
 import pengajuanRoutes from "./routes/pengajuanRoutes.js";
 import docAloraRoutes from "./routes/docAloraRoutes.js";
+import csatNpsRoutes from "./routes/csatNpsRoutes.js";
 
 import { sendIdulFitriBlastCleanoxProd } from "./utils/waBlastCustomerProd.js";
 
@@ -302,6 +303,7 @@ app.use("/internal", internalRoutes);
 app.use("/complaints", complaintRoutes);
 app.use("/pengajuan", pengajuanRoutes);
 app.use("/doc-alora", docAloraRoutes);
+app.use("/csat-nps", csatNpsRoutes);
 
 // 404
 app.use((req, res) => {
