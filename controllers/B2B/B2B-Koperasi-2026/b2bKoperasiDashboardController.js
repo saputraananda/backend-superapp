@@ -80,6 +80,7 @@ export const getKmpStats = async (req, res) => {
     const [dailyTrend] = await safeBackupCleanoxQuery(
       `SELECT
          DATE(tgl_terima) AS day,
+         COUNT(*) AS total_items,
          COUNT(DISTINCT no_nota) AS total_nota,
          COALESCE(SUM(total_tagihan), 0) AS total_tagihan
        FROM ${TABLE}
@@ -93,6 +94,7 @@ export const getKmpStats = async (req, res) => {
     const [rushHour] = await safeBackupCleanoxQuery(
       `SELECT
          HOUR(tgl_terima) AS hour,
+         COUNT(*) AS total_items,
          COUNT(DISTINCT no_nota) AS total_nota,
          COALESCE(SUM(total_tagihan), 0) AS total_tagihan
        FROM ${TABLE}
