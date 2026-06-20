@@ -3,6 +3,7 @@ import { safeIKMQuery } from "../../db/pool.js";
 
 const TABLE = "mst_linen";
 
+// ── GET list with pagination, search, category filter, include size/color/material ──
 export const getLinenList = async (req, res) => {
   try {
     const { page = 1, limit = 25, search = "", category_id = "" } = req.query;
@@ -31,8 +32,19 @@ export const getLinenList = async (req, res) => {
     );
 
     const [rows] = await safeIKMQuery(
-      `SELECT l.id, l.linen_code, l.linen_name, l.category_id, c.category_code, c.category_name, l.description, l.created_at, l.updated_at
-       FROM ${TABLE} l LEFT JOIN mst_linen_category c ON l.category_id = c.id ${whereSql}
+      `SELECT l.id, l.linen_code, l.linen_name,
+              l.category_id, c.category_code, c.category_name,
+              l.size_id, sz.size_code, sz.size_name,
+              l.color_id, cl.color_code, cl.color_name,
+              l.material_id, mt.material_code, mt.material_name,
+              l.default_qty, l.description,
+              l.created_at, l.updated_at
+       FROM ${TABLE} l
+       LEFT JOIN mst_linen_category c ON l.category_id = c.id
+       LEFT JOIN mst_size sz ON l.size_id = sz.id
+       LEFT JOIN mst_color cl ON l.color_id = cl.id
+       LEFT JOIN mst_material mt ON l.material_id = mt.id
+       ${whereSql}
        ORDER BY l.linen_code ASC LIMIT ? OFFSET ?`,
       [...params, lm, offset]
     );
@@ -47,6 +59,59 @@ export const getLinenList = async (req, res) => {
   }
 };
 
+// ── GET single linen by ID (with all joins) ──
+export const getLinenById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [rows] = await safeIKMQuery(
+      `SELECT l.id, l.linen_code, l.linen_name,
+              l.category_id, c.category_code, c.category_name,
+              l.size_id, sz.size_code, sz.size_name,
+              l.color_id, cl.color_code, cl.color_name,
+              l.material_id, mt.material_code, mt.material_name,
+              l.default_qty, l.description,
+              l.created_at, l.updated_at
+       FROM ${TABLE} l
+       LEFT JOIN mst_linen_category c ON l.category_id = c.id
+       LEFT JOIN mst_size sz ON l.size_id = sz.id
+       LEFT JOIN mst_color cl ON l.color_id = cl.id
+       LEFT JOIN mst_material mt ON l.material_id = mt.id
+       WHERE l.id = ?`,
+      [id]
+    );
+    if (rows.length === 0) return res.status(404).json({ message: "Linen tidak ditemukan" });
+    res.json({ data: rows[0] });
+  } catch (err) {
+    console.error("getLinenById:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ── GET all mst_linen for dropdown (lightweight) ──
+export const getLinenDropdown = async (req, res) => {
+  try {
+    const [rows] = await safeIKMQuery(
+      `SELECT l.id, l.linen_code, l.linen_name,
+              sz.size_name, cl.color_name, mt.material_name
+       FROM ${TABLE} l
+       LEFT JOIN mst_size sz ON l.size_id = sz.id
+       LEFT JOIN mst_color cl ON l.color_id = cl.id
+       LEFT JOIN mst_material mt ON l.material_id = mt.id
+       ORDER BY l.linen_name ASC`
+    );
+    const mapped = rows.map(r => ({
+      id: r.id,
+      linen_code: r.linen_code,
+      linen_name: [r.linen_name, r.size_name, r.color_name, r.material_name].filter(Boolean).join(" "),
+    }));
+    res.json({ data: mapped });
+  } catch (err) {
+    console.error("getLinenDropdown:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ── GET categories ──
 export const getCategories = async (req, res) => {
   try {
     const [rows] = await safeIKMQuery(
@@ -59,28 +124,46 @@ export const getCategories = async (req, res) => {
   }
 };
 
+// ── GET sizes ──
+export const getSizes = async (req, res) => {
+  try {
+    const [rows] = await safeIKMQuery(`SELECT id, size_code, size_name FROM mst_size ORDER BY sort_order ASC`);
+    res.json(rows);
+  } catch (err) {
+    console.error("getSizes:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ── GET colors ──
+export const getColors = async (req, res) => {
+  try {
+    const [rows] = await safeIKMQuery(`SELECT id, color_code, color_name FROM mst_color ORDER BY sort_order ASC`);
+    res.json(rows);
+  } catch (err) {
+    console.error("getColors:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ── GET materials ──
+export const getMaterials = async (req, res) => {
+  try {
+    const [rows] = await safeIKMQuery(`SELECT id, material_code, material_name FROM mst_material ORDER BY material_name ASC`);
+    res.json(rows);
+  } catch (err) {
+    console.error("getMaterials:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ── CREATE linen ──
 export const createLinen = async (req, res) => {
   try {
-    const { linen_code, linen_name, category_id, description } = req.body;
+    const { linen_code, linen_name, category_id, size_id, color_id, material_id, default_qty, description } = req.body;
 
     if (!linen_name?.trim()) {
       return res.status(400).json({ message: "Nama linen wajib diisi" });
-    }
-
-    if (category_id) {
-      const [catExist] = await safeIKMQuery(
-        `SELECT id FROM mst_linen_category WHERE id = ?`, [category_id]
-      );
-      if (catExist.length === 0) {
-        return res.status(400).json({ message: "Kategori tidak valid" });
-      }
-    }
-
-    const [dupName] = await safeIKMQuery(
-      `SELECT id FROM ${TABLE} WHERE linen_name = ?`, [linen_name.trim()]
-    );
-    if (dupName.length > 0) {
-      return res.status(409).json({ message: "Nama linen sudah ada" });
     }
 
     if (linen_code?.trim()) {
@@ -93,8 +176,18 @@ export const createLinen = async (req, res) => {
     }
 
     const [result] = await safeIKMQuery(
-      `INSERT INTO ${TABLE} (linen_code, linen_name, category_id, description) VALUES (?, ?, ?, ?)`,
-      [linen_code?.trim() || null, linen_name.trim(), category_id || null, description?.trim() || null]
+      `INSERT INTO ${TABLE} (linen_code, linen_name, category_id, size_id, color_id, material_id, default_qty, description)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        linen_code?.trim() || null,
+        linen_name.trim(),
+        category_id || null,
+        size_id || null,
+        color_id || null,
+        material_id || null,
+        default_qty ?? 0,
+        description?.trim() || null,
+      ]
     );
 
     res.status(201).json({ message: "Linen berhasil ditambahkan", id: result.insertId });
@@ -104,10 +197,11 @@ export const createLinen = async (req, res) => {
   }
 };
 
+// ── UPDATE linen ──
 export const updateLinen = async (req, res) => {
   try {
     const { id } = req.params;
-    const { linen_code, linen_name, category_id, description } = req.body;
+    const { linen_code, linen_name, category_id, size_id, color_id, material_id, default_qty, description } = req.body;
 
     if (!linen_name?.trim()) {
       return res.status(400).json({ message: "Nama linen wajib diisi" });
@@ -116,23 +210,6 @@ export const updateLinen = async (req, res) => {
     const [exist] = await safeIKMQuery(`SELECT id FROM ${TABLE} WHERE id = ?`, [id]);
     if (exist.length === 0) {
       return res.status(404).json({ message: "Linen tidak ditemukan" });
-    }
-
-    if (category_id) {
-      const [catExist] = await safeIKMQuery(
-        `SELECT id FROM mst_linen_category WHERE id = ?`, [category_id]
-      );
-      if (catExist.length === 0) {
-        return res.status(400).json({ message: "Kategori tidak valid" });
-      }
-    }
-
-    const [dupName] = await safeIKMQuery(
-      `SELECT id FROM ${TABLE} WHERE linen_name = ? AND id != ?`,
-      [linen_name.trim(), id]
-    );
-    if (dupName.length > 0) {
-      return res.status(409).json({ message: "Nama linen sudah digunakan" });
     }
 
     if (linen_code?.trim()) {
@@ -146,8 +223,20 @@ export const updateLinen = async (req, res) => {
     }
 
     await safeIKMQuery(
-      `UPDATE ${TABLE} SET linen_code = ?, linen_name = ?, category_id = ?, description = ? WHERE id = ?`,
-      [linen_code?.trim() || null, linen_name.trim(), category_id || null, description?.trim() || null, id]
+      `UPDATE ${TABLE} SET linen_code = ?, linen_name = ?, category_id = ?,
+       size_id = ?, color_id = ?, material_id = ?, default_qty = ?, description = ?
+       WHERE id = ?`,
+      [
+        linen_code?.trim() || null,
+        linen_name.trim(),
+        category_id || null,
+        size_id || null,
+        color_id || null,
+        material_id || null,
+        default_qty ?? 0,
+        description?.trim() || null,
+        id,
+      ]
     );
 
     res.json({ message: "Linen berhasil diperbarui" });
@@ -157,6 +246,7 @@ export const updateLinen = async (req, res) => {
   }
 };
 
+// ── DELETE linen ──
 export const deleteLinen = async (req, res) => {
   try {
     const { id } = req.params;
@@ -179,6 +269,72 @@ export const deleteLinen = async (req, res) => {
     res.json({ message: "Linen berhasil dihapus" });
   } catch (err) {
     console.error("deleteLinen:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ════════════════════════════════════════════════════════════════
+// RIWAYAT HARGA BELI
+// ════════════════════════════════════════════════════════════════
+
+// ── GET price history for a linen ──
+export const getPriceHistory = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [rows] = await safeIKMQuery(
+      `SELECT id, linen_id, purchase_price, effective_date, notes, created_by, created_at
+       FROM tr_linen_purchase_price
+       WHERE linen_id = ?
+       ORDER BY effective_date DESC, created_at DESC`,
+      [id]
+    );
+    res.json({ data: rows });
+  } catch (err) {
+    console.error("getPriceHistory:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ── ADD price history entry ──
+export const addPriceHistory = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { purchase_price, effective_date, notes } = req.body;
+
+    if (purchase_price === undefined || purchase_price === null) {
+      return res.status(400).json({ message: "Harga beli wajib diisi" });
+    }
+    if (!effective_date) {
+      return res.status(400).json({ message: "Tanggal efektif wajib diisi" });
+    }
+
+    // Verify linen exists
+    const [exist] = await safeIKMQuery(`SELECT id FROM ${TABLE} WHERE id = ?`, [id]);
+    if (exist.length === 0) {
+      return res.status(404).json({ message: "Linen tidak ditemukan" });
+    }
+
+    const [result] = await safeIKMQuery(
+      `INSERT INTO tr_linen_purchase_price (linen_id, purchase_price, effective_date, notes, created_by)
+       VALUES (?, ?, ?, ?, ?)`,
+      [id, purchase_price, effective_date, notes?.trim() || null, req.user?.username || null]
+    );
+
+    res.status(201).json({ message: "Harga beli berhasil ditambahkan", id: result.insertId });
+  } catch (err) {
+    console.error("addPriceHistory:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ── DELETE price history entry ──
+export const deletePriceHistory = async (req, res) => {
+  try {
+    const { priceId } = req.params;
+    await safeIKMQuery(`DELETE FROM tr_linen_purchase_price WHERE id = ?`, [priceId]);
+    res.json({ message: "Riwayat harga berhasil dihapus" });
+  } catch (err) {
+    console.error("deletePriceHistory:", err);
     res.status(500).json({ message: err.message });
   }
 };

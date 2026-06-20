@@ -14,9 +14,14 @@ export const getByHospital = async (req, res) => {
               hl.washing_price_type, hl.washing_price, hl.rental_price,
               hl.par_stock, hl.min_stock, hl.is_active,
               hl.created_at, hl.updated_at,
-              l.linen_code, l.linen_name AS master_linen_name
+              l.linen_code,
+              l.linen_name AS master_linen_name,
+              sz.size_name, cl.color_name, mt.material_name
        FROM mst_hospital_linen hl
        LEFT JOIN mst_linen l ON l.id = hl.linen_id
+       LEFT JOIN mst_size sz ON l.size_id = sz.id
+       LEFT JOIN mst_color cl ON l.color_id = cl.id
+       LEFT JOIN mst_material mt ON l.material_id = mt.id
        WHERE hl.hospital_id = ?
        ORDER BY l.linen_name ASC`,
       [hospitalId]
@@ -32,9 +37,20 @@ export const getByHospital = async (req, res) => {
 export const getAllLinen = async (req, res) => {
   try {
     const [rows] = await safeIKMQuery(
-      `SELECT id, linen_code, linen_name FROM mst_linen ORDER BY linen_name ASC`
+      `SELECT l.id, l.linen_code, l.linen_name,
+              sz.size_name, cl.color_name, mt.material_name
+       FROM mst_linen l
+       LEFT JOIN mst_size sz ON l.size_id = sz.id
+       LEFT JOIN mst_color cl ON l.color_id = cl.id
+       LEFT JOIN mst_material mt ON l.material_id = mt.id
+       ORDER BY l.linen_name ASC`
     );
-    res.json({ data: rows });
+    const mapped = rows.map(r => ({
+      id: r.id,
+      linen_code: r.linen_code,
+      linen_name: [r.linen_name, r.size_name, r.color_name, r.material_name].filter(Boolean).join(" "),
+    }));
+    res.json({ data: mapped });
   } catch (err) {
     console.error("getAllLinen:", err);
     res.status(500).json({ message: err.message });
