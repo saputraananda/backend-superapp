@@ -2,7 +2,6 @@ import { safeIKMQuery } from "../../db/pool.js";
 
 // ── Reusable helpers ──
 const hospitalNotFound = (hospitalId) => `Data linen RS tidak ditemukan`;
-const dupMessage = (hospitalId) => `Linen sudah terdaftar untuk RS ini`;
 
 // ── GET all hospital_linen for a given hospital ──
 export const getByHospital = async (req, res) => {
@@ -68,14 +67,6 @@ export const create = async (req, res) => {
   if (!linen_id) return res.status(400).json({ message: "Linen wajib dipilih" });
 
   try {
-    const [dup] = await safeIKMQuery(
-      `SELECT id FROM mst_hospital_linen WHERE hospital_id = ? AND linen_id = ?`,
-      [hospitalId, linen_id]
-    );
-    if (dup.length > 0) {
-      return res.status(409).json({ message: dupMessage(hospitalId) });
-    }
-
     const [result] = await safeIKMQuery(
       `INSERT INTO mst_hospital_linen
        (hospital_id, linen_id, hospital_linen_name, ownership_type, unit, grammage,
@@ -117,16 +108,6 @@ export const update = async (req, res) => {
     );
     if (exist.length === 0) {
       return res.status(404).json({ message: hospitalNotFound(hospitalId) });
-    }
-
-    if (linen_id) {
-      const [dup] = await safeIKMQuery(
-        `SELECT id FROM mst_hospital_linen WHERE hospital_id = ? AND linen_id = ? AND id != ?`,
-        [hospitalId, linen_id, id]
-      );
-      if (dup.length > 0) {
-        return res.status(409).json({ message: dupMessage(hospitalId) });
-      }
     }
 
     await safeIKMQuery(

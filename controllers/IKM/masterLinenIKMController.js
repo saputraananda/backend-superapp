@@ -157,6 +157,36 @@ export const getMaterials = async (req, res) => {
   }
 };
 
+// ── GET vendors ──
+export const getVendors = async (req, res) => {
+  try {
+    const [rows] = await safeIKMQuery(
+      `SELECT id, nama_vendor, kategori, alamat, kontak_person, no_telepon_1, status
+       FROM mst_vendor_ikm WHERE status = 'AKTIF' ORDER BY nama_vendor ASC`
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error("getVendors:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ── GET next linen_code ──
+export const getNextLinenCode = async (req, res) => {
+  try {
+    const [rows] = await safeIKMQuery(
+      `SELECT linen_code FROM mst_linen ORDER BY linen_code DESC LIMIT 1`
+    );
+    const lastCode = rows[0]?.linen_code || "LIN0000";
+    const num = parseInt(lastCode.replace("LIN", ""), 10) + 1;
+    const next = "LIN" + String(num).padStart(4, "0");
+    res.json({ nextCode: next });
+  } catch (err) {
+    console.error("getNextLinenCode:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
 // ── CREATE linen ──
 export const createLinen = async (req, res) => {
   try {
@@ -282,10 +312,13 @@ export const getPriceHistory = async (req, res) => {
   try {
     const { id } = req.params;
     const [rows] = await safeIKMQuery(
-      `SELECT id, linen_id, purchase_price, effective_date, notes, created_by, created_at
-       FROM tr_linen_purchase_price
-       WHERE linen_id = ?
-       ORDER BY effective_date DESC, created_at DESC`,
+      `SELECT ph.id, ph.linen_id, ph.vendor_id, ph.qty, ph.unit_price, ph.total_price,
+              ph.effective_date, ph.notes, ph.created_by, ph.created_at,
+              v.nama_vendor
+       FROM tr_linen_purchase_price ph
+       LEFT JOIN mst_vendor_ikm v ON v.id = ph.vendor_id
+       WHERE ph.linen_id = ?
+       ORDER BY ph.effective_date DESC, ph.created_at DESC`,
       [id]
     );
     res.json({ data: rows });
@@ -299,13 +332,16 @@ export const getPriceHistory = async (req, res) => {
 export const addPriceHistory = async (req, res) => {
   try {
     const { id } = req.params;
-    const { purchase_price, effective_date, notes } = req.body;
+    const { vendor_id, qty, unit_price, effective_date, notes } = req.body;
 
-    if (purchase_price === undefined || purchase_price === null) {
+    if (unit_price === undefined || unit_price === null) {
       return res.status(400).json({ message: "Harga beli wajib diisi" });
     }
     if (!effective_date) {
       return res.status(400).json({ message: "Tanggal efektif wajib diisi" });
+    }
+    if (!qty || qty <= 0) {
+      return res.status(400).json({ message: "Qty harus diisi dan > 0" });
     }
 
     // Verify linen exists
@@ -315,9 +351,17 @@ export const addPriceHistory = async (req, res) => {
     }
 
     const [result] = await safeIKMQuery(
-      `INSERT INTO tr_linen_purchase_price (linen_id, purchase_price, effective_date, notes, created_by)
-       VALUES (?, ?, ?, ?, ?)`,
-      [id, purchase_price, effective_date, notes?.trim() || null, req.user?.username || null]
+      `INSERT INTO tr_linen_purchase_price (linen_id, vendor_id, qty, unit_price, effective_date, notes, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        vendor_id || null,
+        qty,
+        unit_price,
+        effective_date,
+        notes?.trim() || null,
+        req.user?.username || null
+      ]
     );
 
     res.status(201).json({ message: "Harga beli berhasil ditambahkan", id: result.insertId });

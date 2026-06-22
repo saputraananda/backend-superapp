@@ -15,6 +15,8 @@ import {
   getPriceHistory,
   addPriceHistory,
   deletePriceHistory,
+  getVendors,
+  getNextLinenCode,
 } from "../../controllers/IKM/masterLinenIKMController.js";
 
 const router = express.Router();
@@ -24,8 +26,10 @@ router.get("/categories",       requireAuth, getCategories);
 router.get("/sizes",            requireAuth, getSizes);
 router.get("/colors",           requireAuth, getColors);
 router.get("/materials",        requireAuth, getMaterials);
+router.get("/vendors",          requireAuth, getVendors);
 
 // ── Linen CRUD ──
+router.get("/next-code",        requireAuth, getNextLinenCode);
 router.get("/",                 requireAuth, getLinenList);
 router.get("/dropdown",         requireAuth, getLinenDropdown);
 router.get("/:id",              requireAuth, getLinenById);
