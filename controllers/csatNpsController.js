@@ -115,7 +115,7 @@ export const getStats = async (req, res) => {
 
     // ── 7. Recent feedback texts ──
     const namaCol = brand === "cleanox" ? ", nama" : "";
-    const layananCol = brand === "cleanox" ? ", layanan" : "";
+    const layananCol = ", layanan";
     const [recentFeedback] = await safeQuery(
       `SELECT id, no_nota${namaCol}${layananCol}, csat_score, csat_label, nps_score, nps_category,
               feedback_tags, feedback_text, created_at
