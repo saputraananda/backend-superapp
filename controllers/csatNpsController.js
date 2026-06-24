@@ -115,8 +115,9 @@ export const getStats = async (req, res) => {
 
     // ── 7. Recent feedback texts ──
     const namaCol = brand === "cleanox" ? ", nama" : "";
+    const layananCol = brand === "cleanox" ? ", layanan" : "";
     const [recentFeedback] = await safeQuery(
-      `SELECT id, no_nota${namaCol}, layanan, csat_score, csat_label, nps_score, nps_category,
+      `SELECT id, no_nota${namaCol}${layananCol}, csat_score, csat_label, nps_score, nps_category,
               feedback_tags, feedback_text, created_at
        FROM ${table}
        WHERE feedback_text IS NOT NULL AND feedback_text != ''
@@ -127,7 +128,7 @@ export const getStats = async (req, res) => {
 
     // ── 8. Recent responses (latest 20) ──
     const [recentResponses] = await safeQuery(
-      `SELECT id, no_nota${namaCol}, layanan, csat_score, csat_label, nps_score, nps_category,
+      `SELECT id, no_nota${namaCol}${layananCol}, csat_score, csat_label, nps_score, nps_category,
               feedback_tags, created_at
        FROM ${table}
        ORDER BY created_at DESC
@@ -293,7 +294,7 @@ export const createResponse = async (req, res) => {
       return res.status(201).json({ message: "Survey berhasil disimpan", id: result.insertId });
     }
 
-    // Waschen — no `nama` column
+    // Waschen — no `nama` column, `layanan` optional (Satuan/Kiloan)
     const [result] = await safeQuery(
       `INSERT INTO ${table}
          (no_nota, csat_score, csat_label, nps_score, nps_category, feedback_tags, feedback_text, ip_address, user_agent)
