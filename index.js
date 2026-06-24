@@ -61,6 +61,7 @@ import csatNpsRoutes from "./routes/csatNpsRoutes.js";
 import b2bKoperasiRoutes from "./routes/B2B/B2B-Koperasi-2026/b2bKoperasiDashboardRoutes.js";
 import b2bKoperasiCustomerRoutes from "./routes/B2B/B2B-Koperasi-2026/b2bKoperasiCustomerRoutes.js";
 import employeeMoodRoutes from "./routes/employeeMoodRoutes.js";
+import knowYourEmpRoutes from "./routes/knowYourEmpRoutes.js";
 
 import { sendIdulFitriBlastCleanoxProd } from "./utils/waBlastCustomerProd.js";
 
@@ -316,6 +317,7 @@ app.use("/csat-nps", csatNpsRoutes);
 app.use("/b2b", b2bKoperasiRoutes);
 app.use("/b2b", b2bKoperasiCustomerRoutes);
 app.use("/api/employee-mood", employeeMoodRoutes);
+app.use("/know-your-employee", knowYourEmpRoutes);
 
 // 404
 app.use((req, res) => {
