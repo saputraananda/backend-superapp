@@ -116,7 +116,7 @@ export const getStats = async (req, res) => {
     // ── 7. Recent feedback texts ──
     const namaCol = brand === "cleanox" ? ", nama" : "";
     const [recentFeedback] = await safeQuery(
-      `SELECT id, no_nota${namaCol}, csat_score, csat_label, nps_score, nps_category,
+      `SELECT id, no_nota${namaCol}, layanan, csat_score, csat_label, nps_score, nps_category,
               feedback_tags, feedback_text, created_at
        FROM ${table}
        WHERE feedback_text IS NOT NULL AND feedback_text != ''
@@ -127,11 +127,42 @@ export const getStats = async (req, res) => {
 
     // ── 8. Recent responses (latest 20) ──
     const [recentResponses] = await safeQuery(
-      `SELECT id, no_nota${namaCol}, csat_score, csat_label, nps_score, nps_category,
+      `SELECT id, no_nota${namaCol}, layanan, csat_score, csat_label, nps_score, nps_category,
               feedback_tags, created_at
        FROM ${table}
        ORDER BY created_at DESC
        LIMIT 20`,
+      []
+    );
+
+    // ── 9. CSAT by service (layanan) — split comma-separated values ──
+    const [csatByService] = await safeQuery(
+      `WITH RECURSIVE split AS (
+         SELECT
+           csat_score,
+           TRIM(SUBSTRING_INDEX(layanan, ',', 1)) AS single_layanan,
+           TRIM(SUBSTRING(layanan, LENGTH(SUBSTRING_INDEX(layanan, ',', 1)) + 2)) AS rest
+         FROM ${table}
+         WHERE layanan IS NOT NULL AND layanan != ''
+         UNION ALL
+         SELECT
+           csat_score,
+           TRIM(SUBSTRING_INDEX(rest, ',', 1)),
+           TRIM(SUBSTRING(rest, LENGTH(SUBSTRING_INDEX(rest, ',', 1)) + 2))
+         FROM split
+         WHERE rest != ''
+       )
+       SELECT
+         single_layanan AS layanan,
+         COUNT(*) AS total,
+         SUM(CASE WHEN csat_score = 5 THEN 1 ELSE 0 END) AS bintang_5,
+         SUM(CASE WHEN csat_score = 4 THEN 1 ELSE 0 END) AS bintang_4,
+         SUM(CASE WHEN csat_score = 3 THEN 1 ELSE 0 END) AS bintang_3,
+         SUM(CASE WHEN csat_score = 2 THEN 1 ELSE 0 END) AS bintang_2,
+         SUM(CASE WHEN csat_score = 1 THEN 1 ELSE 0 END) AS bintang_1
+       FROM split
+       GROUP BY single_layanan
+       ORDER BY total DESC`,
       []
     );
 
@@ -153,6 +184,7 @@ export const getStats = async (req, res) => {
         monthly_trend: trend,
         recent_feedback: recentFeedback,
         recent_responses: recentResponses,
+        csat_by_service: csatByService,
       },
     });
   } catch (err) {
@@ -170,7 +202,7 @@ export const getResponses = async (req, res) => {
     }
 
     const table = getTable(brand);
-    const { page = 1, limit = 25, search, nps_category, csat_score, startDate, endDate } = req.query;
+    const { page = 1, limit = 25, search, nps_category, csat_score, layanan, startDate, endDate } = req.query;
     const pg = Math.max(1, Number(page) || 1);
     const lm = Math.min(Math.max(1, Number(limit) || 25), 200);
     const offset = (pg - 1) * lm;
@@ -195,6 +227,10 @@ export const getResponses = async (req, res) => {
     if (csat_score && [1, 2, 3, 4, 5].includes(Number(csat_score))) {
       where.push("csat_score = ?");
       params.push(Number(csat_score));
+    }
+    if (layanan?.trim()) {
+      where.push("layanan LIKE ?");
+      params.push(`%${layanan.trim()}%`);
     }
     if (startDate && /^\d{4}-\d{2}-\d{2}$/.test(startDate)) {
       where.push("created_at >= ?");
@@ -268,6 +304,30 @@ export const createResponse = async (req, res) => {
     res.status(201).json({ message: "Survey berhasil disimpan", id: result.insertId });
   } catch (err) {
     console.error("createResponse:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ─── PATCH /:brand/:id  — update layanan ─────────────────────────────────────
+export const updateLayanan = async (req, res) => {
+  try {
+    const { brand, id } = req.params;
+    if (!["waschen", "cleanox"].includes(brand)) {
+      return res.status(400).json({ message: "Brand tidak valid." });
+    }
+    const { layanan } = req.body;
+    if (layanan === undefined) {
+      return res.status(400).json({ message: "Field 'layanan' wajib diisi." });
+    }
+
+    const table = getTable(brand);
+    const [[existing]] = await safeQuery(`SELECT id FROM ${table} WHERE id = ?`, [Number(id)]);
+    if (!existing) return res.status(404).json({ message: "Data tidak ditemukan" });
+
+    await safeQuery(`UPDATE ${table} SET layanan = ? WHERE id = ?`, [layanan, Number(id)]);
+    res.json({ message: "Layanan berhasil diperbarui" });
+  } catch (err) {
+    console.error("updateLayanan:", err);
     res.status(500).json({ message: err.message });
   }
 };
