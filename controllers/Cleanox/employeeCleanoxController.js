@@ -29,9 +29,9 @@ export const listCleanoxEmployees = async (req, res) => {
     const conditions = ["e.is_deleted = 0"];
     const params = [];
 
-    // Only company 1/3/5 that have mst_role
+    // Only company 3/5 that have mst_role
     const ph = assignedIds.map(() => "?").join(", ");
-    conditions.push(`e.company_id IN (1, 3, 5)`);
+    conditions.push(`e.company_id IN (3, 5)`);
     conditions.push(`e.employee_id IN (${ph})`);
     params.push(...assignedIds);
 
@@ -91,12 +91,12 @@ export const listCleanoxEmployees = async (req, res) => {
 
 export const getAssignableEmployees = async (req, res) => {
   try {
-    // Employees from company 1, 3 & 5 not yet in mst_role (active)
+    // Employees from company 3 & 5 not yet in mst_role (active)
     const [roleRows] = await safeCleanoxQuery("SELECT employee_id FROM mst_role");
     const assignedIds = roleRows.map((rr) => rr.employee_id);
 
     let query =
-      "SELECT employee_id, full_name, employee_code, email FROM mst_employee WHERE company_id IN (1, 3, 5) AND exit_date IS NULL AND is_deleted = 0";
+      "SELECT employee_id, full_name, employee_code, email, company_id FROM mst_employee WHERE company_id IN (3, 5) AND exit_date IS NULL AND is_deleted = 0";
     const params = [];
 
     if (assignedIds.length > 0) {
@@ -130,13 +130,13 @@ export const addCleanoxEmployee = async (req, res) => {
         return res.status(400).json({ message: "ID Karyawan wajib diisi." });
       }
 
-      // Only company 1, 3 & 5 can be assigned
+      // Only company 3 & 5 can be assigned
       const [emp] = await safeQuery(
-        "SELECT employee_id FROM mst_employee WHERE employee_id = ? AND company_id IN (1, 3, 5) AND exit_date IS NULL AND is_deleted = 0 LIMIT 1",
+        "SELECT employee_id FROM mst_employee WHERE employee_id = ? AND company_id IN (3, 5) AND exit_date IS NULL AND is_deleted = 0 LIMIT 1",
         [employee_id],
       );
       if (emp.length === 0) {
-        return res.status(400).json({ message: "Karyawan tidak ditemukan atau tidak aktif di perusahaan 1, 3 atau 5" });
+        return res.status(400).json({ message: "Karyawan tidak ditemukan atau tidak aktif di perusahaan 3 atau 5" });
       }
 
       const [exist] = await safeCleanoxQuery("SELECT employee_id FROM mst_role WHERE employee_id = ? LIMIT 1", [employee_id]);
@@ -154,8 +154,8 @@ export const addCleanoxEmployee = async (req, res) => {
       }
 
       const cleanCompanyId = Number(company_id);
-      if (![1, 3, 5].includes(cleanCompanyId)) {
-        return res.status(400).json({ message: "Perusahaan harus 1 (WAI), 3 (Cleanox) atau 5 (Waschen)." });
+      if (![3, 5].includes(cleanCompanyId)) {
+        return res.status(400).json({ message: "Perusahaan harus 3 (Cleanox) atau 5 (Waschen)." });
       }
 
       const [existEmail] = await safeQuery("SELECT id FROM users WHERE email = ? LIMIT 1", [email]);
