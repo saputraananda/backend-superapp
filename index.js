@@ -62,6 +62,7 @@ import b2bKoperasiRoutes from "./routes/B2B/B2B-Koperasi-2026/b2bKoperasiDashboa
 import b2bKoperasiCustomerRoutes from "./routes/B2B/B2B-Koperasi-2026/b2bKoperasiCustomerRoutes.js";
 import employeeMoodRoutes from "./routes/employeeMoodRoutes.js";
 import knowYourEmpRoutes from "./routes/knowYourEmpRoutes.js";
+import employeeCleanoxRoutes from "./routes/Cleanox/employeeCleanoxRoutes.js";
 
 import { sendIdulFitriBlastCleanoxProd } from "./utils/waBlastCustomerProd.js";
 
@@ -318,6 +319,7 @@ app.use("/b2b", b2bKoperasiRoutes);
 app.use("/b2b", b2bKoperasiCustomerRoutes);
 app.use("/api/employee-mood", employeeMoodRoutes);
 app.use("/know-your-employee", knowYourEmpRoutes);
+app.use("/cleanox/employees", employeeCleanoxRoutes);
 
 // 404
 app.use((req, res) => {
