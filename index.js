@@ -64,6 +64,8 @@ import employeeMoodRoutes from "./routes/employeeMoodRoutes.js";
 import knowYourEmpRoutes from "./routes/knowYourEmpRoutes.js";
 import employeeCleanoxRoutes from "./routes/Cleanox/employeeCleanoxRoutes.js";
 import kpiProduksiRoutes from "./routes/Cleanox/kpiProduksiRoutes.js";
+import masterServicesRoutes from "./routes/Cleanox/masterServicesRoutes.js";
+import masterCategoryRoutes from "./routes/Cleanox/masterCategoryRoutes.js";
 
 import { sendIdulFitriBlastCleanoxProd } from "./utils/waBlastCustomerProd.js";
 
@@ -322,6 +324,8 @@ app.use("/api/employee-mood", employeeMoodRoutes);
 app.use("/know-your-employee", knowYourEmpRoutes);
 app.use("/cleanox/employees", employeeCleanoxRoutes);
 app.use("/kpi", kpiProduksiRoutes);
+app.use("/master-services", masterServicesRoutes);
+app.use("/master-categories", masterCategoryRoutes);
 
 // 404
 app.use((req, res) => {
