@@ -1,7 +1,6 @@
 import { safeQuery } from "../db/pool.js";
 
-// Ambil Kunci Survei dari env atau default
-const getSurveyKey = () => process.env.BURNOUT_SURVEY_KEY || "ALORA-BURNOUT-2026";
+const getSurveyKey = () => process.env.BURNOUT_SURVEY_KEY || "ALORA-BURNOUT-JULY";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // POST /api/analysis-burnout/verify-key — Validasi Kunci Survei sebelum mengisi
@@ -127,9 +126,9 @@ export const getSurveyHistory = async (req, res) => {
     }
 
     const [rows] = await safeQuery(
-      `SELECT id, created_at 
-       FROM tr_analysis_burnout 
-       WHERE employee_id = ? 
+      `SELECT id, created_at
+       FROM tr_analysis_burnout
+       WHERE employee_id = ?
        ORDER BY created_at DESC`,
       [employeeId]
     );
@@ -140,6 +139,193 @@ export const getSurveyHistory = async (req, res) => {
     });
   } catch (err) {
     console.error("[getSurveyHistory] Error:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GET /api/analysis-burnout/monitoring — monitoring jawaban per karyawan
+// ═══════════════════════════════════════════════════════════════════════════
+export const getBurnoutMonitoringList = async (req, res) => {
+  try {
+
+
+    const {
+      page = 1,
+      limit = 25,
+      search = "",
+      department_id = "",
+      date_from = "",
+      date_to = "",
+    } = req.query;
+
+    const p = Number(page);
+    const l = Number(limit);
+    const offset = (p - 1) * l;
+
+    const conditions = ["1=1"];
+    const params = [];
+
+    if (search) {
+      conditions.push("(e.full_name LIKE ? OR e.employee_code LIKE ? OR d.department_name LIKE ?)");
+      params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+    }
+
+    if (department_id) {
+      conditions.push("t.department_id = ?");
+      params.push(department_id);
+    }
+
+    if (date_from) {
+      conditions.push("DATE(t.created_at) >= ?");
+      params.push(date_from);
+    }
+
+    if (date_to) {
+      conditions.push("DATE(t.created_at) <= ?");
+      params.push(date_to);
+    }
+
+    const whereClause = `WHERE ${conditions.join(" AND ")}`;
+
+    const totalScoreExpr = `(
+      t.a1+t.a2+t.a3+t.a4+
+      t.b1+t.b2+t.b3+t.b4+
+      t.c1+t.c2+t.c3+t.c4+
+      t.d1+t.d2+t.d3+t.d4+
+      t.e1+t.e2+t.e3+t.e4+
+      t.f1+t.f2+t.f3+t.f4+
+      t.g1+t.g2+t.g3+t.g4+
+      t.h1+t.h2+t.h3+t.h4
+    )`;
+
+    const catScore = {
+      A: "t.a1+t.a2+t.a3+t.a4",
+      B: "t.b1+t.b2+t.b3+t.b4",
+      C: "t.c1+t.c2+t.c3+t.c4",
+      D: "t.d1+t.d2+t.d3+t.d4",
+      E: "t.e1+t.e2+t.e3+t.e4",
+      F: "t.f1+t.f2+t.f3+t.f4",
+      G: "t.g1+t.g2+t.g3+t.g4",
+      H: "t.h1+t.h2+t.h3+t.h4",
+    };
+
+    const dataQuery = `
+      SELECT
+        t.id,
+        t.employee_id,
+        e.full_name,
+        e.employee_code,
+        d.department_name,
+        t.created_at,
+        t.survey_key,
+        ${totalScoreExpr} AS total_score,
+        ${catScore.A} AS score_A,
+        ${catScore.B} AS score_B,
+        ${catScore.C} AS score_C,
+        ${catScore.D} AS score_D,
+        ${catScore.E} AS score_E,
+        ${catScore.F} AS score_F,
+        ${catScore.G} AS score_G,
+        ${catScore.H} AS score_H
+      FROM tr_analysis_burnout t
+      JOIN mst_employee e ON e.employee_id = t.employee_id AND e.is_deleted = 0
+      LEFT JOIN mst_department d ON d.department_id = t.department_id
+      ${whereClause}
+      ORDER BY t.created_at DESC
+      LIMIT ? OFFSET ?
+    `;
+
+    const countQuery = `
+      SELECT COUNT(*) AS total
+      FROM tr_analysis_burnout t
+      JOIN mst_employee e ON e.employee_id = t.employee_id AND e.is_deleted = 0
+      LEFT JOIN mst_department d ON d.department_id = t.department_id
+      ${whereClause}
+    `;
+
+    const [rows] = await safeQuery(dataQuery, [...params, l, offset]);
+    const [[{ total }]] = await safeQuery(countQuery, params);
+
+    return res.json({
+      success: true,
+      data: rows,
+      pagination: {
+        total: Number(total || 0),
+        page: p,
+        limit: l,
+        totalPages: Math.ceil(Number(total || 0) / l),
+      },
+    });
+  } catch (err) {
+    console.error("[getBurnoutMonitoringList] Error:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GET /api/analysis-burnout/monitoring/:id — detail jawaban 1 submission
+// ═══════════════════════════════════════════════════════════════════════════
+export const getBurnoutMonitoringDetail = async (req, res) => {
+  try {
+
+
+    const { id } = req.params;
+
+    const totalScoreExpr = `(
+      t.a1+t.a2+t.a3+t.a4+
+      t.b1+t.b2+t.b3+t.b4+
+      t.c1+t.c2+t.c3+t.c4+
+      t.d1+t.d2+t.d3+t.d4+
+      t.e1+t.e2+t.e3+t.e4+
+      t.f1+t.f2+t.f3+t.f4+
+      t.g1+t.g2+t.g3+t.g4+
+      t.h1+t.h2+t.h3+t.h4
+    )`;
+
+    const catScore = {
+      A: "t.a1+t.a2+t.a3+t.a4",
+      B: "t.b1+t.b2+t.b3+t.b4",
+      C: "t.c1+t.c2+t.c3+t.c4",
+      D: "t.d1+t.d2+t.d3+t.d4",
+      E: "t.e1+t.e2+t.e3+t.e4",
+      F: "t.f1+t.f2+t.f3+t.f4",
+      G: "t.g1+t.g2+t.g3+t.g4",
+      H: "t.h1+t.h2+t.h3+t.h4",
+    };
+
+    const [rows] = await safeQuery(
+      `
+        SELECT
+          t.*,
+          e.full_name,
+          e.employee_code,
+          d.department_name,
+          ${totalScoreExpr} AS total_score,
+          ${catScore.A} AS score_A,
+          ${catScore.B} AS score_B,
+          ${catScore.C} AS score_C,
+          ${catScore.D} AS score_D,
+          ${catScore.E} AS score_E,
+          ${catScore.F} AS score_F,
+          ${catScore.G} AS score_G,
+          ${catScore.H} AS score_H
+        FROM tr_analysis_burnout t
+        JOIN mst_employee e ON e.employee_id = t.employee_id AND e.is_deleted = 0
+        LEFT JOIN mst_department d ON d.department_id = t.department_id
+        WHERE t.id = ?
+        LIMIT 1
+      `,
+      [id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Data tidak ditemukan" });
+    }
+
+    return res.json({ success: true, data: rows[0] });
+  } catch (err) {
+    console.error("[getBurnoutMonitoringDetail] Error:", err);
     return res.status(500).json({ success: false, message: err.message });
   }
 };

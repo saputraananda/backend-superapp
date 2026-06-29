@@ -4,6 +4,8 @@ import {
   validateKey,
   submitSurvey,
   getSurveyHistory,
+  getBurnoutMonitoringList,
+  getBurnoutMonitoringDetail,
 } from "../controllers/analysisBurnoutController.js";
 
 const router = express.Router();
@@ -12,5 +14,7 @@ const router = express.Router();
 router.post("/verify-key", requireAuth, validateKey);
 router.post("/submit", requireAuth, submitSurvey);
 router.get("/history", requireAuth, getSurveyHistory);
+router.get("/monitoring", requireAuth, getBurnoutMonitoringList);
+router.get("/monitoring/:id", requireAuth, getBurnoutMonitoringDetail);
 
 export default router;
