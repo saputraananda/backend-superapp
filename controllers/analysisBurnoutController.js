@@ -1,6 +1,6 @@
 import { safeQuery } from "../db/pool.js";
 
-const getSurveyKey = () => process.env.BURNOUT_SURVEY_KEY || "ALORA-BURNOUT-JULY";
+const getSurveyKey = () => process.env.BURNOUT_SURVEY_KEY || "Aloranumber1-Juli";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // POST /api/analysis-burnout/verify-key — Validasi Kunci Survei sebelum mengisi
