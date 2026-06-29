@@ -62,6 +62,7 @@ import b2bKoperasiRoutes from "./routes/B2B/B2B-Koperasi-2026/b2bKoperasiDashboa
 import b2bKoperasiCustomerRoutes from "./routes/B2B/B2B-Koperasi-2026/b2bKoperasiCustomerRoutes.js";
 import employeeMoodRoutes from "./routes/employeeMoodRoutes.js";
 import knowYourEmpRoutes from "./routes/knowYourEmpRoutes.js";
+import analysisBurnoutRoutes from "./routes/analysisBurnoutRoutes.js";
 import employeeCleanoxRoutes from "./routes/Cleanox/employeeCleanoxRoutes.js";
 import kpiProduksiRoutes from "./routes/Cleanox/kpiProduksiRoutes.js";
 import masterServicesRoutes from "./routes/Cleanox/masterServicesRoutes.js";
@@ -322,6 +323,7 @@ app.use("/b2b", b2bKoperasiRoutes);
 app.use("/b2b", b2bKoperasiCustomerRoutes);
 app.use("/api/employee-mood", employeeMoodRoutes);
 app.use("/know-your-employee", knowYourEmpRoutes);
+app.use("/analysis-burnout", analysisBurnoutRoutes);
 app.use("/cleanox/employees", employeeCleanoxRoutes);
 app.use("/kpi", kpiProduksiRoutes);
 app.use("/master-services", masterServicesRoutes);
