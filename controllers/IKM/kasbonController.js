@@ -121,10 +121,19 @@ export const getKasbons = async (req, res) => {
 
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
-    const [[{ total }]] = await safeIKMQuery(
-      `SELECT COUNT(*) AS total FROM tr_kasbon k ${whereSql}`,
+    const [[statsRow]] = await safeIKMQuery(
+      `SELECT 
+         COUNT(*) AS total,
+         COUNT(CASE WHEN k.type = 'kasbon' THEN 1 END) AS totalKasbon,
+         COUNT(CASE WHEN k.type = 'pinjaman' THEN 1 END) AS totalPinjaman,
+         COUNT(CASE WHEN k.status IN ('pengajuan', 'proses') THEN 1 END) AS pending,
+         COUNT(CASE WHEN k.status = 'disetujui' THEN 1 END) AS approved,
+         COALESCE(SUM(CASE WHEN k.status = 'disetujui' THEN k.amount_approved ELSE 0 END), 0) AS approvedAmount
+       FROM tr_kasbon k
+       ${whereSql}`,
       params
     );
+    const total = statsRow.total;
 
     const [rows] = await safeIKMQuery(
       `SELECT k.id, k.employee_id, k.employee_name, k.type, k.submission_date,
@@ -207,6 +216,13 @@ export const getKasbons = async (req, res) => {
     res.json({
       data,
       pagination: { page: pg, limit: lm, total, totalPages: Math.ceil(total / lm) },
+      stats: {
+        totalKasbon: Number(statsRow.totalKasbon || 0),
+        totalPinjaman: Number(statsRow.totalPinjaman || 0),
+        pending: Number(statsRow.pending || 0),
+        approved: Number(statsRow.approved || 0),
+        approvedAmount: Number(statsRow.approvedAmount || 0),
+      },
     });
   } catch (err) {
     console.error("getKasbons:", err);
