@@ -28,6 +28,22 @@ const safeQuery = async (sql, params = []) => {
   return rows;
 };
 
+// Automatically mark documents as expired if they past their expiry_date
+const checkAndUpdateExpiredDocuments = async () => {
+  try {
+    await pool.query(
+      `UPDATE mst_document 
+       SET status = 'expired' 
+       WHERE is_deleted = 0 
+         AND status = 'active'
+         AND expiry_date IS NOT NULL 
+         AND expiry_date < CURDATE()`
+    );
+  } catch (err) {
+    console.error("[checkAndUpdateExpiredDocuments]", err);
+  }
+};
+
 const getEmployeeId = (req) =>
   req.session?.employeeId ?? req.session?.employee_id ?? null;
 
@@ -64,12 +80,15 @@ const generateTransactionCode = async () => {
 // GET /doc-alora/documents — List all documents
 export const listDocuments = async (req, res) => {
   try {
+    await checkAndUpdateExpiredDocuments();
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(100, parseInt(req.query.limit) || 20);
     const offset = (page - 1) * limit;
     const search = req.query.search?.trim() || "";
     const status = req.query.status?.trim() || "";
     const departmentId = req.query.department_id ? Number(req.query.department_id) : null;
+    const expiringSoon = req.query.expiring_soon === "true";
+    const overdue = req.query.overdue === "true";
 
     const conditions = ["d.is_deleted = 0"];
     const params = [];
@@ -85,6 +104,12 @@ export const listDocuments = async (req, res) => {
     if (departmentId) {
       conditions.push("d.department_id = ?");
       params.push(departmentId);
+    }
+    if (expiringSoon) {
+      conditions.push("d.status = 'active' AND d.expiry_date IS NOT NULL AND d.expiry_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY)");
+    }
+    if (overdue) {
+      conditions.push("d.expiry_date IS NOT NULL AND d.expiry_date < CURDATE()");
     }
 
     const where = `WHERE ${conditions.join(" AND ")}`;
@@ -121,6 +146,7 @@ export const listDocuments = async (req, res) => {
 // GET /doc-alora/documents/:id — Detail document
 export const getDocument = async (req, res) => {
   try {
+    await checkAndUpdateExpiredDocuments();
     const { id } = req.params;
     const rows = await safeQuery(
       `SELECT d.*, 
@@ -320,6 +346,7 @@ export const deleteDocument = async (req, res) => {
 // GET /doc-alora/dashboard — Dashboard summary
 export const getDashboard = async (req, res) => {
   try {
+    await checkAndUpdateExpiredDocuments();
     const [statusCount] = await pool.query(
       `SELECT status, COUNT(*) AS count FROM mst_document WHERE is_deleted = 0 GROUP BY status`
     );
@@ -346,9 +373,8 @@ export const getDashboard = async (req, res) => {
     );
 
     const [overdueBorrows] = await pool.query(
-      `SELECT COUNT(*) AS count FROM tr_document_transaction 
-       WHERE is_deleted = 0 AND status IN ('borrowed','overdue')
-       AND return_due < CURDATE()`
+      `SELECT COUNT(*) AS count FROM mst_document 
+       WHERE is_deleted = 0 AND expiry_date IS NOT NULL AND expiry_date < CURDATE()`
     );
 
     const summary = {};
@@ -379,6 +405,7 @@ export const listTransactions = async (req, res) => {
     const offset = (page - 1) * limit;
     const search = req.query.search?.trim() || "";
     const status = req.query.status?.trim() || "";
+    const overdue = req.query.overdue === "true";
 
     const conditions = ["t.is_deleted = 0"];
     const params = [];
@@ -390,6 +417,9 @@ export const listTransactions = async (req, res) => {
     if (status) {
       conditions.push("t.status = ?");
       params.push(status);
+    }
+    if (overdue) {
+      conditions.push("t.status IN ('borrowed','overdue') AND t.return_due < CURDATE()");
     }
 
     const where = `WHERE ${conditions.join(" AND ")}`;
@@ -674,6 +704,7 @@ export const lookupCompanies = async (_req, res) => {
 // GET /doc-alora/lookup/documents — List documents for transaction dropdown
 export const lookupDocuments = async (_req, res) => {
   try {
+    await checkAndUpdateExpiredDocuments();
     const data = await safeQuery(
       `SELECT id, document_name, document_number FROM mst_document 
        WHERE is_deleted = 0 AND status = 'active' ORDER BY document_name`
