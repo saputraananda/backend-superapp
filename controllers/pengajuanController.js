@@ -743,9 +743,7 @@ export const createPR = async (req, res) => {
         if (!namaBarang)      return res.status(400).json({ message: "Nama barang wajib diisi" });
         if (!alasanPembelian) return res.status(400).json({ message: "Alasan pembelian wajib diisi" });
         if (!companyId)       return res.status(400).json({ message: "Kategori (company) wajib dipilih" });
-        if (companyId === 5 && !outletIdRaw) {
-            return res.status(400).json({ message: "Outlet wajib dipilih untuk kategori ini" });
-        }
+        // Outlet tidak wajib diisi lagi untuk Waschen (company_id === 5)
 
         // Reimburse-only fields
         let bankId = null, nomorRekening = null, atasNama = null;
@@ -1011,9 +1009,7 @@ export const updatePR = async (req, res) => {
         if (!namaBarang)      return res.status(400).json({ message: "Nama barang wajib diisi" });
         if (!alasanPembelian) return res.status(400).json({ message: "Alasan pembelian wajib diisi" });
         if (!companyId)       return res.status(400).json({ message: "Kategori (company) wajib dipilih" });
-        if (companyId === 5 && !outletIdRaw) {
-            return res.status(400).json({ message: "Outlet wajib dipilih untuk kategori ini" });
-        }
+        // Outlet tidak wajib diisi lagi untuk Waschen (company_id === 5)
 
         let bankId = null, nomorRekening = null, atasNama = null;
         if (type === "reimburse") {
