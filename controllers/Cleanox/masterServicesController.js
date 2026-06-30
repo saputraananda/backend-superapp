@@ -45,7 +45,7 @@ export const getServices = async (req, res) => {
     const [rows] = await safeCleanoxQuery(`
       SELECT s.*, c.name AS category_name 
       FROM mst_services s
-      JOIN mst_category c ON s.category_id = c.id
+      LEFT JOIN mst_category c ON s.category_id = c.id
       ORDER BY s.id DESC
     `);
     return res.json({ services: rows });
