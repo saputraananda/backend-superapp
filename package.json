@@ -18,7 +18,7 @@
     "express": "^5.2.1",
     "express-mysql-session": "^3.0.3",
     "express-session": "^1.19.0",
-    "multer": "^2.0.2",
+    "multer": "^2.0.3",
     "mysql2": "^3.16.3",
     "node-cron": "^4.2.1",
     "sharp": "^0.34.5"
@@ -26,5 +26,13 @@
   "devDependencies": {
     "cross-env": "^10.1.0",
     "nodemon": "^3.1.11"
+  },
+  "overrides": {
+    "uuid": "^11.1.1",
+    "path-to-regexp": "^8.4.0",
+    "picomatch": "^2.3.2",
+    "minimatch": "^3.1.4",
+    "qs": "^6.15.2",
+    "brace-expansion": "^1.1.13"
   }
 }
