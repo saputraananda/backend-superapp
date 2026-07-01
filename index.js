@@ -13,7 +13,6 @@ import MySQLStore from "express-mysql-session";
 import cron from "node-cron";
 
 import { pool, startDbPing } from "./db/pool.js";
-import { sendWaDailyProgressBlast } from "./utils/waNotify.js";
 
 import authRoutes from "./routes/auth/authRoutes.js";
 import appRoutes from "./routes/appRoutes.js";
@@ -68,7 +67,6 @@ import kpiProduksiRoutes from "./routes/Cleanox/kpiProduksiRoutes.js";
 import masterServicesRoutes from "./routes/Cleanox/masterServicesRoutes.js";
 import masterCategoryRoutes from "./routes/Cleanox/masterCategoryRoutes.js";
 
-import { sendIdulFitriBlastCleanoxProd } from "./utils/waBlastCustomerProd.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -82,16 +80,16 @@ const isProd = process.env.NODE_ENV === "production";
 const envFile = isProd ? ".env.prod" : ".env";
 if (fs.existsSync(path.join(process.cwd(), envFile))) {
   dotenv.config({ path: envFile });
-  console.log(`✅ Loaded env file: ${envFile}`);
+  console.log(`Loaded env file: ${envFile}`);
 } else {
   // 2) Fallback: load default .env jika ada, atau rely on Hostinger panel env
   dotenv.config();
   console.log(
-    `ℹ️ Env file ${envFile} not found. Using default dotenv (if any) + process env from panel.`
+    `ℹEnv file ${envFile} not found. Using default dotenv (if any) + process env from panel.`
   );
 }
 
-console.log("🚀 Starting AloraSuperApp API...");
+console.log("Starting AloraSuperApp API...");
 
 // =========================
 // Validate required env
@@ -102,8 +100,8 @@ const missingEnv = requiredEnv.filter(
 );
 
 if (missingEnv.length > 0) {
-  console.error("❌ Missing required environment variables:", missingEnv);
-  console.error("➡️ Tips:");
+  console.error("Missing required environment variables:", missingEnv);
+  console.error("Tips:");
   console.error("   - If on Hostinger: set them in hPanel -> Node.js -> Environment variables");
   console.error("   - Or ensure .env/.env.prod exists in your project root");
   process.exit(1);
@@ -117,7 +115,7 @@ const PORT = Number(process.env.PORT) || 3000;
 
 app.set("trust proxy", 1);
 
-// ⚠️ Skip body-parser untuk multipart (biarkan multer handle)
+// Skip body-parser untuk multipart (biarkan multer handle)
 app.use((req, res, next) => {
   const contentType = req.headers["content-type"] || "";
   if (contentType.includes("multipart/form-data")) {
@@ -148,7 +146,7 @@ const corsOptions = {
 
     if (allowedOrigins.includes(origin)) return cb(null, true);
 
-    console.log("❌ CORS blocked origin:", origin, "allowed:", allowedOrigins);
+    console.log("CORS blocked origin:", origin, "allowed:", allowedOrigins);
     return cb(new Error("Not allowed by CORS"));
   },
   credentials: true,
@@ -188,7 +186,7 @@ sessionStore.on("error", (err) => {
 });
 
 sessionStore.on("connect", () => {
-  console.log("✅ MySQL session store connected");
+  console.log("MySQL session store connected");
 });
 
 // Session middleware
@@ -257,24 +255,6 @@ app.get("/debug-file-exists", (req, res) => {
   });
 });
 
-// ─── TEST ONLY: hapus setelah testing ────────────────────────────
-app.get("/test-wa-blast", async (req, res) => {
-  try {
-    await sendWaDailyProgressBlast();
-    res.json({ message: "Blast test dikirim ke semua karyawan" });
-  } catch (e) {
-    res.status(500).json({ message: e.message });
-  }
-});
-
-app.get("/test-wa-blast-cleanox-prod", async (req, res) => {
-  try {
-    const result = await sendIdulFitriBlastCleanoxProd();
-    res.json({ message: "Blast Cleanox Prod selesai", result });
-  } catch (e) {
-    res.status(500).json({ message: e.message });
-  }
-});
 
 app.use("/auth", authRoutes);
 app.use("/apps", appRoutes);
@@ -338,7 +318,7 @@ app.use((req, res) => {
 // Global error handler
 // =========================
 app.use((err, req, res, next) => {
-  console.error("❌ Error:", err);
+  console.error("Error:", err);
 
   if (err?.message === "Not allowed by CORS") {
     return res.status(403).json({ message: "Access forbidden from this origin" });
@@ -363,8 +343,8 @@ app.use((err, req, res, next) => {
 // =========================
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ API running on port ${PORT}`);
-  console.log(`📍 Environment: ${process.env.NODE_ENV}`);
-  console.log(`🌐 CORS Origins: ${allowedOrigins.join(", ") || "All"}`);
+  console.log(`✅ Environment: ${process.env.NODE_ENV}`);
+  console.log(`✅ CORS Origins: ${allowedOrigins.join(", ") || "All"}`);
 
   // Ping DB setiap 30 detik
   startDbPing(30_000);
