@@ -16,17 +16,26 @@ const initDb = async () => {
         id INT AUTO_INCREMENT PRIMARY KEY,
         name VARCHAR(200) NOT NULL,
         price DECIMAL(15,2) NOT NULL,
-        satuan_id INT NOT NULL,
-        satuan_name VARCHAR(100) NOT NULL,
-        category_id INT NOT NULL,
-        duration_value INT NOT NULL,
-        duration_unit ENUM('hari', 'minggu', 'bulan') NOT NULL,
+        satuan_id INT NULL,
+        satuan_name VARCHAR(100) NULL,
+        category_id INT NULL,
+        duration_value INT NULL,
+        duration_unit ENUM('jam', 'hari', 'minggu', 'bulan') NULL,
         status VARCHAR(20) DEFAULT 'Aktif',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         FOREIGN KEY (category_id) REFERENCES mst_category(id)
       )
     `);
+
+    // Ensure duration_unit supports 'jam' and is nullable in existing databases
+    try {
+      await safeCleanoxQuery(`
+        ALTER TABLE mst_services MODIFY COLUMN duration_unit ENUM('jam', 'hari', 'minggu', 'bulan') NULL
+      `);
+    } catch (err) {
+      console.warn("⚠️ [initDb] Could not modify duration_unit column:", err.message);
+    }
 
     // Seed default categories
     const [cats] = await safeCleanoxQuery("SELECT COUNT(*) as count FROM mst_category");
@@ -59,15 +68,21 @@ export const getServices = async (req, res) => {
 export const createService = async (req, res) => {
   const { name, price, satuan_id, satuan_name, category_id, duration_value, duration_unit } = req.body;
 
-  if (!name || price == null || !satuan_id || !satuan_name || !category_id || !duration_value || !duration_unit) {
-    return res.status(400).json({ message: "Semua kolom wajib diisi" });
+  if (!name || price == null) {
+    return res.status(400).json({ message: "Nama dan Harga wajib diisi" });
   }
+
+  const satuanIdVal = satuan_id !== undefined && satuan_id !== "" ? satuan_id : null;
+  const satuanNameVal = satuan_name !== undefined && satuan_name !== "" ? satuan_name : null;
+  const categoryIdVal = category_id !== undefined && category_id !== "" ? category_id : null;
+  const durationValueVal = duration_value !== undefined && duration_value !== "" ? duration_value : null;
+  const durationUnitVal = duration_unit !== undefined && duration_unit !== "" ? duration_unit : null;
 
   try {
     await safeCleanoxQuery(`
       INSERT INTO mst_services (name, price, satuan_id, satuan_name, category_id, duration_value, duration_unit)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `, [name, price, satuan_id, satuan_name, category_id, duration_value, duration_unit]);
+    `, [name, price, satuanIdVal, satuanNameVal, categoryIdVal, durationValueVal, durationUnitVal]);
 
     return res.status(201).json({ message: "Layanan berhasil dibuat" });
   } catch (err) {
@@ -81,16 +96,22 @@ export const updateService = async (req, res) => {
   const { id } = req.params;
   const { name, price, satuan_id, satuan_name, category_id, duration_value, duration_unit, status } = req.body;
 
-  if (!name || price == null || !satuan_id || !satuan_name || !category_id || !duration_value || !duration_unit) {
-    return res.status(400).json({ message: "Semua kolom wajib diisi" });
+  if (!name || price == null) {
+    return res.status(400).json({ message: "Nama dan Harga wajib diisi" });
   }
+
+  const satuanIdVal = satuan_id !== undefined && satuan_id !== "" ? satuan_id : null;
+  const satuanNameVal = satuan_name !== undefined && satuan_name !== "" ? satuan_name : null;
+  const categoryIdVal = category_id !== undefined && category_id !== "" ? category_id : null;
+  const durationValueVal = duration_value !== undefined && duration_value !== "" ? duration_value : null;
+  const durationUnitVal = duration_unit !== undefined && duration_unit !== "" ? duration_unit : null;
 
   try {
     await safeCleanoxQuery(`
       UPDATE mst_services
       SET name = ?, price = ?, satuan_id = ?, satuan_name = ?, category_id = ?, duration_value = ?, duration_unit = ?, status = ?
       WHERE id = ?
-    `, [name, price, satuan_id, satuan_name, category_id, duration_value, duration_unit, status || 'Aktif', id]);
+    `, [name, price, satuanIdVal, satuanNameVal, categoryIdVal, durationValueVal, durationUnitVal, status || 'Aktif', id]);
 
     return res.json({ message: "Layanan berhasil diupdate" });
   } catch (err) {
