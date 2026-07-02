@@ -109,7 +109,11 @@ export const getPiutang = async (req, res) => {
           WHEN DATE(tgl_selesai) < CURDATE() THEN 'Terlambat'
           WHEN DATE(tgl_selesai) = CURDATE() THEN 'Jatuh Tempo'
           ELSE 'Belum Jatuh Tempo'
-        END AS status
+        END AS status,
+        CASE
+          WHEN DATE(tgl_selesai) > CURDATE() THEN 0
+          ELSE DATEDIFF(CURDATE(), DATE(tgl_selesai))
+        END AS aging
       FROM nota_level
       WHERE tgl_terima >= ?
         AND tgl_terima <  DATE_ADD(?, INTERVAL 1 DAY)
