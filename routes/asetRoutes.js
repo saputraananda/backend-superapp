@@ -23,6 +23,7 @@ import {
   getMaintenance,
   createMaintenance,
   updateMaintenance,
+  deleteMaintenance,
   // Peminjaman
   getPeminjaman,
   createPeminjaman,
@@ -50,6 +51,7 @@ router.delete("/photos/:photoId", deletePhoto);
 
 // Maintenance (non-nested update)
 router.put("/maintenance/:maintenanceId", updateMaintenance);
+router.delete("/maintenance/:maintenanceId", deleteMaintenance);
 
 // Peminjaman (non-nested update)
 router.put("/peminjaman/:peminjamanId", updatePeminjaman);

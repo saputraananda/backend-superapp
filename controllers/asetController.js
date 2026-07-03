@@ -679,6 +679,20 @@ export const updateMaintenance = async (req, res) => {
   }
 };
 
+// ── DELETE /aset/maintenance/:maintenanceId ─────────────────────────────
+export const deleteMaintenance = async (req, res) => {
+  const { maintenanceId } = req.params;
+  try {
+    const [exist] = await safeQuery("SELECT id FROM tr_aset_maintenance WHERE id = ?", [maintenanceId]);
+    if (exist.length === 0) return res.status(404).json({ message: "Maintenance tidak ditemukan" });
+
+    await safeQuery("DELETE FROM tr_aset_maintenance WHERE id = ?", [maintenanceId]);
+    res.json({ message: "Maintenance berhasil dihapus" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
 // ══════════════════════════════════════════════════════════════════════════
 // PEMINJAMAN
 // ══════════════════════════════════════════════════════════════════════════
