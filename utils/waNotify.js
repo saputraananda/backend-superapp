@@ -10,11 +10,11 @@ function formatDate(val) {
 }
 
 /**
- * Normalisasi nomor HP ke format KirimDev (+628xx).
+ * Normalisasi nomor HP ke format WhatsApp (628xx).
  * Menangani format: 08xxx, +628xxx, 628xxx, spasi, tanda baca, dsb.
  * Return null jika nomor tidak valid / kosong.
  */
-function phoneToKirimdev(phone) {
+function phoneToWhatsapp(phone) {
     if (!phone) return null;
     // Hapus semua karakter selain angka
     let n = String(phone).replace(/[^\d]/g, "");
@@ -23,14 +23,14 @@ function phoneToKirimdev(phone) {
     // Konversi awalan 0 → 62
     if (n.startsWith("0")) n = "62" + n.slice(1);
 
-    // Harus diawali 62 dan punya panjang wajar (10–15 digit)
+    // Harus diawali 62 dan punya panjang wajar (10–16 digit)
     if (!n.startsWith("62") || n.length < 10 || n.length > 16) return null;
 
-    return `+${n}`;
+    return n;
 }
 
 /**
- * Ambil nomor HP KirimDev dari DB untuk satu atau banyak employee_id.
+ * Ambil nomor HP WhatsApp dari DB untuk satu atau banyak employee_id.
  * Return Map<employee_id (number), phone (string)>
  */
 async function getPhoneMap(empIds) {
@@ -50,7 +50,7 @@ async function getPhoneMap(empIds) {
             [uniqueIds]
         );
         for (const row of rows) {
-            const phoneStr = phoneToKirimdev(row.phone_number);
+            const phoneStr = phoneToWhatsapp(row.phone_number);
             if (phoneStr) map.set(Number(row.employee_id), phoneStr);
         }
     } catch (err) {
@@ -66,13 +66,12 @@ export async function sendWaTaskNotif({
     monthlyTitle, creatorName,
     startdate, enddate, monthlyId,
 }) {
-    const apiKey = process.env.KIRIMDEV_API;
-    const numberId = process.env.KIRIMDEV_NUMBER_ID_ALSA;
-    const baseUrl = (process.env.KIRIMDEV_URL || "https://api.kirimdev.com/v1").replace(/\/$/, "");
+    const baseUrl = (process.env.ALORA_WA_URL || "http://43.129.37.205:3000").replace(/\/$/, "");
+    const session = process.env.ALORA_WA_ALORA_SESSION || "alora";
 
-    if (!apiKey || !numberId) return;
+    if (!baseUrl) return;
 
-    const url = `${baseUrl}/${numberId}/messages`;
+    const url = `${baseUrl}/api/send-message`;
     const appUrl = "https://central.waschenalora.com";
     const taskBoardUrl = monthlyId ? `${appUrl}/projectmanagement/month/${monthlyId}` : appUrl;
 
@@ -120,19 +119,21 @@ export async function sendWaTaskNotif({
         ].join("\n");
 
         try {
-            await fetch(url, {
+            const response = await fetch(url, {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
-                    "Authorization": `Bearer ${apiKey}`,
                 },
                 body: JSON.stringify({
-                    messaging_product: "whatsapp",
+                    session: session,
                     to: recipientPhone,
-                    type: "text",
-                    text: { body: message },
+                    message: message,
                 }),
             });
+            if (!response.ok) {
+                const errText = await response.text();
+                console.error(`[WA Notif] Gateway error (status ${response.status}):`, errText);
+            }
         } catch (err) {
             console.error(`[WA Notif] Gagal kirim ke empId ${empId}:`, err.message);
         }
@@ -140,32 +141,33 @@ export async function sendWaTaskNotif({
 }
 
 export async function sendWaSimpleNotif({ recipientIds, message }) {
-    const apiKey = process.env.KIRIMDEV_API;
-    const numberId = process.env.KIRIMDEV_NUMBER_ID_ALSA;
-    const baseUrl = (process.env.KIRIMDEV_URL || "https://api.kirimdev.com/v1").replace(/\/$/, "");
+    const baseUrl = (process.env.ALORA_WA_URL || "http://43.129.37.205:3000").replace(/\/$/, "");
+    const session = process.env.ALORA_WA_ALORA_SESSION || "alora";
 
-    if (!apiKey || !numberId) return;
+    if (!baseUrl) return;
 
-    const url = `${baseUrl}/${numberId}/messages`;
+    const url = `${baseUrl}/api/send-message`;
     const phoneMap = await getPhoneMap(recipientIds);
 
     for (const empId of recipientIds) {
         const recipientPhone = phoneMap.get(Number(empId));
         if (!recipientPhone) continue;
         try {
-            await fetch(url, {
+            const response = await fetch(url, {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
-                    "Authorization": `Bearer ${apiKey}`,
                 },
                 body: JSON.stringify({
-                    messaging_product: "whatsapp",
+                    session: session,
                     to: recipientPhone,
-                    type: "text",
-                    text: { body: message },
+                    message: message,
                 }),
             });
+            if (!response.ok) {
+                const errText = await response.text();
+                console.error(`[WA Notif] Gateway error (status ${response.status}):`, errText);
+            }
         } catch (err) {
             console.error(`[WA Notif] Gagal kirim ke empId ${empId}:`, err.message);
         }
