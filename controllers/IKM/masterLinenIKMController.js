@@ -38,12 +38,21 @@ export const getLinenList = async (req, res) => {
               l.color_id, cl.color_code, cl.color_name,
               l.material_id, mt.material_code, mt.material_name,
               l.default_qty, l.description,
-              l.created_at, l.updated_at
+              l.created_at, l.updated_at,
+              COALESCE(hl_stats.owned_count, 0) AS owned_count,
+              COALESCE(hl_stats.rented_count, 0) AS rented_count
        FROM ${TABLE} l
        LEFT JOIN mst_linen_category c ON l.category_id = c.id
        LEFT JOIN mst_size sz ON l.size_id = sz.id
        LEFT JOIN mst_color cl ON l.color_id = cl.id
        LEFT JOIN mst_material mt ON l.material_id = mt.id
+       LEFT JOIN (
+         SELECT linen_id,
+                SUM(CASE WHEN ownership_type = 'MILIK_RS' THEN 1 ELSE 0 END) AS owned_count,
+                SUM(CASE WHEN ownership_type = 'SEWA' THEN 1 ELSE 0 END) AS rented_count
+         FROM mst_hospital_linen
+         GROUP BY linen_id
+       ) hl_stats ON l.id = hl_stats.linen_id
        ${whereSql}
        ORDER BY l.linen_code ASC LIMIT ? OFFSET ?`,
       [...params, lm, offset]
@@ -59,7 +68,7 @@ export const getLinenList = async (req, res) => {
   }
 };
 
-// ── GET single linen by ID (with all joins) ──
+// ── GET single linen by ID (with all joins and hospital detail integration) ──
 export const getLinenById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -80,7 +89,26 @@ export const getLinenById = async (req, res) => {
       [id]
     );
     if (rows.length === 0) return res.status(404).json({ message: "Linen tidak ditemukan" });
-    res.json({ data: rows[0] });
+
+    // Fetch hospital linen relations and their settings
+    const [hospitals] = await safeIKMQuery(
+      `SELECT hl.id, hl.hospital_id, h.hospital_name, hl.hospital_linen_name,
+              hl.ownership_type, hl.unit, hl.grammage, hl.washing_price_type,
+              hl.washing_price, hl.rental_price, hl.par_stock, hl.min_stock,
+              hl.stock_in_ikm, hl.stock_in_rs, hl.current_stock, hl.is_active
+       FROM mst_hospital_linen hl
+       JOIN mst_hospital h ON hl.hospital_id = h.id
+       WHERE hl.linen_id = ?
+       ORDER BY h.hospital_name ASC`,
+      [id]
+    );
+
+    res.json({
+      data: {
+        ...rows[0],
+        hospitals
+      }
+    });
   } catch (err) {
     console.error("getLinenById:", err);
     res.status(500).json({ message: err.message });

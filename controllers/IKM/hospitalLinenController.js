@@ -11,7 +11,7 @@ export const getByHospital = async (req, res) => {
       `SELECT hl.id, hl.hospital_id, hl.linen_id, hl.hospital_linen_name,
               hl.ownership_type, hl.unit, hl.grammage,
               hl.washing_price_type, hl.washing_price, hl.rental_price,
-              hl.par_stock, hl.min_stock, hl.is_active,
+              hl.par_stock, hl.min_stock, hl.stock_in_ikm, hl.stock_in_rs, hl.current_stock, hl.is_active,
               hl.created_at, hl.updated_at,
               l.linen_code,
               l.linen_name AS master_linen_name,
@@ -25,7 +25,32 @@ export const getByHospital = async (req, res) => {
        ORDER BY l.linen_name ASC`,
       [hospitalId]
     );
-    res.json({ data: rows });
+
+    // Fetch room stocks
+    const [roomStocks] = await safeIKMQuery(
+      `SELECT hlr.id, hlr.hospital_linen_id, hlr.room_id, hlr.stock_in_rs, r.room_name
+       FROM mst_hospital_linen_rooms hlr
+       JOIN mst_rooms_rs r ON hlr.room_id = r.id`
+    );
+
+    // Group by hospital_linen_id
+    const roomStocksMap = {};
+    roomStocks.forEach(rs => {
+      if (!roomStocksMap[rs.hospital_linen_id]) roomStocksMap[rs.hospital_linen_id] = [];
+      roomStocksMap[rs.hospital_linen_id].push({
+        id: rs.id,
+        room_id: rs.room_id,
+        room_name: rs.room_name,
+        stock_in_rs: rs.stock_in_rs
+      });
+    });
+
+    const data = rows.map(r => ({
+      ...r,
+      room_stocks: roomStocksMap[r.id] || []
+    }));
+
+    res.json({ data });
   } catch (err) {
     console.error("getByHospital:", err);
     res.status(500).json({ message: err.message });
@@ -61,17 +86,25 @@ export const create = async (req, res) => {
   const { hospitalId } = req.params;
   const {
     linen_id, hospital_linen_name, ownership_type, unit, grammage,
-    washing_price_type, washing_price, rental_price, par_stock, min_stock, is_active,
+    washing_price_type, washing_price, rental_price, par_stock, min_stock,
+    stock_in_ikm, stock_in_rs, is_active, room_stocks,
   } = req.body;
 
   if (!linen_id) return res.status(400).json({ message: "Linen wajib dipilih" });
+
+  const totalRsStock = Array.isArray(room_stocks) && room_stocks.length > 0
+    ? room_stocks.reduce((sum, r) => sum + (Number(r.stock_in_rs) || 0), 0)
+    : Number(stock_in_rs) || 0;
+
+  const currentStock = (Number(stock_in_ikm) || 0) + totalRsStock;
 
   try {
     const [result] = await safeIKMQuery(
       `INSERT INTO mst_hospital_linen
        (hospital_id, linen_id, hospital_linen_name, ownership_type, unit, grammage,
-        washing_price_type, washing_price, rental_price, par_stock, min_stock, is_active)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        washing_price_type, washing_price, rental_price, par_stock, min_stock,
+        stock_in_ikm, stock_in_rs, current_stock, is_active)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         hospitalId, linen_id,
         hospital_linen_name?.trim() || null,
@@ -83,9 +116,25 @@ export const create = async (req, res) => {
         rental_price ?? 0,
         par_stock ?? 0,
         min_stock ?? 0,
+        Number(stock_in_ikm) || 0,
+        totalRsStock,
+        currentStock,
         is_active !== undefined ? (is_active ? 1 : 0) : 1,
       ]
     );
+
+    // Save room stocks
+    if (Array.isArray(room_stocks) && room_stocks.length > 0) {
+      for (const r of room_stocks) {
+        if (r.room_id) {
+          await safeIKMQuery(
+            `INSERT INTO mst_hospital_linen_rooms (hospital_linen_id, room_id, stock_in_rs) VALUES (?, ?, ?)`,
+            [result.insertId, r.room_id, Number(r.stock_in_rs) || 0]
+          );
+        }
+      }
+    }
+
     res.status(201).json({ message: "Linen RS berhasil ditambahkan", id: result.insertId });
   } catch (err) {
     console.error("create:", err);
@@ -98,7 +147,8 @@ export const update = async (req, res) => {
   const { hospitalId, id } = req.params;
   const {
     linen_id, hospital_linen_name, ownership_type, unit, grammage,
-    washing_price_type, washing_price, rental_price, par_stock, min_stock, is_active,
+    washing_price_type, washing_price, rental_price, par_stock, min_stock,
+    stock_in_ikm, stock_in_rs, is_active, room_stocks,
   } = req.body;
 
   try {
@@ -110,11 +160,18 @@ export const update = async (req, res) => {
       return res.status(404).json({ message: hospitalNotFound(hospitalId) });
     }
 
+    const ikmStock = stock_in_ikm !== undefined ? Number(stock_in_ikm) : 0;
+    const totalRsStock = Array.isArray(room_stocks) && room_stocks.length > 0
+      ? room_stocks.reduce((sum, r) => sum + (Number(r.stock_in_rs) || 0), 0)
+      : Number(stock_in_rs) || 0;
+    const currentStock = ikmStock + totalRsStock;
+
     await safeIKMQuery(
       `UPDATE mst_hospital_linen SET
         linen_id = ?, hospital_linen_name = ?, ownership_type = ?, unit = ?,
         grammage = ?, washing_price_type = ?, washing_price = ?, rental_price = ?,
-        par_stock = ?, min_stock = ?, is_active = ?, updated_at = NOW()
+        par_stock = ?, min_stock = ?, stock_in_ikm = ?, stock_in_rs = ?,
+        current_stock = ?, is_active = ?, updated_at = NOW()
        WHERE id = ?`,
       [
         linen_id ?? exist[0].linen_id,
@@ -127,10 +184,27 @@ export const update = async (req, res) => {
         rental_price ?? 0,
         par_stock ?? 0,
         min_stock ?? 0,
+        ikmStock,
+        totalRsStock,
+        currentStock,
         is_active !== undefined ? (is_active ? 1 : 0) : 1,
         id,
       ]
     );
+
+    // Update room stocks
+    await safeIKMQuery(`DELETE FROM mst_hospital_linen_rooms WHERE hospital_linen_id = ?`, [id]);
+    if (Array.isArray(room_stocks) && room_stocks.length > 0) {
+      for (const r of room_stocks) {
+        if (r.room_id) {
+          await safeIKMQuery(
+            `INSERT INTO mst_hospital_linen_rooms (hospital_linen_id, room_id, stock_in_rs) VALUES (?, ?, ?)`,
+            [id, r.room_id, Number(r.stock_in_rs) || 0]
+          );
+        }
+      }
+    }
+
     res.json({ message: "Linen RS berhasil diperbarui" });
   } catch (err) {
     console.error("update:", err);
