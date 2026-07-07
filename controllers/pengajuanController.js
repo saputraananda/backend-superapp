@@ -455,7 +455,9 @@ export const listMy = async (req, res) => {
         if (!employeeId) return res.status(401).json({ message: "Unauthorized" });
 
         const page   = Math.max(1, parseInt(req.query.page) || 1);
-        const limit  = Math.min(100, parseInt(req.query.limit) || 20);
+        const limit  = (req.query.limit === "all" || req.query.limit === "ALL")
+            ? 999999
+            : Math.min(100, parseInt(req.query.limit) || 20);
         const offset = (page - 1) * limit;
         const search = req.query.search?.trim() || "";
         const status = req.query.status ? Number(req.query.status) : null;
@@ -545,7 +547,9 @@ export const listDepartment = async (req, res) => {
         }
 
         const page   = Math.max(1, parseInt(req.query.page) || 1);
-        const limit  = Math.min(100, parseInt(req.query.limit) || 10);
+        const limit  = (req.query.limit === "all" || req.query.limit === "ALL")
+            ? 999999
+            : Math.min(100, parseInt(req.query.limit) || 10);
         const offset = (page - 1) * limit;
         const search = req.query.search?.trim() || "";
         const status = req.query.status ? Number(req.query.status) : null;
@@ -1344,7 +1348,9 @@ export const listAll = async (req, res) => {
         }
 
         const page   = Math.max(1, parseInt(req.query.page) || 1);
-        const limit  = Math.min(100, parseInt(req.query.limit) || 20);
+        const limit  = (req.query.limit === "all" || req.query.limit === "ALL")
+            ? 999999
+            : Math.min(100, parseInt(req.query.limit) || 20);
         const offset = (page - 1) * limit;
         const search = req.query.search?.trim() || "";
         const status = req.query.status ? Number(req.query.status) : null;
@@ -1367,6 +1373,12 @@ export const listAll = async (req, res) => {
         const dateTo   = req.query.date_to?.trim()   || "";
         if (dateFrom) { conditions.push("pr.tanggal_pengajuan >= ?"); params.push(dateFrom); }
         if (dateTo)   { conditions.push("pr.tanggal_pengajuan <= ?"); params.push(dateTo); }
+
+        const deptId = req.query.department_id ? Number(req.query.department_id) : null;
+        if (deptId) {
+            conditions.push("pr.department_id = ?");
+            params.push(deptId);
+        }
 
         const where = `WHERE ${conditions.join(" AND ")}`;
 
