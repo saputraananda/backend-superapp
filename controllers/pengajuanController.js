@@ -155,6 +155,11 @@ const isGAFinance = (positionName) => {
     );
 };
 
+const canViewAllActivities = (employee) => {
+    if (!employee) return false;
+    return isGAFinance(employee.position_name) || Number(employee.job_level_id) === 1;
+};
+
 const isGA = (positionName) => {
     if (!positionName) return false;
     return String(positionName).toLowerCase().includes("general affair");
@@ -271,7 +276,7 @@ export const getPeriods = async (req, res) => {
             // Finance/GA bisa override target departemen via ?department_id=
             // Nilai "all" = semua departemen tanpa filter
             const requestedDeptIdRaw = req.query.department_id;
-            const isFinanceGA = isGAFinance(me.position_name);
+            const isFinanceGA = canViewAllActivities(me);
 
             if (requestedDeptIdRaw === "all" && isFinanceGA) {
                 condition = "1 = 1";
@@ -353,7 +358,7 @@ export const getDashboard = async (req, res) => {
         let showAll = false;
 
         if (requestedDeptIdRaw === "all") {
-            if (!isGAFinance(me.position_name)) {
+            if (!canViewAllActivities(me)) {
                 return res.status(403).json({ message: "Tidak diizinkan memonitor semua departemen" });
             }
             showAll = true;
@@ -361,7 +366,7 @@ export const getDashboard = async (req, res) => {
             departmentName = "Semua Departemen";
         } else if (requestedDeptIdRaw && Number(requestedDeptIdRaw) !== me.department_id) {
             // Pastikan boleh override
-            if (!isGAFinance(me.position_name)) {
+            if (!canViewAllActivities(me)) {
                 return res.status(403).json({ message: "Tidak diizinkan memonitor departemen lain" });
             }
             // Validasi & ambil nama
@@ -519,14 +524,14 @@ export const listDepartment = async (req, res) => {
         let showAll = false;
 
         if (requestedDeptIdRaw === "all") {
-            if (!isGAFinance(me.position_name)) {
+            if (!canViewAllActivities(me)) {
                 return res.status(403).json({ message: "Tidak diizinkan memonitor semua departemen" });
             }
             showAll = true;
             departmentId = null;
             departmentName = "Semua Departemen";
         } else if (requestedDeptIdRaw && Number(requestedDeptIdRaw) !== me.department_id) {
-            if (!isGAFinance(me.position_name)) {
+            if (!canViewAllActivities(me)) {
                 return res.status(403).json({ message: "Tidak diizinkan memonitor departemen lain" });
             }
             const dRows = await safeQuery(
@@ -647,6 +652,12 @@ export const listApproval = async (req, res) => {
             // Direktur (1): status 2, hanya pengajuan biasa (reimburse tidak ke Direktur manual)
             conditions.push("pr.status = 2", "pr.type = 'pengajuan'");
         }
+
+        // ── filter tanggal (cutoff 26-25) ─────────────────────────────────
+        const dateFrom = req.query.date_from?.trim() || "";
+        const dateTo   = req.query.date_to?.trim()   || "";
+        if (dateFrom) { conditions.push("pr.tanggal_pengajuan >= ?"); params.push(dateFrom); }
+        if (dateTo)   { conditions.push("pr.tanggal_pengajuan <= ?"); params.push(dateTo); }
 
         const where = `WHERE ${conditions.join(" AND ")}`;
         const data = await safeQuery(
@@ -1328,8 +1339,8 @@ export const listAll = async (req, res) => {
 
         const me = await fetchEmployee(employeeId);
         if (!me) return res.status(404).json({ message: "Employee tidak ditemukan" });
-        if (!isGAFinance(me.position_name)) {
-            return res.status(403).json({ message: "Akses ditolak: hanya Finance / GA" });
+        if (!canViewAllActivities(me)) {
+            return res.status(403).json({ message: "Akses ditolak: hanya Finance / GA / BOD" });
         }
 
         const page   = Math.max(1, parseInt(req.query.page) || 1);
@@ -1409,6 +1420,23 @@ export const listGaReview = async (req, res) => {
             return res.status(403).json({ message: "Akses ditolak: hanya General Affair" });
         }
 
+        const conditions = [
+            "pr.is_deleted = 0",
+            "pr.status IN (2, 3)",
+            "pr.type = 'pengajuan'",
+            "pr.employee_id != ?",
+            "pr.is_routine IS NULL"
+        ];
+        const params = [employeeId];
+
+        // ── filter tanggal (cutoff 26-25) ─────────────────────────────────
+        const dateFrom = req.query.date_from?.trim() || "";
+        const dateTo   = req.query.date_to?.trim()   || "";
+        if (dateFrom) { conditions.push("pr.tanggal_pengajuan >= ?"); params.push(dateFrom); }
+        if (dateTo)   { conditions.push("pr.tanggal_pengajuan <= ?"); params.push(dateTo); }
+
+        const where = `WHERE ${conditions.join(" AND ")}`;
+
         const data = await safeQuery(
             `SELECT pr.*, e.full_name AS pengaju_name, d.department_name,
                     s.satuan_name, c.company_name, o.full_name AS outlet_name
@@ -1418,13 +1446,9 @@ export const listGaReview = async (req, res) => {
              LEFT JOIN mst_satuan     s ON s.satuan_id     = pr.satuan_id
              LEFT JOIN mst_company    c ON c.company_id    = pr.company_id
              LEFT JOIN mst_outlet     o ON o.id            = pr.outlet_id
-             WHERE pr.is_deleted = 0
-               AND pr.status IN (2, 3)
-               AND pr.type = 'pengajuan'
-               AND pr.employee_id != ?
-               AND pr.is_routine IS NULL
+             ${where}
              ORDER BY pr.created_at ASC`,
-            [employeeId]
+            params
         );
 
         res.json({ data });
@@ -1592,8 +1616,8 @@ export const getPOData = async (req, res) => {
 
         const me = await fetchEmployee(employeeId);
         if (!me) return res.status(404).json({ message: "Employee tidak ditemukan" });
-        if (!isGAFinance(me.position_name)) {
-            return res.status(403).json({ message: "Akses ditolak: hanya Finance / GA" });
+        if (!canViewAllActivities(me)) {
+            return res.status(403).json({ message: "Akses ditolak: hanya Finance / GA / BOD" });
         }
 
         const { id } = req.params;
@@ -1666,6 +1690,20 @@ export const listFinanceReview = async (req, res) => {
             return res.status(403).json({ message: "Akses ditolak: hanya Finance" });
         }
 
+        const conditions = [
+            "pr.is_deleted = 0",
+            "((pr.type = 'pengajuan' AND pr.status = 4) OR (pr.type = 'reimburse' AND pr.status = 2))"
+        ];
+        const params = [];
+
+        // ── filter tanggal (cutoff 26-25) ─────────────────────────────────
+        const dateFrom = req.query.date_from?.trim() || "";
+        const dateTo   = req.query.date_to?.trim()   || "";
+        if (dateFrom) { conditions.push("pr.tanggal_pengajuan >= ?"); params.push(dateFrom); }
+        if (dateTo)   { conditions.push("pr.tanggal_pengajuan <= ?"); params.push(dateTo); }
+
+        const where = `WHERE ${conditions.join(" AND ")}`;
+
         // SPV Finance melihat:
         // - Pengajuan biasa: status 4 (sudah disetujui GA)
         // - Reimburse: status 2 (sudah disetujui SPV Departemen)
@@ -1678,12 +1716,9 @@ export const listFinanceReview = async (req, res) => {
              LEFT JOIN mst_satuan     s ON s.satuan_id     = pr.satuan_id
              LEFT JOIN mst_company    c ON c.company_id    = pr.company_id
              LEFT JOIN mst_outlet     o ON o.id            = pr.outlet_id
-             WHERE pr.is_deleted = 0
-               AND (
-                 (pr.type = 'pengajuan' AND pr.status = 4)
-                 OR (pr.type = 'reimburse' AND pr.status = 2)
-               )
-             ORDER BY pr.created_at ASC`
+             ${where}
+             ORDER BY pr.created_at ASC`,
+            params
         );
 
         res.json({ data });
@@ -1831,6 +1866,20 @@ export const listPaymentPending = async (req, res) => {
             return res.status(403).json({ message: "Akses ditolak: hanya Finance" });
         }
 
+        const conditions = [
+            "pr.is_deleted = 0",
+            "pr.status = 5"
+        ];
+        const params = [];
+
+        // ── filter tanggal (cutoff 26-25) ─────────────────────────────────
+        const dateFrom = req.query.date_from?.trim() || "";
+        const dateTo   = req.query.date_to?.trim()   || "";
+        if (dateFrom) { conditions.push("pr.tanggal_pengajuan >= ?"); params.push(dateFrom); }
+        if (dateTo)   { conditions.push("pr.tanggal_pengajuan <= ?"); params.push(dateTo); }
+
+        const where = `WHERE ${conditions.join(" AND ")}`;
+
         // Finance melihat:
         // - Pengajuan biasa: status 5 (menunggu pembayaran)
         // - Reimburse: status 5 (disetujui SPV Finance, menunggu pembayaran)
@@ -1845,9 +1894,9 @@ export const listPaymentPending = async (req, res) => {
              LEFT JOIN mst_company    c   ON c.company_id    = pr.company_id
              LEFT JOIN mst_outlet     o   ON o.id            = pr.outlet_id
              LEFT JOIN mst_bank       bnk ON bnk.bank_id     = pr.bank_id
-             WHERE pr.is_deleted = 0
-               AND pr.status = 5
-             ORDER BY pr.created_at ASC`
+             ${where}
+             ORDER BY pr.created_at ASC`,
+            params
         );
 
         res.json({ data });
@@ -2090,8 +2139,8 @@ export const listCredit = async (req, res) => {
 
         const me = await fetchEmployee(employeeId);
         if (!me) return res.status(404).json({ message: "Employee tidak ditemukan" });
-        if (!isGAFinance(me.position_name)) {
-            return res.status(403).json({ message: "Akses ditolak: hanya Finance / GA" });
+        if (!canViewAllActivities(me)) {
+            return res.status(403).json({ message: "Akses ditolak: hanya Finance / GA / BOD" });
         }
 
         const conditions = [
