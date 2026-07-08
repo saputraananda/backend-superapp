@@ -61,6 +61,15 @@ async function getPhoneMap(empIds) {
 
 // ── Public functions ─────────────────────────────────────────────────────────
 
+function getWaHeaders() {
+    const headers = { "Content-Type": "application/json" };
+    // Optional API key — set ALORA_WA_API_KEY jika gateway butuh auth
+    if (process.env.ALORA_WA_API_KEY) {
+        headers["x-api-key"] = process.env.ALORA_WA_API_KEY;
+    }
+    return headers;
+}
+
 export async function sendWaTaskNotif({
     assigneeIds, taskTitle,
     monthlyTitle, creatorName,
@@ -121,9 +130,7 @@ export async function sendWaTaskNotif({
         try {
             const response = await fetch(url, {
                 method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                },
+                headers: getWaHeaders(),
                 body: JSON.stringify({
                     session: session,
                     to: recipientPhone,
@@ -155,9 +162,7 @@ export async function sendWaSimpleNotif({ recipientIds, message }) {
         try {
             const response = await fetch(url, {
                 method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                },
+                headers: getWaHeaders(),
                 body: JSON.stringify({
                     session: session,
                     to: recipientPhone,
