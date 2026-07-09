@@ -79,6 +79,25 @@ const IKM_DB_CONFIG = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
+// CONFIG MY WASCHEN DB (my_waschen)
+// ═══════════════════════════════════════════════════════════════════════════
+const MY_WASCHEN_DB_CONFIG = {
+  host: process.env.DB_HOST_MY_WASCHEN || process.env.DB_HOST,
+  port: Number(process.env.DB_PORT_MY_WASCHEN || process.env.DB_PORT) || 3306,
+  user: process.env.DB_USER_MY_WASCHEN || process.env.DB_USER,
+  password: process.env.DB_PASS_MY_WASCHEN || process.env.DB_PASS,
+  database: process.env.DB_NAME_MY_WASCHEN || "my_waschen",
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0,
+  dateStrings: true,
+  connectTimeout: 10_000,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 10_000,
+  idleTimeout: 60_000,
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
 // CONFIG BACKUP CLEANOX DB (cleanox_smartlink backup)
 // ═══════════════════════════════════════════════════════════════════════════
 const BACKUP_CLEANOX_DB_CONFIG = {
@@ -102,6 +121,7 @@ let smartlinkPool = mysql.createPool(SMARTLINK_DB_CONFIG);
 let cleanoxPool = mysql.createPool(CLEANOX_DB_CONFIG);
 let ikmPool = mysql.createPool(IKM_DB_CONFIG);
 let backupCleanoxPool = mysql.createPool(BACKUP_CLEANOX_DB_CONFIG);
+let myWaschenPool = mysql.createPool(MY_WASCHEN_DB_CONFIG);
 
 const RECONNECT_CODES = [
   "ETIMEDOUT",
@@ -142,6 +162,8 @@ async function runSafeQuery(getPoolFn, config, sql, params) {
         cleanoxPool = newPool;
       } else if (config === BACKUP_CLEANOX_DB_CONFIG) {
         backupCleanoxPool = newPool;
+      } else if (config === MY_WASCHEN_DB_CONFIG) {
+        myWaschenPool = newPool;
       } else {
         ikmPool = newPool;
       }
@@ -186,6 +208,11 @@ export function safeBackupCleanoxQuery(sql, params) {
   return runSafeQuery(() => backupCleanoxPool, BACKUP_CLEANOX_DB_CONFIG, sql, params);
 }
 
+// EXPORT: safeMyWaschenQuery untuk DB my_waschen
+export function safeMyWaschenQuery(sql, params) {
+  return runSafeQuery(() => myWaschenPool, MY_WASCHEN_DB_CONFIG, sql, params);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // DB Ping untuk keep-alive (opsional)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -197,12 +224,13 @@ export function startDbPing(intervalMs = 30_000) {
       await cleanoxPool.query("SELECT 1");
       await ikmPool.query("SELECT 1");
       await backupCleanoxPool.query("SELECT 1");
+      await myWaschenPool.query("SELECT 1");
     } catch (err) {
       console.warn("[DB Ping] Gagal:", err.code ?? err.message);
     }
   }, intervalMs);
-  console.info(`[DB Ping] Aktif untuk main + smartlink + cleanox + ikm + backup_cleanox, interval ${intervalMs / 1000}s`);
+  console.info(`[DB Ping] Aktif untuk main + smartlink + cleanox + ikm + backup_cleanox + my_waschen, interval ${intervalMs / 1000}s`);
 }
 
-export { mainPool as pool, mainPool, smartlinkPool, cleanoxPool, ikmPool, backupCleanoxPool };
+export { mainPool as pool, mainPool, smartlinkPool, cleanoxPool, ikmPool, backupCleanoxPool, myWaschenPool };
 export default mainPool;

@@ -48,6 +48,7 @@ import linenReportRoutes from "./routes/IKM/linenReportRoutes.js";
 import masterLinenIKMRoutes from "./routes/IKM/masterLinenIKMRoutes.js";
 import masterDataIKMRoutes from "./routes/IKM/masterDataIKMRoutes.js";
 import hospitalLinenRoutes from "./routes/IKM/hospitalLinenRoutes.js";
+import rewashLinenRoutes from "./routes/rewashLinenRoutes.js";
 import leaderDailyReportRoutes from "./routes/IKM/leaderDailyReportRoutes.js";
 import kasbonRoutes from "./routes/IKM/kasbonRoutes.js";
 import absensiManajemenIKMRoutes from "./routes/IKM/absensiManajemenIKMRoutes.js";
@@ -67,7 +68,7 @@ import employeeCleanoxRoutes from "./routes/Cleanox/employeeCleanoxRoutes.js";
 import kpiProduksiRoutes from "./routes/Cleanox/kpiProduksiRoutes.js";
 import masterServicesRoutes from "./routes/Cleanox/masterServicesRoutes.js";
 import masterCategoryRoutes from "./routes/Cleanox/masterCategoryRoutes.js";
-
+import myWaschenRoutes from "./routes/MyWaschen/myWaschenRoutes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -290,6 +291,7 @@ app.use("/ikm/master-rs", masterRsIkmRoutes);
 app.use("/ikm/linen-report", linenReportRoutes);
 app.use("/ikm/master-linen", masterLinenIKMRoutes);
 app.use("/ikm/hospital-linen", hospitalLinenRoutes);
+app.use("/ikm/rewash-linen", rewashLinenRoutes);
 app.use("/ikm/master-data", masterDataIKMRoutes);
 app.use("/ikm/leader-daily-report", leaderDailyReportRoutes);
 app.use("/ikm/kasbon", kasbonRoutes);
@@ -310,7 +312,7 @@ app.use("/cleanox/employees", employeeCleanoxRoutes);
 app.use("/kpi", kpiProduksiRoutes);
 app.use("/master-services", masterServicesRoutes);
 app.use("/master-categories", masterCategoryRoutes);
-
+app.use("/api", myWaschenRoutes);
 // 404
 app.use((req, res) => {
   res.status(404).json({ message: "Endpoint not found", path: req.path });
