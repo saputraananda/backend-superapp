@@ -1,4 +1,4 @@
-import { safeIKMQuery, safeQuery } from "../../db/pool.js";
+﻿import { safeIKMQuery, safeQuery } from "../../db/pool.js";
 
 const ALLOWED_SHIFTS = new Set(["pagi", "siang", "sore", "lembur"]);
 const SHIFT_ORDER = { pagi: 0, siang: 1, sore: 2, lembur: 3 };
@@ -523,6 +523,7 @@ export const getAttendanceShiftIKM = async (req, res) => {
 				LEFT JOIN mst_position p ON p.position_id = e.position_id
 				LEFT JOIN mst_job_level j ON j.job_level_id = e.job_level_id
 				WHERE e.is_deleted = 0
+					AND e.exit_date IS NULL
 					AND (e.company_id = ? OR e.employee_id = ?)
 					${excludeIds.length > 0 ? `AND e.employee_id NOT IN (${excludeIds.map(() => "?").join(",")})` : ""}
 			`,
@@ -878,7 +879,7 @@ export const getEmployeeLeaveAndLateResume = async (req, res) => {
 			return res.status(400).json({ message: "startDate dan endDate wajib diisi (YYYY-MM-DD)" });
 		}
 
-		// ── 1. Pengajuan karyawan yang disetujui (tr_employee_leaves) ──────────────
+		// â”€â”€ 1. Pengajuan karyawan yang disetujui (tr_employee_leaves) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 		const [leaveRows] = await safeIKMQuery(
 			`
 			SELECT
@@ -895,7 +896,7 @@ export const getEmployeeLeaveAndLateResume = async (req, res) => {
 			[endDate, startDate]
 		);
 
-		// ── 2. Laporan absen dari leader (tr_daily_report_absent) ─────────────────
+		// â”€â”€ 2. Laporan absen dari leader (tr_daily_report_absent) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 		const [reportAbsentRows] = await safeIKMQuery(
 			`
 			SELECT
@@ -911,7 +912,7 @@ export const getEmployeeLeaveAndLateResume = async (req, res) => {
 			[startDate, endDate]
 		);
 
-		// ── 3. Laporan telat dari leader (tr_daily_report_late) ──────────────────
+		// â”€â”€ 3. Laporan telat dari leader (tr_daily_report_late) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 		const [reportLateRows] = await safeIKMQuery(
 			`
 			SELECT
@@ -925,7 +926,7 @@ export const getEmployeeLeaveAndLateResume = async (req, res) => {
 			[startDate, endDate]
 		);
 
-		// ── Merge all into a single map keyed by employee_id ─────────────────────
+		// â”€â”€ Merge all into a single map keyed by employee_id â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 		const empMap = new Map();
 
 		const getOrCreate = (id) => {
@@ -1151,3 +1152,4 @@ export const createAttendanceShiftIKM = async (req, res) => {
 		return res.status(500).json({ success: false, message: error.message || "Gagal menambahkan data absensi" });
 	}
 };
+
