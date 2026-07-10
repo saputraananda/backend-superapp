@@ -11,7 +11,7 @@ import {
     approvePR, rejectPR,
     approveGA, rejectGA, getPOData,
     approveFinance, rejectFinance,
-    processPayment, completePR,
+    processPayment, rejectPayment, completePR,
 } from "../controllers/pengajuanController.js";
 
 const router = Router();
@@ -58,7 +58,8 @@ router.post("/:id/approve-finance", requireAuth, approveFinance);
 router.post("/:id/reject-finance",  requireAuth, rejectFinance);
 
 // ── Payment & Completion ──
-router.post("/:id/pay",      requireAuth, uploadPurchase.array("attachments", 5), processPayment);
-router.post("/:id/complete",  requireAuth, uploadPurchase.array("attachments", 1), completePR);
+router.post("/:id/pay",           requireAuth, uploadPurchase.array("attachments", 5), processPayment);
+router.post("/:id/reject-payment", requireAuth, rejectPayment);
+router.post("/:id/complete",       requireAuth, uploadPurchase.array("attachments", 1), completePR);
 
 export default router;

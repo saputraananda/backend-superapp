@@ -2080,6 +2080,50 @@ export const processPayment = async (req, res) => {
 };
 
 // ════════════════════════════════════════════════════════════════════════════
+// REJECT PAYMENT  (Staff Finance — tolak status 5 saat bayar)
+// ════════════════════════════════════════════════════════════════════════════
+export const rejectPayment = async (req, res) => {
+    try {
+        const employeeId = getEmployeeId(req);
+        if (!employeeId) return res.status(401).json({ message: "Unauthorized" });
+
+        const me = await fetchEmployee(employeeId);
+        if (!me) return res.status(404).json({ message: "Employee tidak ditemukan" });
+        if (!isFinance(me.position_name)) {
+            return res.status(403).json({ message: "Akses ditolak: hanya Finance" });
+        }
+
+        const reason = sanitize(req.body.reason);
+        if (!reason) return res.status(400).json({ message: "Alasan penolakan wajib diisi" });
+
+        const { id } = req.params;
+        const rows = await safeQuery(
+            `SELECT status, type FROM tr_purchase_request WHERE pr_id = ? AND is_deleted = 0`,
+            [id]
+        );
+        if (!rows.length) return res.status(404).json({ message: "Data tidak ditemukan" });
+
+        if (Number(rows[0].status) !== 5) {
+            return res.status(400).json({ message: "Pengajuan tidak bisa ditolak pada status ini" });
+        }
+
+        await safeQuery(
+            `UPDATE tr_purchase_request SET
+                status = 9, rejected_by = ?, rejected_at = NOW(),
+                rejection_reason = ?, updated_at = NOW()
+             WHERE pr_id = ?`,
+            [employeeId, reason, id]
+        );
+        await writeLog(id, "rejected_payment", employeeId, me.full_name, reason);
+
+        res.json({ message: "Pembayaran ditolak oleh Staff Finance" });
+    } catch (err) {
+        console.error("[rejectPayment]", err);
+        res.status(500).json({ message: "Gagal menolak pembayaran" });
+    }
+};
+
+// ════════════════════════════════════════════════════════════════════════════
 // COMPLETE  (Karyawan pengaju — status 6 → 7, upload invoice)
 // ════════════════════════════════════════════════════════════════════════════
 export const completePR = async (req, res) => {
