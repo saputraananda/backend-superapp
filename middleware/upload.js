@@ -394,3 +394,28 @@ export const uploadDocAlora = multer({
   fileFilter: documentFilter,
   limits: { fileSize: 10 * 1024 * 1024 },
 });
+
+// =========================
+// Upload Training Evidence (dokumen + gambar, 10 MB)
+// =========================
+const TRAINING_EVIDENCE_DIR = path.join(BASE_DIR, "training_evidence");
+if (!fs.existsSync(TRAINING_EVIDENCE_DIR)) fs.mkdirSync(TRAINING_EVIDENCE_DIR, { recursive: true });
+
+const trainingEvidenceStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, TRAINING_EVIDENCE_DIR),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    const baseName = path
+      .basename(file.originalname, ext)
+      .replace(/[^a-zA-Z0-9_\-]/g, "_")
+      .slice(0, 60);
+    const unique = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    cb(null, `${baseName}_${unique}${ext}`);
+  },
+});
+
+export const uploadTrainingEvidence = multer({
+  storage: trainingEvidenceStorage,
+  fileFilter: documentFilter,
+  limits: { fileSize: 10 * 1024 * 1024 },
+});

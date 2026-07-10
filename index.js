@@ -69,6 +69,8 @@ import kpiProduksiRoutes from "./routes/Cleanox/kpiProduksiRoutes.js";
 import masterServicesRoutes from "./routes/Cleanox/masterServicesRoutes.js";
 import masterCategoryRoutes from "./routes/Cleanox/masterCategoryRoutes.js";
 import myWaschenRoutes from "./routes/MyWaschen/myWaschenRoutes.js";
+import trainingRoutes from "./routes/trainingRoutes.js";
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -231,6 +233,8 @@ app.use("/assets/complaint_docs", express.static(path.join(ASSETS_BASE, "complai
 app.use("/assets/kasbon", express.static(path.join(ASSETS_BASE, "kasbon")));
 app.use("/assets/purchase", express.static(path.join(ASSETS_BASE, "purchase")));
 app.use("/assets/document_alora", express.static(path.join(ASSETS_BASE, "document_alora")));
+app.use("/assets/training_evidence", express.static(path.join(ASSETS_BASE, "training_evidence")));
+
 
 // =========================
 // Routes
@@ -313,6 +317,7 @@ app.use("/kpi", kpiProduksiRoutes);
 app.use("/master-services", masterServicesRoutes);
 app.use("/master-categories", masterCategoryRoutes);
 app.use("/api", myWaschenRoutes);
+app.use("/training", trainingRoutes);
 // 404
 app.use((req, res) => {
   res.status(404).json({ message: "Endpoint not found", path: req.path });
