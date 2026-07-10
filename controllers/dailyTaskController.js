@@ -104,7 +104,7 @@ export const getTasks = async (req, res) => {
       if (r[0]) empInfo = r[0];
     }
 
-    console.log(`[getTasks] userId=${userId} role=${role} isAdmin=${isAdmin} empInfo=`, empInfo);
+
 
     // 3. Build visibility WHERE clause in SQL (JSON_CONTAINS — far more reliable than JS filter)
 
@@ -117,40 +117,61 @@ export const getTasks = async (req, res) => {
       const orClauses = [
         // creator always sees own
         `t.creator_id = ?`,
-        // no targets at all + public
+        // Case 4: No targets at all + public (fully public)
         `(
-          (t.target_company_ids    IS NULL OR JSON_LENGTH(t.target_company_ids)    = 0)
-          AND (t.target_department_ids IS NULL OR JSON_LENGTH(t.target_department_ids) = 0)
-          AND (t.target_employee_ids   IS NULL OR JSON_LENGTH(t.target_employee_ids)   = 0)
+          (t.target_employee_ids IS NULL OR t.target_employee_ids = '' OR t.target_employee_ids = '[]')
+          AND (t.target_department_ids IS NULL OR t.target_department_ids = '' OR t.target_department_ids = '[]')
+          AND (t.target_company_ids IS NULL OR t.target_company_ids = '' OR t.target_company_ids = '[]')
           AND t.is_public = 1
         )`,
       ];
       visibilityParams.push(Number(userId));
 
-      if (empInfo.company_id != null) {
-        orClauses.push(
-          `(JSON_LENGTH(t.target_company_ids) > 0 AND JSON_CONTAINS(t.target_company_ids, ?))`
-        );
-        visibilityParams.push(String(empInfo.company_id));
-      }
-      if (empInfo.department_id != null) {
-        orClauses.push(
-          `(JSON_LENGTH(t.target_department_ids) > 0 AND JSON_CONTAINS(t.target_department_ids, ?))`
-        );
-        visibilityParams.push(String(empInfo.department_id));
-      }
+      // Case 1: Specific employees are targeted
       if (empInfo.employee_id != null) {
-        orClauses.push(
-          `(JSON_LENGTH(t.target_employee_ids) > 0 AND JSON_CONTAINS(t.target_employee_ids, ?))`
-        );
-        visibilityParams.push(String(empInfo.employee_id));
+        orClauses.push(`(
+          (t.target_employee_ids IS NOT NULL AND t.target_employee_ids != '' AND t.target_employee_ids != '[]')
+          AND FIND_IN_SET(?, REPLACE(REPLACE(REPLACE(t.target_employee_ids, '[', ''), ']', ''), ' ', '')) > 0
+        )`);
+        visibilityParams.push(Number(empInfo.employee_id));
+      }
+
+      // Case 2: Specific departments are targeted (but no specific employees)
+      if (empInfo.department_id != null) {
+        let companyCondition = "";
+        if (empInfo.company_id != null) {
+          companyCondition = `AND (
+            (t.target_company_ids IS NULL OR t.target_company_ids = '' OR t.target_company_ids = '[]')
+            OR FIND_IN_SET(?, REPLACE(REPLACE(REPLACE(t.target_company_ids, '[', ''), ']', ''), ' ', '')) > 0
+          )`;
+        }
+        orClauses.push(`(
+          (t.target_employee_ids IS NULL OR t.target_employee_ids = '' OR t.target_employee_ids = '[]')
+          AND (t.target_department_ids IS NOT NULL AND t.target_department_ids != '' AND t.target_department_ids != '[]')
+          AND FIND_IN_SET(?, REPLACE(REPLACE(REPLACE(t.target_department_ids, '[', ''), ']', ''), ' ', '')) > 0
+          ${companyCondition}
+        )`);
+        visibilityParams.push(Number(empInfo.department_id));
+        if (empInfo.company_id != null) {
+          visibilityParams.push(Number(empInfo.company_id));
+        }
+      }
+
+      // Case 3: Only companies are targeted (no employees, no departments)
+      if (empInfo.company_id != null) {
+        orClauses.push(`(
+          (t.target_employee_ids IS NULL OR t.target_employee_ids = '' OR t.target_employee_ids = '[]')
+          AND (t.target_department_ids IS NULL OR t.target_department_ids = '' OR t.target_department_ids = '[]')
+          AND (t.target_company_ids IS NOT NULL AND t.target_company_ids != '' AND t.target_company_ids != '[]')
+          AND FIND_IN_SET(?, REPLACE(REPLACE(REPLACE(t.target_company_ids, '[', ''), ']', ''), ' ', '')) > 0
+        )`);
+        visibilityParams.push(Number(empInfo.company_id));
       }
 
       visibilitySql = `(${orClauses.join(" OR ")})`;
     }
 
-    console.log(`[getTasks] visibilitySql=`, visibilitySql);
-    console.log(`[getTasks] visibilityParams=`, visibilityParams);
+
 
     const [tasks] = await safeQuery(
       `SELECT

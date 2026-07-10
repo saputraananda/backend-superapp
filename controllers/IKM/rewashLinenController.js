@@ -117,7 +117,7 @@ export const getRewashLinens = async (req, res) => {
     const headerIds = headers.map((h) => h.id);
     const [details] = await safeIKMQuery(
       `SELECT d.id, d.rewash_id, d.hospital_linen_id, d.qty, d.created_at, d.updated_at,
-              hl.hospital_linen_name, l.linen_name AS master_linen_name,
+              hl.hospital_linen_name, hl.ownership_type, l.linen_name AS master_linen_name,
               sz.size_name, cl.color_name, mt.material_name
        FROM tr_rewash_detail d
        LEFT JOIN mst_hospital_linen hl ON hl.id = d.hospital_linen_id
@@ -141,6 +141,7 @@ export const getRewashLinens = async (req, res) => {
         hospital_linen_name: d.hospital_linen_name,
         linen_display_name: parts.join(" "),
         master_linen_name: d.master_linen_name,
+        ownership_type: d.ownership_type,
         qty: d.qty,
         created_at: d.created_at,
         updated_at: d.updated_at,
