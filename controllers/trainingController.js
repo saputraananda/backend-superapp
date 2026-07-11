@@ -256,32 +256,68 @@ export const createRequest = async (req, res) => {
     const requireSupervisor = jobLevel === 4;
     const initialStatus = requireSupervisor ? "Pending_Supervisor" : "Pending_HRD";
 
-    // Insert main training record
-    const [result] = await connection.query(
-      `INSERT INTO tr_training_management (
-        requester_id, department_id, request_date, topic, company_id, 
-        training_type, training_method, reasons_and_impact, 
-        current_competency, target_competency, training_target, 
-        priority_material, contact_person_id, supervisor_id, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        requester_id,
-        department_id,
-        request_date || new Date().toISOString().split("T")[0],
-        topic,
-        company_id,
-        training_type,
-        training_method,
-        reasons_and_impact,
-        current_competency,
-        target_competency,
-        training_target,
-        priority_material,
-        contact_person_id || null,
-        null, // supervisor_id set upon approval
-        initialStatus
-      ]
-    );
+    // Generate unique training_code with a retry loop to handle race conditions
+    let trainingCode = "";
+    let inserted = false;
+    let retries = 0;
+    const maxRetries = 5;
+    let result = null;
+
+    const year = new Date().getFullYear();
+
+    while (!inserted && retries < maxRetries) {
+      // Find the current max sequence number for this year
+      const [rows] = await connection.query(
+        `SELECT MAX(CAST(SUBSTRING_INDEX(training_code, '-', -1) AS UNSIGNED)) AS max_seq
+         FROM tr_training_management
+         WHERE training_code LIKE ?`,
+        [`TR-${year}-%`]
+      );
+      const nextNum = (rows[0]?.max_seq || 0) + 1;
+      trainingCode = `TR-${year}-${String(nextNum).padStart(3, "0")}`;
+
+      try {
+        const [insertRes] = await connection.query(
+          `INSERT INTO tr_training_management (
+            training_code, requester_id, department_id, request_date, topic, company_id, 
+            training_type, training_method, reasons_and_impact, 
+            current_competency, target_competency, training_target, 
+            priority_material, contact_person_id, supervisor_id, status
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            trainingCode,
+            requester_id,
+            department_id,
+            request_date || new Date().toISOString().split("T")[0],
+            topic,
+            company_id,
+            training_type,
+            training_method,
+            reasons_and_impact,
+            current_competency,
+            target_competency,
+            training_target,
+            priority_material,
+            contact_person_id || null,
+            null, // supervisor_id set upon approval
+            initialStatus
+          ]
+        );
+        result = insertRes;
+        inserted = true;
+      } catch (err) {
+        if (err.errno === 1062 || err.code === "ER_DUP_ENTRY") {
+          retries++;
+          console.warn(`[createRequest] Duplicate training_code ${trainingCode} detected, retrying (attempt ${retries})...`);
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    if (!inserted) {
+      throw new Error("Gagal generate kode training unik setelah beberapa kali percobaan.");
+    }
 
     const trainingId = result.insertId;
 
