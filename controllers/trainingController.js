@@ -31,7 +31,7 @@ const getEmployeeDetails = async (employeeId) => {
 // GET all training requests (with pagination, filters, search, and permissions)
 export const getRequests = async (req, res) => {
   try {
-    const { page = 1, limit = 25, search = "", status = "", company_id = "", date_from = "", date_to = "", training_type = "" } = req.query;
+    const { page = 1, limit = 25, search = "", status = "", company_id = "", date_from = "", date_to = "", training_type = "", only_me = "" } = req.query;
     const offset = (Number(page) - 1) * Number(limit);
     const currentEmpId = req.session.employeeId;
 
@@ -84,28 +84,10 @@ export const getRequests = async (req, res) => {
       params.push(date_to);
     }
 
-    // Role-based visibility
-    if (!isHR) {
-      if (isSpv) {
-        // Supervisor: can see their own requests, requests where they are assigned supervisor,
-        // requests from employees in their department, or where they are trainees/mentors.
-        whereClauses.push(`(
-          t.requester_id = ? OR 
-          t.supervisor_id = ? OR 
-          t.department_id = ? OR
-          t.id IN (SELECT training_id FROM tr_training_mentors WHERE employee_id = ?) OR
-          t.id IN (SELECT training_id FROM tr_training_trainees WHERE employee_id = ?)
-        )`);
-        params.push(currentEmpId, currentEmpId, currentEmp.department_id, currentEmpId, currentEmpId);
-      } else {
-        // Staff: can only see their own requests, or requests where they are trainees or mentors
-        whereClauses.push(`(
-          t.requester_id = ? OR 
-          t.id IN (SELECT training_id FROM tr_training_mentors WHERE employee_id = ?) OR
-          t.id IN (SELECT training_id FROM tr_training_trainees WHERE employee_id = ?)
-        )`);
-        params.push(currentEmpId, currentEmpId, currentEmpId);
-      }
+    // Filter to only show logged-in user's requests if requested
+    if (only_me === "true") {
+      whereClauses.push("t.requester_id = ?");
+      params.push(currentEmpId);
     }
 
     const whereSql = whereClauses.join(" AND ");
