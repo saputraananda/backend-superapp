@@ -11,7 +11,7 @@ export const getHospitals = async (req, res) => {
   try {
     const [rows] = await safeIKMQuery(
       `SELECT id, hospital_name, hospital_id, company_name, address,
-              latitude, longitude, created_at, updated_at
+              latitude, longitude, username, password, created_at, updated_at
        FROM mst_hospital
        ORDER BY hospital_name ASC`
     );
@@ -42,7 +42,7 @@ export const getHospitals = async (req, res) => {
 
 // ── CREATE ─────────────────────────────────────────────────────────────────
 export const createHospital = async (req, res) => {
-  const { hospital_name, hospital_id, company_name, address, latitude, longitude, rooms } = req.body;
+  const { hospital_name, hospital_id, company_name, address, latitude, longitude, username, password, rooms } = req.body;
 
   if (!hospital_name?.trim())
     return res.status(400).json({ message: "Nama rumah sakit wajib diisi" });
@@ -63,8 +63,8 @@ export const createHospital = async (req, res) => {
     }
 
     const [result] = await safeIKMQuery(
-      `INSERT INTO mst_hospital (hospital_name, hospital_id, company_name, address, latitude, longitude)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO mst_hospital (hospital_name, hospital_id, company_name, address, latitude, longitude, username, password)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         hospital_name.trim(),
         hospital_id?.trim() || null,
@@ -72,6 +72,8 @@ export const createHospital = async (req, res) => {
         address?.trim() || null,
         parseCoord(latitude),
         parseCoord(longitude),
+        username?.trim() || null,
+        password || null,
       ]
     );
 
@@ -97,7 +99,7 @@ export const createHospital = async (req, res) => {
 // ── UPDATE ─────────────────────────────────────────────────────────────────
 export const updateHospital = async (req, res) => {
   const { id } = req.params;
-  const { hospital_name, hospital_id, company_name, address, latitude, longitude, rooms } = req.body;
+  const { hospital_name, hospital_id, company_name, address, latitude, longitude, username, password, rooms } = req.body;
 
   if (!hospital_name?.trim())
     return res.status(400).json({ message: "Nama rumah sakit wajib diisi" });
@@ -124,7 +126,7 @@ export const updateHospital = async (req, res) => {
     await safeIKMQuery(
       `UPDATE mst_hospital
        SET hospital_name=?, hospital_id=?, company_name=?, address=?,
-           latitude=?, longitude=?, updated_at=NOW()
+           latitude=?, longitude=?, username=?, password=?, updated_at=NOW()
        WHERE id=?`,
       [
         hospital_name.trim(),
@@ -133,6 +135,8 @@ export const updateHospital = async (req, res) => {
         address?.trim() || null,
         parseCoord(latitude),
         parseCoord(longitude),
+        username?.trim() || null,
+        password || null,
         id,
       ]
     );
