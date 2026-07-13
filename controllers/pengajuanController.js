@@ -231,6 +231,18 @@ export const getVendors = async (_req, res) => {
     }
 };
 
+export const getClassifications = async (_req, res) => {
+    try {
+        const data = await safeQuery(
+            `SELECT id, classification_name FROM mst_purchase_classification WHERE is_active = 1 ORDER BY classification_name`
+        );
+        res.json({ data });
+    } catch (err) {
+        console.error("[getClassifications]", err);
+        res.status(500).json({ message: "Gagal memuat klasifikasi" });
+    }
+};
+
 // ════════════════════════════════════════════════════════════════════════════
 // PERIODS — daftar periode cutoff yang tersedia (untuk dropdown filter)
 //
@@ -697,7 +709,7 @@ export const getDetail = async (req, res) => {
         const rows = await safeQuery(
             `SELECT pr.*, e.full_name AS pengaju_name, e.job_level_id AS pengaju_job_level,
                     d.department_name, s.satuan_name, c.company_name, o.full_name AS outlet_name,
-                    bnk.bank_name
+                    bnk.bank_name, pc.classification_name
              FROM tr_purchase_request pr
              LEFT JOIN mst_employee   e   ON e.employee_id   = pr.employee_id
              LEFT JOIN mst_department d   ON d.department_id = pr.department_id
@@ -705,6 +717,7 @@ export const getDetail = async (req, res) => {
              LEFT JOIN mst_company    c   ON c.company_id    = pr.company_id
              LEFT JOIN mst_outlet     o   ON o.id            = pr.outlet_id
              LEFT JOIN mst_bank       bnk ON bnk.bank_id     = pr.bank_id
+             LEFT JOIN mst_purchase_classification pc ON pc.id = pr.classification_id
              WHERE pr.pr_id = ? AND pr.is_deleted = 0`,
             [id]
         );
@@ -1945,8 +1958,17 @@ export const processPayment = async (req, res) => {
             return res.status(400).json({ message: "Pengajuan belum siap untuk pembayaran" });
         }
 
-        const classification = ["inventory", "expense"].includes(req.body.classification) ? req.body.classification : null;
-        if (!classification) return res.status(400).json({ message: "Klasifikasi (Inventory/Expense) wajib dipilih" });
+        const classificationId = req.body.classification_id ? Number(req.body.classification_id) : null;
+        if (!classificationId) return res.status(400).json({ message: "Klasifikasi wajib dipilih" });
+
+        let classificationName = "—";
+        if (classificationId) {
+            const [classRow] = await safeQuery(
+                `SELECT classification_name FROM mst_purchase_classification WHERE id = ?`,
+                [classificationId]
+            );
+            classificationName = classRow?.classification_name || "—";
+        }
 
         const paymentMethod = ["cash", "kredit"].includes(req.body.payment_method) ? req.body.payment_method : null;
         if (!paymentMethod) return res.status(400).json({ message: "Metode pembayaran (Cash/Kredit) wajib dipilih" });
@@ -1971,6 +1993,8 @@ export const processPayment = async (req, res) => {
         const paymentNote    = req.body.payment_note ? sanitize(req.body.payment_note) : null;
         const nominalBayarRaw = req.body.nominal_bayar ? Number(req.body.nominal_bayar) : null;
         const nominalBayar   = nominalBayarRaw || null;
+        const adminFeeRaw    = req.body.admin_fee ? Number(req.body.admin_fee) : null;
+        const adminFee       = adminFeeRaw || null;
 
         const files = req.files || [];
         if (!files.length) return res.status(400).json({ message: "Bukti pembayaran wajib dilampirkan" });
@@ -1981,10 +2005,11 @@ export const processPayment = async (req, res) => {
             await safeQuery(
                 `UPDATE tr_purchase_request SET
                     status = 7,
-                    classification = ?,
+                    classification_id = ?,
                     payment_method = ?,
                     termin_value = ?, termin_unit = ?, jatuh_tempo = ?,
                     nominal_bayar = ?,
+                    admin_fee = ?,
                     paid_by = ?, paid_at = NOW(),
                     payment_proof_path = ?,
                     payment_note = ?,
@@ -1992,8 +2017,8 @@ export const processPayment = async (req, res) => {
                     invoice_proof_path = ?,
                     updated_at = NOW()
                  WHERE pr_id = ?`,
-                [classification, paymentMethod, terminValue, terminUnit, jatuhTempo,
-                 nominalBayar, employeeId, proofPath, paymentNote,
+                [classificationId, paymentMethod, terminValue, terminUnit, jatuhTempo,
+                 nominalBayar, adminFee, employeeId, proofPath, paymentNote,
                  employeeId, proofPath, id]
             );
 
@@ -2018,8 +2043,11 @@ export const processPayment = async (req, res) => {
             const nominalLabel = nominalBayar
                 ? ` | Nominal: Rp ${new Intl.NumberFormat("id-ID").format(nominalBayar)}`
                 : "";
+            const adminFeeLabel = adminFee
+                ? ` | Biaya Admin: Rp ${new Intl.NumberFormat("id-ID").format(adminFee)}`
+                : "";
             await writeLog(id, "paid", employeeId, me.full_name,
-                `Pembayaran reimburse dilakukan | Metode: ${paymentMethod} | Klasifikasi: ${classification}${nominalLabel}${paymentNote ? ` | ${paymentNote}` : ""}`);
+                `Pembayaran reimburse dilakukan | Metode: ${paymentMethod} | Klasifikasi: ${classificationName}${nominalLabel}${adminFeeLabel}${paymentNote ? ` | ${paymentNote}` : ""}`);
             await writeLog(id, "completed", employeeId, me.full_name,
                 "Reimburse selesai — bukti pembayaran dilampirkan oleh Team Finance");
 
@@ -2030,16 +2058,17 @@ export const processPayment = async (req, res) => {
         await safeQuery(
             `UPDATE tr_purchase_request SET
                 status = 6,
-                classification = ?,
+                classification_id = ?,
                 payment_method = ?,
                 termin_value = ?, termin_unit = ?, jatuh_tempo = ?,
                 nominal_bayar = ?,
+                admin_fee = ?,
                 paid_by = ?, paid_at = NOW(),
                 payment_proof_path = ?,
                 payment_note = ?,
                 updated_at = NOW()
              WHERE pr_id = ?`,
-            [classification, paymentMethod, terminValue, terminUnit, jatuhTempo, nominalBayar, employeeId, proofPath, paymentNote, id]
+            [classificationId, paymentMethod, terminValue, terminUnit, jatuhTempo, nominalBayar, adminFee, employeeId, proofPath, paymentNote, id]
         );
 
         if (paymentMethod === "cash") {
@@ -2066,7 +2095,10 @@ export const processPayment = async (req, res) => {
                 ? ` | Total Tagihan Kredit: Rp ${new Intl.NumberFormat("id-ID").format(nominalBayar)}`
                 : ` | Nominal Bayar: Rp ${new Intl.NumberFormat("id-ID").format(nominalBayar)}`)
             : "";
-        const noteText = `${paymentMethod === "kredit" ? "PR diterbitkan (Kredit)" : "Pembayaran dilakukan"} | Metode: ${paymentMethod} | Klasifikasi: ${classification}${terminLabel}${nominalLabel}${paymentNote ? ` | ${paymentNote}` : ""}`;
+        const adminFeeLabel = adminFee
+            ? ` | Biaya Admin: Rp ${new Intl.NumberFormat("id-ID").format(adminFee)}`
+            : "";
+        const noteText = `${paymentMethod === "kredit" ? "PR diterbitkan (Kredit)" : "Pembayaran dilakukan"} | Metode: ${paymentMethod} | Klasifikasi: ${classificationName}${terminLabel}${nominalLabel}${adminFeeLabel}${paymentNote ? ` | ${paymentNote}` : ""}`;
         await writeLog(id, "paid", employeeId, me.full_name, noteText);
 
         const successMsg = paymentMethod === "kredit"
@@ -2171,6 +2203,125 @@ export const completePR = async (req, res) => {
     } catch (err) {
         console.error("[completePR]", err);
         res.status(500).json({ message: "Gagal menyelesaikan pengajuan" });
+    }
+};
+
+export const updatePaymentInfo = async (req, res) => {
+    try {
+        const employeeId = getEmployeeId(req);
+        if (!employeeId) return res.status(401).json({ message: "Unauthorized" });
+
+        const me = await fetchEmployee(employeeId);
+        if (!me) return res.status(404).json({ message: "Employee tidak ditemukan" });
+        if (!isFinance(me.position_name)) {
+            return res.status(403).json({ message: "Akses ditolak: hanya Finance" });
+        }
+
+        const { id } = req.params;
+        const rows = await safeQuery(
+            `SELECT * FROM tr_purchase_request WHERE pr_id = ? AND is_deleted = 0`,
+            [id]
+        );
+        if (!rows.length) return res.status(404).json({ message: "Data tidak ditemukan" });
+        const pr = rows[0];
+
+        if (Number(pr.status) < 6) {
+            return res.status(400).json({ message: "Pengajuan belum dibayar" });
+        }
+
+        const classificationId = req.body.classification_id ? Number(req.body.classification_id) : null;
+        if (!classificationId) return res.status(400).json({ message: "Klasifikasi wajib dipilih" });
+
+        const paymentMethod = ["cash", "kredit"].includes(req.body.payment_method) ? req.body.payment_method : null;
+        if (!paymentMethod) return res.status(400).json({ message: "Metode pembayaran wajib dipilih" });
+
+        const nominalBayarRaw = req.body.nominal_bayar ? Number(req.body.nominal_bayar) : null;
+        const nominalBayar   = nominalBayarRaw || null;
+        if (!nominalBayar) return res.status(400).json({ message: "Nominal bayar wajib diisi" });
+
+        const adminFeeRaw    = req.body.admin_fee ? Number(req.body.admin_fee) : null;
+        const adminFee       = adminFeeRaw || null;
+
+        // Fetch new classification name
+        let classificationName = "—";
+        if (classificationId) {
+            const [classRow] = await safeQuery(
+                `SELECT classification_name FROM mst_purchase_classification WHERE id = ?`,
+                [classificationId]
+            );
+            classificationName = classRow?.classification_name || "—";
+        }
+
+        // Fetch old classification name
+        let oldClassificationName = "—";
+        if (pr.classification_id) {
+            const [oldClassRow] = await safeQuery(
+                `SELECT classification_name FROM mst_purchase_classification WHERE id = ?`,
+                [pr.classification_id]
+            );
+            oldClassificationName = oldClassRow?.classification_name || "—";
+        }
+
+        const fmtRp = (n) => n ? `Rp ${new Intl.NumberFormat("id-ID").format(n)}` : "—";
+
+        const oldNominal = fmtRp(pr.nominal_bayar);
+        const newNominal = fmtRp(nominalBayar);
+        const oldMethod = pr.payment_method || "—";
+        const newMethod = paymentMethod;
+        const oldAdmin = fmtRp(pr.admin_fee);
+        const newAdmin = fmtRp(adminFee);
+
+        await safeQuery(
+            `UPDATE tr_purchase_request SET
+                classification_id = ?,
+                payment_method = ?,
+                nominal_bayar = ?,
+                admin_fee = ?,
+                updated_at = NOW()
+             WHERE pr_id = ?`,
+            [classificationId, paymentMethod, nominalBayar, adminFee, id]
+        );
+
+        if (paymentMethod === "cash") {
+            const payRows = await safeQuery(
+                `SELECT payment_id FROM tr_purchase_request_payment WHERE pr_id = ? ORDER BY paid_at DESC LIMIT 1`,
+                [id]
+            );
+            if (payRows.length) {
+                await safeQuery(
+                    `UPDATE tr_purchase_request_payment SET
+                        nominal_bayar = ?,
+                        paid_by = ?,
+                        paid_by_name = ?
+                     WHERE payment_id = ?`,
+                    [nominalBayar, employeeId, me.full_name, payRows[0].payment_id]
+                );
+            } else {
+                await safeQuery(
+                    `INSERT INTO tr_purchase_request_payment
+                        (pr_id, nominal_bayar, note, paid_by, paid_by_name, paid_at)
+                     VALUES (?, ?, ?, ?, ?, NOW())`,
+                    [id, nominalBayar, "Diubah ke Cash", employeeId, me.full_name]
+                );
+            }
+        } else if (paymentMethod === "kredit") {
+            await safeQuery(
+                `DELETE FROM tr_purchase_request_payment WHERE pr_id = ?`,
+                [id]
+            );
+        }
+
+        const logMsg = `Info pembayaran diupdate oleh Finance | ` +
+            `Nominal: ${oldNominal} -> ${newNominal} | ` +
+            `Metode: ${oldMethod} -> ${newMethod} | ` +
+            `Klasifikasi: ${oldClassificationName} -> ${classificationName} | ` +
+            `Admin Fee: ${oldAdmin} -> ${newAdmin}`;
+        await writeLog(id, "update_payment", employeeId, me.full_name, logMsg);
+
+        res.json({ message: "Info pembayaran berhasil diupdate" });
+    } catch (err) {
+        console.error("[updatePaymentInfo]", err);
+        res.status(500).json({ message: "Gagal mengupdate info pembayaran" });
     }
 };
 

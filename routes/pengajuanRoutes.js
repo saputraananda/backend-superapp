@@ -3,6 +3,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { uploadPurchase } from "../middleware/upload.js";
 import {
     getSatuan, getCompanies, getOutlets, getVendors, getPeriods, getDepartments,
+    getClassifications,
     getDashboard,
     listMy, listDepartment, listApproval, listAll, listGaReview, getDetail,
     listFinanceReview, listPaymentPending,
@@ -12,6 +13,7 @@ import {
     approveGA, rejectGA, getPOData,
     approveFinance, rejectFinance,
     processPayment, rejectPayment, completePR,
+    updatePaymentInfo,
 } from "../controllers/pengajuanController.js";
 
 const router = Router();
@@ -22,7 +24,8 @@ router.get("/companies",   requireAuth, getCompanies);
 router.get("/outlets",     requireAuth, getOutlets);
 router.get("/vendors",     requireAuth, getVendors);
 router.get("/departments", requireAuth, getDepartments);
-router.get("/periods",     requireAuth, getPeriods);
+router.get("/periods",         requireAuth, getPeriods);
+router.get("/classifications", requireAuth, getClassifications);
 
 // ── Dashboard & list ──
 router.get("/dashboard",            requireAuth, getDashboard);
@@ -61,5 +64,6 @@ router.post("/:id/reject-finance",  requireAuth, rejectFinance);
 router.post("/:id/pay",           requireAuth, uploadPurchase.array("attachments", 5), processPayment);
 router.post("/:id/reject-payment", requireAuth, rejectPayment);
 router.post("/:id/complete",       requireAuth, uploadPurchase.array("attachments", 1), completePR);
+router.put("/:id/payment-info",    requireAuth, updatePaymentInfo);
 
 export default router;
