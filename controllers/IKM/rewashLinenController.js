@@ -116,7 +116,7 @@ export const getRewashLinens = async (req, res) => {
     // Fetch all details for these headers
     const headerIds = headers.map((h) => h.id);
     const [details] = await safeIKMQuery(
-      `SELECT d.id, d.rewash_id, d.hospital_linen_id, d.qty, d.created_at, d.updated_at,
+      `SELECT d.id, d.rewash_id, d.hospital_linen_id, d.qty, d.clear, d.detail_notes, d.created_at, d.updated_at,
               hl.hospital_linen_name, hl.ownership_type, l.linen_name AS master_linen_name,
               sz.size_name, cl.color_name, mt.material_name
        FROM tr_rewash_detail d
@@ -143,6 +143,8 @@ export const getRewashLinens = async (req, res) => {
         master_linen_name: d.master_linen_name,
         ownership_type: d.ownership_type,
         qty: d.qty,
+        clear: d.clear ?? 0,
+        detail_notes: d.detail_notes || null,
         created_at: d.created_at,
         updated_at: d.updated_at,
       });
@@ -256,26 +258,50 @@ export const createRewashLinen = async (req, res) => {
   }
 };
 
-// ── PUT Update detail qty ──
+// ── PUT Update detail qty / clear / detail_notes ──
 export const updateRewashDetail = async (req, res) => {
   const { id } = req.params;
   try {
     const [exist] = await safeIKMQuery(
-      "SELECT id, rewash_id FROM tr_rewash_detail WHERE id = ?", [id]
+      "SELECT id, rewash_id, qty FROM tr_rewash_detail WHERE id = ?", [id]
     );
     if (!exist.length) {
       return res.status(404).json({ message: "Data detail rewash tidak ditemukan" });
     }
 
-    const { qty } = req.body;
-    const cleanQty = toUInt(qty, 0);
+    const { qty, clear, detail_notes } = req.body;
+    const fields = [];
+    const vals   = [];
 
+    if (qty !== undefined) {
+      const cleanQty = toUInt(qty, 0);
+      fields.push("qty = ?");
+      vals.push(cleanQty);
+    }
+
+    if (clear !== undefined) {
+      const currentQty = exist[0].qty;
+      const cleanClear = Math.min(toUInt(clear, 0), currentQty);
+      fields.push("`clear` = ?");
+      vals.push(cleanClear);
+    }
+
+    if (detail_notes !== undefined) {
+      fields.push("detail_notes = ?");
+      vals.push(detail_notes?.trim() || null);
+    }
+
+    if (!fields.length) {
+      return res.status(400).json({ message: "Tidak ada field yang diperbarui" });
+    }
+
+    vals.push(id);
     await safeIKMQuery(
-      `UPDATE tr_rewash_detail SET qty = ?, updated_at = NOW() WHERE id = ?`,
-      [cleanQty, id]
+      `UPDATE tr_rewash_detail SET ${fields.join(", ")}, updated_at = NOW() WHERE id = ?`,
+      vals
     );
 
-    res.json({ message: "Qty rewash berhasil diperbarui" });
+    res.json({ message: "Data rewash berhasil diperbarui" });
   } catch (err) {
     console.error("updateRewashDetail error:", err);
     res.status(500).json({ message: err.message });
