@@ -202,11 +202,21 @@ export const getRequestById = async (req, res) => {
       [id]
     );
 
+    // Fetch evidence files from dedicated table
+    const [evidence] = await safeQuery(
+      `SELECT id, file_path, created_at
+       FROM tr_training_evidence
+       WHERE training_id = ?
+       ORDER BY id ASC`,
+      [id]
+    );
+
     res.json({
       training,
       mentors,
       trainees,
-      vendors
+      vendors,
+      evidence
     });
   } catch (err) {
     console.error("[getRequestById] Error:", err);
@@ -792,7 +802,10 @@ export const scheduleHRD = async (req, res) => {
 
 // HRD: Complete training (upload evidence)
 export const completeHRD = async (req, res) => {
+  const connection = await pool.getConnection();
   try {
+    await connection.beginTransaction();
+
     const { id } = req.params;
     const currentEmpId = req.session.employeeId;
 
@@ -805,7 +818,7 @@ export const completeHRD = async (req, res) => {
       return res.status(403).json({ message: "Hanya HRD yang dapat menyelesaikan training" });
     }
 
-    const [rows] = await safeQuery("SELECT * FROM tr_training_management WHERE id = ?", [id]);
+    const [rows] = await connection.query("SELECT * FROM tr_training_management WHERE id = ? LIMIT 1", [id]);
     if (rows.length === 0) {
       return res.status(404).json({ message: "Pengajuan tidak ditemukan" });
     }
@@ -821,23 +834,38 @@ export const completeHRD = async (req, res) => {
       return res.status(400).json({ message: "Minimal harus mengunggah 1 bukti dokumen atau foto" });
     }
 
-    // Store filenames as JSON array
-    const filePaths = files.map((file) => `training_evidence/${file.filename}`);
-
-    await safeQuery(
+    // Update status training
+    await connection.query(
       `UPDATE tr_training_management SET
         status = 'Selesai',
-        hrd_id = ?,
-        evidence_files = ?
+        hrd_id = ?
        WHERE id = ?`,
-      [currentEmpId, JSON.stringify(filePaths), id]
+      [currentEmpId, id]
     );
 
+    // Insert each file as separate row in tr_training_evidence
+    const filePaths = [];
+    for (const file of files) {
+      const filePath = `training_evidence/${file.filename}`;
+      await connection.query(
+        `INSERT INTO tr_training_evidence (training_id, file_path) VALUES (?, ?)`,
+        [id, filePath]
+      );
+      filePaths.push(filePath);
+    }
+
+    await connection.commit();
     notifyUpdate("update", null);
-    res.json({ message: "Training berhasil diselesaikan dengan bukti acara diunggah.", files: filePaths });
+    res.json({
+      message: "Training berhasil diselesaikan dengan bukti acara diunggah.",
+      files: filePaths
+    });
   } catch (err) {
+    await connection.rollback();
     console.error("[completeHRD] Error:", err);
     res.status(500).json({ message: "Gagal menyelesaikan training", error: err.message });
+  } finally {
+    connection.release();
   }
 };
 
