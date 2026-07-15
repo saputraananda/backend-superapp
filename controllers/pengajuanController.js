@@ -1996,6 +1996,20 @@ export const processPayment = async (req, res) => {
         const adminFeeRaw    = req.body.admin_fee ? Number(req.body.admin_fee) : null;
         const adminFee       = adminFeeRaw || null;
 
+        // Waktu pembayaran: gunakan yang dikirim frontend, fallback ke NOW() jika kosong
+        const paidAtRaw = req.body.paid_at ? String(req.body.paid_at).trim() : null;
+        // Validasi format datetime sederhana (YYYY-MM-DDTHH:mm atau YYYY-MM-DD HH:mm)
+        const paidAtValue = paidAtRaw && /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(paidAtRaw)
+            ? paidAtRaw.replace("T", " ")  // MySQL-compatible: 'YYYY-MM-DD HH:mm'
+            : null;
+        // Untuk SQL: jika ada nilai, gunakan literal; jika tidak, gunakan NOW()
+        // Kita pisah array params agar lebih fleksibel
+        const paidAtSQL   = paidAtValue ? "?" : "NOW()";
+        const paidAtParam = paidAtValue ? [paidAtValue] : [];
+        // Sama untuk INSERT tr_purchase_request_payment
+        const paidAtPaymentSQL   = paidAtValue ? "?" : "NOW()";
+        const paidAtPaymentParam = paidAtValue ? [paidAtValue] : [];
+
         const files = req.files || [];
         if (!files.length) return res.status(400).json({ message: "Bukti pembayaran wajib dilampirkan" });
         const proofPath = `purchase/${files[0].filename}`;
@@ -2010,24 +2024,24 @@ export const processPayment = async (req, res) => {
                     termin_value = ?, termin_unit = ?, jatuh_tempo = ?,
                     nominal_bayar = ?,
                     admin_fee = ?,
-                    paid_by = ?, paid_at = NOW(),
+                    paid_by = ?, paid_at = ${paidAtSQL},
                     payment_proof_path = ?,
                     payment_note = ?,
-                    completed_by = ?, completed_at = NOW(),
+                    completed_by = ?, completed_at = ${paidAtSQL},
                     invoice_proof_path = ?,
                     updated_at = NOW()
                  WHERE pr_id = ?`,
                 [classificationId, paymentMethod, terminValue, terminUnit, jatuhTempo,
-                 nominalBayar, adminFee, employeeId, proofPath, paymentNote,
-                 employeeId, proofPath, id]
+                 nominalBayar, adminFee, employeeId, ...paidAtParam, proofPath, paymentNote,
+                 employeeId, ...paidAtParam, proofPath, id]
             );
 
             if (paymentMethod === "cash") {
                 await safeQuery(
                     `INSERT INTO tr_purchase_request_payment
                         (pr_id, nominal_bayar, proof_path, note, paid_by, paid_by_name, paid_at)
-                     VALUES (?, ?, ?, ?, ?, ?, NOW())`,
-                    [id, nominalBayar || 0, proofPath, paymentNote, employeeId, me.full_name]
+                     VALUES (?, ?, ?, ?, ?, ?, ${paidAtPaymentSQL})`,
+                    [id, nominalBayar || 0, proofPath, paymentNote, employeeId, me.full_name, ...paidAtPaymentParam]
                 );
             }
 
@@ -2063,20 +2077,20 @@ export const processPayment = async (req, res) => {
                 termin_value = ?, termin_unit = ?, jatuh_tempo = ?,
                 nominal_bayar = ?,
                 admin_fee = ?,
-                paid_by = ?, paid_at = NOW(),
+                paid_by = ?, paid_at = ${paidAtSQL},
                 payment_proof_path = ?,
                 payment_note = ?,
                 updated_at = NOW()
              WHERE pr_id = ?`,
-            [classificationId, paymentMethod, terminValue, terminUnit, jatuhTempo, nominalBayar, adminFee, employeeId, proofPath, paymentNote, id]
+            [classificationId, paymentMethod, terminValue, terminUnit, jatuhTempo, nominalBayar, adminFee, employeeId, ...paidAtParam, proofPath, paymentNote, id]
         );
 
         if (paymentMethod === "cash") {
             await safeQuery(
                 `INSERT INTO tr_purchase_request_payment
                     (pr_id, nominal_bayar, proof_path, note, paid_by, paid_by_name, paid_at)
-                 VALUES (?, ?, ?, ?, ?, ?, NOW())`,
-                [id, nominalBayar || 0, proofPath, paymentNote, employeeId, me.full_name]
+                 VALUES (?, ?, ?, ?, ?, ?, ${paidAtPaymentSQL})`,
+                [id, nominalBayar || 0, proofPath, paymentNote, employeeId, me.full_name, ...paidAtPaymentParam]
             );
         }
 
