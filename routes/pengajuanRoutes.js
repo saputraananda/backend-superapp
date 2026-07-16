@@ -55,7 +55,7 @@ router.delete("/attachment/:attachmentId", requireAuth, deleteAttachment);
 // ── Approval flow ──
 router.post("/:id/approve",         requireAuth, approvePR);
 router.post("/:id/reject",          requireAuth, rejectPR);
-router.post("/:id/approve-ga",      requireAuth, approveGA);
+router.post("/:id/approve-ga",      requireAuth, uploadPurchase.single("ga_invoice"), approveGA);
 router.post("/:id/reject-ga",       requireAuth, rejectGA);
 router.post("/:id/approve-finance", requireAuth, approveFinance);
 router.post("/:id/reject-finance",  requireAuth, rejectFinance);

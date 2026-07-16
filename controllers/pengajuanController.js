@@ -1546,15 +1546,20 @@ export const approveGA = async (req, res) => {
             if (!vendorName) return res.status(400).json({ message: "Keterangan offline wajib diisi" });
         }
 
+        let gaInvoicePath = pr.ga_invoice; // keep existing by default
+        if (req.file) {
+            gaInvoicePath = `purchase/${req.file.filename}`;
+        }
+
         if (isVendorUpdateOnly) {
             // Hanya update vendor info (status tetap 4)
             await safeQuery(
                 `UPDATE tr_purchase_request SET
                     ga_qty = ?, ga_merk = ?, vendor = ?, vendor_mode = ?, vendor_id = ?,
-                    link_url = ?, link_title = ?, ga_note = ?,
+                    link_url = ?, link_title = ?, ga_note = ?, ga_invoice = ?,
                     updated_at = NOW()
                  WHERE pr_id = ?`,
-                [gaQty, gaMerk, vendorName, vendorMode, vendorId, linkUrl, linkTitle, gaNote, id]
+                [gaQty, gaMerk, vendorName, vendorMode, vendorId, linkUrl, linkTitle, gaNote, gaInvoicePath, id]
             );
         } else {
             // Full GA approval: set status 4
@@ -1563,10 +1568,10 @@ export const approveGA = async (req, res) => {
                     status = 4,
                     approved_ga_by = ?, approved_ga_at = NOW(),
                     ga_qty = ?, ga_merk = ?, vendor = ?, vendor_mode = ?, vendor_id = ?,
-                    link_url = ?, link_title = ?, ga_note = ?,
+                    link_url = ?, link_title = ?, ga_note = ?, ga_invoice = ?,
                     updated_at = NOW()
                  WHERE pr_id = ?`,
-                [employeeId, gaQty, gaMerk, vendorName, vendorMode, vendorId, linkUrl, linkTitle, gaNote, id]
+                [employeeId, gaQty, gaMerk, vendorName, vendorMode, vendorId, linkUrl, linkTitle, gaNote, gaInvoicePath, id]
             );
         }
 
@@ -1576,6 +1581,7 @@ export const approveGA = async (req, res) => {
             gaQty   ? `Qty direvisi: ${gaQty}` : null,
             gaMerk  ? `Merk direvisi: ${gaMerk}` : null,
             gaNote  ? `Catatan: ${gaNote}` : null,
+            req.file ? "Invoice GA dilampirkan" : null,
         ].filter(Boolean).join(" | ");
 
         await writeLog(id, isVendorUpdateOnly ? "vendor_updated" : "approved_ga", employeeId, me.full_name, noteParts);
