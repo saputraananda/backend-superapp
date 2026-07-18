@@ -36,7 +36,6 @@ export const getEmployeeStats = async (req, res) => {
 };
 
 export const getApps = async (req, res) => {
-  console.log("[API] /apps endpoint hit");
 
   const userId = req.session.userId;
   if (!userId) {
@@ -74,7 +73,6 @@ export const getApps = async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 export const getSalesStats = async (req, res) => {
   try {
-    console.log("[API] /apps/smartlink/sales-stats endpoint hit");
 
     // Query kompleks dari user (dengan sedikit penyesuaian)
     const sql = `

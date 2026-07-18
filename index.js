@@ -48,11 +48,12 @@ import linenReportRoutes from "./routes/IKM/linenReportRoutes.js";
 import masterLinenIKMRoutes from "./routes/IKM/masterLinenIKMRoutes.js";
 import masterDataIKMRoutes from "./routes/IKM/masterDataIKMRoutes.js";
 import hospitalLinenRoutes from "./routes/IKM/hospitalLinenRoutes.js";
-import rewashLinenRoutes from "./routes/rewashLinenRoutes.js";
+import rewashLinenRoutes from "./routes/IKM/rewashLinenRoutes.js";
 import leaderDailyReportRoutes from "./routes/IKM/leaderDailyReportRoutes.js";
 import kasbonRoutes from "./routes/IKM/kasbonRoutes.js";
 import absensiManajemenIKMRoutes from "./routes/IKM/absensiManajemenIKMRoutes.js";
 import stockOpnameIKMRoutes from "./routes/IKM/stockOpnameIKMRoutes.js";
+import linenTransactionRoutes from "./routes/IKM/linenTransactionRoutes.js";
 import operationalRoutes from "./routes/operationalRoutes.js";
 import internalRoutes from "./routes/internalRoutes.js";
 import complaintRoutes from "./routes/complaintRoutes.js";
@@ -84,16 +85,12 @@ const isProd = process.env.NODE_ENV === "production";
 const envFile = isProd ? ".env.prod" : ".env";
 if (fs.existsSync(path.join(process.cwd(), envFile))) {
   dotenv.config({ path: envFile });
-  console.log(`Loaded env file: ${envFile}`);
 } else {
   // 2) Fallback: load default .env jika ada, atau rely on Hostinger panel env
   dotenv.config();
-  console.log(
-    `ℹEnv file ${envFile} not found. Using default dotenv (if any) + process env from panel.`
-  );
 }
 
-console.log("Starting AloraSuperApp API...");
+
 
 // =========================
 // Validate required env
@@ -150,7 +147,7 @@ const corsOptions = {
 
     if (allowedOrigins.includes(origin)) return cb(null, true);
 
-    console.log("CORS blocked origin:", origin, "allowed:", allowedOrigins);
+    console.error("[CORS] Blocked request from origin:", origin);
     return cb(new Error("Not allowed by CORS"));
   },
   credentials: true,
@@ -189,9 +186,7 @@ sessionStore.on("error", (err) => {
   console.error("[SessionStore] Error (server tetap jalan):", err?.code ?? err?.message ?? err);
 });
 
-sessionStore.on("connect", () => {
-  console.log("MySQL session store connected");
-});
+
 
 // Session middleware
 app.use(
@@ -301,6 +296,7 @@ app.use("/ikm/leader-daily-report", leaderDailyReportRoutes);
 app.use("/ikm/kasbon", kasbonRoutes);
 app.use("/ikm/absensi-manajemen", absensiManajemenIKMRoutes);
 app.use("/ikm/stock-opname", stockOpnameIKMRoutes);
+app.use("/ikm/linen-transactions", linenTransactionRoutes);
 app.use("/operational", operationalRoutes);
 app.use("/internal", internalRoutes);
 app.use("/complaints", complaintRoutes);
@@ -351,9 +347,7 @@ app.use((err, req, res, next) => {
 // Start server
 // =========================
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`✅ API running on port ${PORT}`);
-  console.log(`✅ Environment: ${process.env.NODE_ENV}`);
-  console.log(`✅ CORS Origins: ${allowedOrigins.join(", ") || "All"}`);
+  console.log(`✅ AloraSuperApp API running on port ${PORT} [${process.env.NODE_ENV ?? "development"}]`);
 
   // Ping DB setiap 30 detik
   startDbPing(30_000);
@@ -372,11 +366,9 @@ app.listen(PORT, "0.0.0.0", () => {
 // =========================
 async function shutdown(signal) {
   try {
-    console.log(`${signal} received: closing resources...`);
     await pool.end();
-    console.log("✅ Database pool closed");
   } catch (e) {
-    console.error("❌ Error during shutdown:", e);
+    console.error(`[Shutdown] Error closing DB pool (${signal}):`, e?.message ?? e);
   } finally {
     process.exit(0);
   }

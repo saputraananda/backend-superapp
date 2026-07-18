@@ -221,9 +221,11 @@ export const createRewashLinen = async (req, res) => {
       [date, Number(hospital_id), reporter_name.trim()]
     );
 
+    let oldSnapshot = null;
     let headerId;
     if (existing.length) {
       headerId = existing[0].id;
+      oldSnapshot = await getRewashSnapshot(headerId);
       // Update notes if provided
       if (notes != null) {
         await safeIKMQuery(
@@ -246,6 +248,10 @@ export const createRewashLinen = async (req, res) => {
        VALUES (?, ?, ?)`,
       [headerId, Number(hospital_linen_id), cleanQty]
     );
+
+    const action = existing.length ? "UPDATE" : "INSERT";
+    const newSnapshot = await getRewashSnapshot(headerId);
+    await writeRewashAuditLog(headerId, action, req, oldSnapshot, newSnapshot);
 
     res.status(201).json({
       message: "Data rewash linen berhasil ditambahkan",
@@ -295,11 +301,17 @@ export const updateRewashDetail = async (req, res) => {
       return res.status(400).json({ message: "Tidak ada field yang diperbarui" });
     }
 
+    const rewashId = exist[0].rewash_id;
+    const oldSnapshot = await getRewashSnapshot(rewashId);
+
     vals.push(id);
     await safeIKMQuery(
       `UPDATE tr_rewash_detail SET ${fields.join(", ")}, updated_at = NOW() WHERE id = ?`,
       vals
     );
+
+    const newSnapshot = await getRewashSnapshot(rewashId);
+    await writeRewashAuditLog(rewashId, "UPDATE", req, oldSnapshot, newSnapshot);
 
     res.json({ message: "Data rewash berhasil diperbarui" });
   } catch (err) {
@@ -320,6 +332,7 @@ export const deleteRewashDetail = async (req, res) => {
     }
 
     const rewashId = exist[0].rewash_id;
+    const oldSnapshot = await getRewashSnapshot(rewashId);
 
     await safeIKMQuery("DELETE FROM tr_rewash_detail WHERE id = ?", [id]);
 
@@ -330,6 +343,10 @@ export const deleteRewashDetail = async (req, res) => {
     );
     if (remaining[0].cnt === 0) {
       await safeIKMQuery("DELETE FROM tr_rewash WHERE id = ?", [rewashId]);
+      await safeIKMQuery("DELETE FROM tr_rewash_audit WHERE rewash_id = ?", [rewashId]);
+    } else {
+      const newSnapshot = await getRewashSnapshot(rewashId);
+      await writeRewashAuditLog(rewashId, "UPDATE", req, oldSnapshot, newSnapshot);
     }
 
     res.json({ message: "Data rewash berhasil dihapus" });
@@ -360,6 +377,8 @@ export const updateRewashHeader = async (req, res) => {
       return res.status(400).json({ message: "Tanggal laporan tidak valid" });
     }
 
+    const oldSnapshot = await getRewashSnapshot(id);
+
     await safeIKMQuery(
       `UPDATE tr_rewash
        SET reporter_name = ?, report_date = ?, notes = ?, updated_at = NOW()
@@ -367,9 +386,180 @@ export const updateRewashHeader = async (req, res) => {
       [reporter_name.trim(), date, notes || null, id]
     );
 
+    const newSnapshot = await getRewashSnapshot(id);
+    await writeRewashAuditLog(id, "UPDATE", req, oldSnapshot, newSnapshot);
+
     res.json({ message: "Data rewash berhasil diperbarui" });
   } catch (err) {
     console.error("updateRewashHeader error:", err);
     res.status(500).json({ message: err.message });
   }
 };
+
+// ── GET Audit Logs ──
+export const getRewashAuditLogs = async (req, res) => {
+  const { id } = req.params;
+  try {
+    const [auditLogs] = await safeIKMQuery(
+      `SELECT a.id, a.rewash_id, a.action, a.changed_by, a.changed_by_name, a.changed_at, a.before_data, a.after_data
+       FROM tr_rewash_audit a
+       WHERE a.rewash_id = ?
+       ORDER BY a.id DESC`,
+      [id]
+    );
+
+    // Enrich changed_by with employee name from mst_employee in waschen DB
+    const changedByIds = [...new Set(auditLogs.map((r) => r.changed_by).filter(Boolean))];
+    const employeeMap = new Map();
+    if (changedByIds.length) {
+      const ph = changedByIds.map(() => "?").join(",");
+      const [emps] = await safeQuery(
+        `SELECT employee_id, full_name FROM mst_employee WHERE employee_id IN (${ph})`,
+        changedByIds
+      );
+      emps.forEach((e) => employeeMap.set(e.employee_id, e.full_name));
+    }
+
+    // Parse JSON data
+    const parsedLogs = auditLogs.map(log => {
+      const before = typeof log.before_data === "string" ? JSON.parse(log.before_data) : log.before_data;
+      const after = typeof log.after_data === "string" ? JSON.parse(log.after_data) : log.after_data;
+      return {
+        ...log,
+        before_data: before,
+        after_data: after
+      };
+    });
+
+    // Collect all unique hospital_linen_ids to query their display names (especially for old logs)
+    const uniqueLinenIds = new Set();
+    parsedLogs.forEach(log => {
+      const oldItems = log.before_data?.details || log.before_data?.items || [];
+      const newItems = log.after_data?.details || log.after_data?.items || [];
+      oldItems.forEach(d => { if (d.hospital_linen_id) uniqueLinenIds.add(d.hospital_linen_id); });
+      newItems.forEach(d => { if (d.hospital_linen_id) uniqueLinenIds.add(d.hospital_linen_id); });
+    });
+
+    const linenNameMap = new Map();
+    if (uniqueLinenIds.size > 0) {
+      const ids = [...uniqueLinenIds];
+      const ph = ids.map(() => "?").join(",");
+      const [linens] = await safeIKMQuery(
+        `SELECT hl.id AS hospital_linen_id, hl.hospital_linen_name, 
+                l.linen_name AS master_linen_name, sz.size_name, cl.color_name, mt.material_name
+         FROM mst_hospital_linen hl
+         LEFT JOIN mst_linen l ON l.id = hl.linen_id
+         LEFT JOIN mst_size sz ON l.size_id = sz.id
+         LEFT JOIN mst_color cl ON l.color_id = cl.id
+         LEFT JOIN mst_material mt ON l.material_id = mt.id
+         WHERE hl.id IN (${ph})`,
+        ids
+      );
+      linens.forEach(l => {
+        const parts = [l.master_linen_name, l.size_name, l.color_name, l.material_name].filter(Boolean);
+        linenNameMap.set(l.hospital_linen_id, l.hospital_linen_name || parts.join(" "));
+      });
+    }
+
+    // Enrich logs with display names and employee name
+    const enrichedLogs = parsedLogs.map(log => {
+      const oldItems = log.before_data?.details || log.before_data?.items || [];
+      const newItems = log.after_data?.details || log.after_data?.items || [];
+
+      const enrichedOld = oldItems.map(d => ({
+        ...d,
+        linen_display_name: d.linen_display_name || linenNameMap.get(d.hospital_linen_id) || `Linen #${d.hospital_linen_id}`
+      }));
+      const enrichedNew = newItems.map(d => ({
+        ...d,
+        linen_display_name: d.linen_display_name || linenNameMap.get(d.hospital_linen_id) || `Linen #${d.hospital_linen_id}`
+      }));
+
+      return {
+        ...log,
+        changed_by_employee_name: employeeMap.get(log.changed_by) || null,
+        before_data: log.before_data ? { ...log.before_data, details: enrichedOld, items: enrichedOld } : null,
+        after_data: log.after_data ? { ...log.after_data, details: enrichedNew, items: enrichedNew } : null
+      };
+    });
+
+    res.json({ success: true, data: enrichedLogs });
+  } catch (err) {
+    console.error("getRewashAuditLogs error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ── Snapshot & Audit Log Helpers ──
+async function getRewashSnapshot(rewashId) {
+  try {
+    const [headers] = await safeIKMQuery(
+      "SELECT * FROM tr_rewash WHERE id = ?",
+      [rewashId]
+    );
+    if (!headers.length) return null;
+
+    const [details] = await safeIKMQuery(
+      `SELECT d.id, d.rewash_id, d.hospital_linen_id, d.qty, d.clear, d.detail_notes,
+              hl.hospital_linen_name, l.linen_name AS master_linen_name,
+              sz.size_name, cl.color_name, mt.material_name
+       FROM tr_rewash_detail d
+       LEFT JOIN mst_hospital_linen hl ON hl.id = d.hospital_linen_id
+       LEFT JOIN mst_linen l ON l.id = hl.linen_id
+       LEFT JOIN mst_size sz ON l.size_id = sz.id
+       LEFT JOIN mst_color cl ON l.color_id = cl.id
+       LEFT JOIN mst_material mt ON l.material_id = mt.id
+       WHERE d.rewash_id = ?`,
+      [rewashId]
+    );
+    
+    const mappedItems = details.map(d => {
+      const parts = [d.master_linen_name, d.size_name, d.color_name, d.material_name].filter(Boolean);
+      return {
+        id: d.id,
+        hospital_linen_id: d.hospital_linen_id,
+        qty: d.qty,
+        clear: d.clear,
+        detail_notes: d.detail_notes,
+        linen_display_name: d.hospital_linen_name || parts.join(" ")
+      };
+    });
+
+    return {
+      header: headers[0],
+      items: mappedItems,
+      details: mappedItems
+    };
+  } catch (err) {
+    console.error("getRewashSnapshot error:", err);
+    return null;
+  }
+}
+
+async function writeRewashAuditLog(rewashId, action, req, oldValues = null, newValues = null) {
+  try {
+    const changedBy = resolveReportedBy(req);
+    const changedByName =
+      req.session?.user?.employee?.full_name ||
+      req.session?.user?.name ||
+      req.session?.user?.full_name ||
+      req.session?.user?.username ||
+      "System";
+
+    await safeIKMQuery(
+      `INSERT INTO tr_rewash_audit 
+       (rewash_id, action, changed_by, changed_by_name, before_data, after_data) 
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        rewashId,
+        action,
+        changedBy,
+        changedByName,
+        oldValues ? JSON.stringify(oldValues) : null,
+        newValues ? JSON.stringify(newValues) : null
+      ]
+    );
+  } catch (err) {
+    console.error("Failed to write rewash audit log:", err.message);
+  }
+}
