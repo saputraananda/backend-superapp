@@ -16,7 +16,7 @@ import {
   // Discussion / Comments
   listTaskComments, createTaskComment,
   // Helpers
-  listEmployees, listDepartments, getMe,
+  listEmployees, listDepartments, getMe, listCompanies,
 } from "../../controllers/ProjectManagement/projectManagementController.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -53,6 +53,7 @@ router.post("/workspaces",         createWorkspace);
 router.put("/workspaces/:id",      updateWorkspace);
 router.delete("/workspaces/:id",   deleteWorkspace);
 router.get("/workspaces/:id/tasks",listWorkspaceTasks);
+router.post("/workspaces/:id/tasks",createTask);
 
 // ── Sub-Workspaces ────────────────────────────────────────────────────────────
 router.get("/workspaces/:id/sub",    listSubWorkspaces);
@@ -79,6 +80,7 @@ router.post("/tasks/:id/evidence", uploadPmEvidence.single("file"), uploadTaskEv
 // ── Helpers ───────────────────────────────────────────────────────────────────
 router.get("/employees",   listEmployees);
 router.get("/departments", listDepartments);
+router.get("/companies",   listCompanies);
 router.get("/me",          getMe);
 
 export default router;

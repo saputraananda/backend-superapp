@@ -45,11 +45,12 @@ export async function listWorkspaces(req, res) {
          p.created_at,
          p.updated_at,
          e.full_name AS creator_name,
+         (SELECT GROUP_CONCAT(company_name SEPARATOR ', ') FROM mst_company WHERE FIND_IN_SET(company_id, p.company_id) > 0) AS company_name,
          (SELECT COUNT(*) FROM tr_projectmanagement_detail d WHERE d.id_project = p.id AND d.is_deleted = 0) AS sub_count
        FROM tr_projectmanagement p
        LEFT JOIN mst_employee e ON e.employee_id = p.creator_id
        WHERE p.is_deleted = 0
-         AND p.company_id = ?
+         AND (p.company_id IS NULL OR p.company_id = '' OR FIND_IN_SET(?, p.company_id) > 0)
        ORDER BY p.created_at DESC`,
       [emp.company_id]
     );
@@ -69,13 +70,18 @@ export async function createWorkspace(req, res) {
     const emp = await getSessionEmployee(req);
     if (!emp) return res.status(401).json({ message: "Unauthorized" });
 
-    const { title, desc } = req.body;
+    const { title, desc, company_ids } = req.body;
     if (!title?.trim()) return res.status(400).json({ message: "Nama workspace wajib diisi" });
+
+    let companyIdStr = null;
+    if (Array.isArray(company_ids) && company_ids.length > 0) {
+      companyIdStr = company_ids.map(Number).join(",");
+    }
 
     const [result] = await db.query(
       `INSERT INTO tr_projectmanagement (title, \`desc\`, creator_id, company_id)
        VALUES (?, ?, ?, ?)`,
-      [title.trim(), desc?.trim() || null, emp.employee_id, emp.company_id]
+      [title.trim(), desc?.trim() || null, emp.employee_id, companyIdStr]
     );
 
     res.status(201).json({ message: "Workspace berhasil dibuat", id: result.insertId });
@@ -95,24 +101,23 @@ export async function updateWorkspace(req, res) {
     if (!emp) return res.status(401).json({ message: "Unauthorized" });
 
     const { id } = req.params;
-    const { title, desc } = req.body;
+    const { title, desc, company_ids } = req.body;
     if (!title?.trim()) return res.status(400).json({ message: "Nama workspace wajib diisi" });
 
-    // Cek kepemilikan (hanya creator atau manager ke atas)
     const [rows] = await db.query(
       `SELECT * FROM tr_projectmanagement WHERE id = ? AND is_deleted = 0`,
       [id]
     );
     if (!rows.length) return res.status(404).json({ message: "Workspace tidak ditemukan" });
 
-    const ws = rows[0];
-    if (ws.creator_id !== emp.employee_id && emp.job_level_id > 2) {
-      return res.status(403).json({ message: "Tidak punya izin mengedit workspace ini" });
+    let companyIdStr = null;
+    if (Array.isArray(company_ids) && company_ids.length > 0) {
+      companyIdStr = company_ids.map(Number).join(",");
     }
 
     await db.query(
-      `UPDATE tr_projectmanagement SET title = ?, \`desc\` = ? WHERE id = ?`,
-      [title.trim(), desc?.trim() || null, id]
+      `UPDATE tr_projectmanagement SET title = ?, \`desc\` = ?, company_id = ? WHERE id = ?`,
+      [title.trim(), desc?.trim() || null, companyIdStr, id]
     );
 
     res.json({ message: "Workspace berhasil diperbarui" });
@@ -200,7 +205,6 @@ export async function createSubWorkspace(req, res) {
     const { id } = req.params;
     const { title, desc, department_id } = req.body;
     if (!title?.trim()) return res.status(400).json({ message: "Nama sub-workspace wajib diisi" });
-    if (!department_id) return res.status(400).json({ message: "Department wajib dipilih" });
 
     // Cek workspace exists
     const [wsRows] = await db.query(
@@ -212,7 +216,7 @@ export async function createSubWorkspace(req, res) {
     const [result] = await db.query(
       `INSERT INTO tr_projectmanagement_detail (id_project, department_id, title, \`desc\`, creator_id)
        VALUES (?, ?, ?, ?, ?)`,
-      [id, department_id, title.trim(), desc?.trim() || null, emp.employee_id]
+      [id, department_id || null, title.trim(), desc?.trim() || null, emp.employee_id]
     );
 
     res.status(201).json({ message: "Sub-workspace berhasil dibuat", id: result.insertId });
@@ -248,7 +252,7 @@ export async function updateSubWorkspace(req, res) {
 
     await db.query(
       `UPDATE tr_projectmanagement_detail SET title = ?, \`desc\` = ?, department_id = ? WHERE id = ?`,
-      [title.trim(), desc?.trim() || null, department_id || sub.department_id, id]
+      [title.trim(), desc?.trim() || null, department_id || null, id]
     );
 
     res.json({ message: "Sub-workspace berhasil diperbarui" });
@@ -365,11 +369,11 @@ export async function listWorkspaceTasks(req, res) {
          mp.position_name,
          d.title AS sub_workspace_title
        FROM tr_projectmanagement_task t
-       INNER JOIN tr_projectmanagement_detail d ON d.id = t.id_pm_detail AND d.is_deleted = 0
+       LEFT JOIN tr_projectmanagement_detail d ON d.id = t.id_pm_detail AND d.is_deleted = 0
        LEFT JOIN mst_employee eo ON eo.employee_id = t.owner_employee_id
        LEFT JOIN mst_employee ep ON ep.employee_id = t.pic_employee_id
        LEFT JOIN mst_position mp ON mp.position_id = t.position_id
-       WHERE d.id_project = ? AND t.is_deleted = 0
+       WHERE t.id_pm = ? AND t.is_deleted = 0
        ORDER BY t.created_at DESC`,
       [id]
     );
@@ -393,25 +397,38 @@ export async function createTask(req, res) {
     const {
       title, desc, startdate, enddate,
       pic_employee_id, priority, link, link_title,
-      co_pics, reviewers, position_id,
+      co_pics, reviewers, position_id, id_pm_detail
     } = req.body;
 
     if (!title?.trim()) return res.status(400).json({ message: "Judul task wajib diisi" });
     if (!pic_employee_id) return res.status(400).json({ message: "PIC wajib dipilih" });
 
-    const [subRows] = await db.query(
-      `SELECT id FROM tr_projectmanagement_detail WHERE id = ? AND is_deleted = 0`,
-      [id]
-    );
-    if (!subRows.length) return res.status(404).json({ message: "Sub-workspace tidak ditemukan" });
+    let final_id_pm = null;
+    let final_id_pm_detail = null;
+
+    if (req.originalUrl.includes("/sub-workspaces/")) {
+      final_id_pm_detail = id;
+      const [subRows] = await db.query(
+        `SELECT id_project FROM tr_projectmanagement_detail WHERE id = ? AND is_deleted = 0`,
+        [id]
+      );
+      if (!subRows.length) return res.status(404).json({ message: "Sub-workspace tidak ditemukan" });
+      final_id_pm = subRows[0].id_project;
+    } else {
+      final_id_pm = id;
+      if (id_pm_detail) {
+        final_id_pm_detail = id_pm_detail;
+      }
+    }
 
     // Insert task — link_title disimpan di kolom evidance
     const [result] = await db.query(
       `INSERT INTO tr_projectmanagement_task
-         (id_pm_detail, title, \`desc\`, startdate, enddate, owner_employee_id, pic_employee_id, position_id, priority, link, evidance, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'To Do')`,
+         (id_pm, id_pm_detail, title, \`desc\`, startdate, enddate, owner_employee_id, pic_employee_id, position_id, priority, link, evidance, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'To Do')`,
       [
-        id,
+        final_id_pm,
+        final_id_pm_detail || null,
         title.trim(),
         desc?.trim() || null,
         startdate || null,
@@ -499,7 +516,7 @@ export async function updateTask(req, res) {
     const {
       title, desc, startdate, enddate,
       pic_employee_id, priority, link, link_title, status,
-      co_pics, reviewers, position_id
+      co_pics, reviewers, position_id, id_pm_detail
     } = req.body;
 
     if (!title?.trim()) return res.status(400).json({ message: "Judul task wajib diisi" });
@@ -513,7 +530,8 @@ export async function updateTask(req, res) {
     await db.query(
       `UPDATE tr_projectmanagement_task
        SET title = ?, \`desc\` = ?, startdate = ?, enddate = ?,
-           pic_employee_id = ?, position_id = ?, priority = ?, link = ?, evidance = ?, status = ?
+           pic_employee_id = ?, position_id = ?, priority = ?, link = ?, evidance = ?, status = ?,
+           id_pm_detail = ?
        WHERE id = ?`,
       [
         title.trim(),
@@ -526,6 +544,7 @@ export async function updateTask(req, res) {
         link?.trim() || null,
         link_title?.trim() || null,
         status || "To Do",
+        id_pm_detail || null,
         id
       ]
     );
@@ -587,6 +606,7 @@ export async function getTaskDetail(req, res) {
     const [rows] = await db.query(
       `SELECT
          t.id,
+         t.id_pm,
          t.id_pm_detail,
          t.title,
          t.\`desc\`,
@@ -750,6 +770,25 @@ export async function listDepartments(req, res) {
 }
 
 /**
+ * GET /api/pm2/companies
+ * List company untuk picker visibilitas
+ */
+export async function listCompanies(req, res) {
+  if (!requireAuth(req, res)) return;
+  try {
+    const [rows] = await db.query(
+      `SELECT company_id AS id, company_name
+       FROM mst_company
+       WHERE is_active = 1
+       ORDER BY company_name ASC`
+    );
+    res.json({ data: rows });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+/**
  * GET /api/pm2/me
  * Data user login untuk auto-fill owner
  */
@@ -835,11 +874,10 @@ export async function listMyTasks(req, res) {
        LEFT JOIN mst_employee eo ON eo.employee_id = t.owner_employee_id
        LEFT JOIN mst_employee ep ON ep.employee_id = t.pic_employee_id
        LEFT JOIN mst_position mp ON mp.position_id = t.position_id
-       JOIN tr_projectmanagement_detail d ON d.id = t.id_pm_detail
-       JOIN tr_projectmanagement p ON p.id = d.id_project
+       LEFT JOIN tr_projectmanagement_detail d ON d.id = t.id_pm_detail AND d.is_deleted = 0
+       JOIN tr_projectmanagement p ON p.id = t.id_pm
        JOIN tr_projectmanagement_task_assignee ta ON ta.id_pm_task = t.id
        WHERE t.is_deleted = 0
-         AND d.is_deleted = 0
          AND p.is_deleted = 0
          AND ta.employee_id = ?
        ORDER BY t.created_at DESC`,
