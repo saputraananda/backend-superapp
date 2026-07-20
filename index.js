@@ -71,6 +71,8 @@ import masterServicesRoutes from "./routes/Cleanox/masterServicesRoutes.js";
 import masterCategoryRoutes from "./routes/Cleanox/masterCategoryRoutes.js";
 import myWaschenRoutes from "./routes/MyWaschen/myWaschenRoutes.js";
 import trainingRoutes from "./routes/trainingRoutes.js";
+import projectManagementRoutes from "./routes/ProjectManagement/projectManagementRoutes.js";
+import personalChatRoutes from "./routes/ProjectManagement/personalChatRoutes.js";
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -229,6 +231,8 @@ app.use("/assets/kasbon", express.static(path.join(ASSETS_BASE, "kasbon")));
 app.use("/assets/purchase", express.static(path.join(ASSETS_BASE, "purchase")));
 app.use("/assets/document_alora", express.static(path.join(ASSETS_BASE, "document_alora")));
 app.use("/assets/training_evidence", express.static(path.join(ASSETS_BASE, "training_evidence")));
+app.use("/assets/pm_evidence", express.static(path.join(ASSETS_BASE, "pm_evidence")));
+
 
 
 // =========================
@@ -314,6 +318,8 @@ app.use("/master-services", masterServicesRoutes);
 app.use("/master-categories", masterCategoryRoutes);
 app.use("/api", myWaschenRoutes);
 app.use("/training", trainingRoutes);
+app.use("/api/pm2", projectManagementRoutes);
+app.use("/api/pm2/chat", personalChatRoutes);
 // 404
 app.use((req, res) => {
   res.status(404).json({ message: "Endpoint not found", path: req.path });
