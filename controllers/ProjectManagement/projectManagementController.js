@@ -42,6 +42,8 @@ export async function listWorkspaces(req, res) {
          p.\`desc\`,
          p.creator_id,
          p.company_id,
+         p.employee_ids,
+         p.position_ids,
          p.created_at,
          p.updated_at,
          e.full_name AS creator_name,
@@ -50,9 +52,19 @@ export async function listWorkspaces(req, res) {
        FROM tr_projectmanagement p
        LEFT JOIN mst_employee e ON e.employee_id = p.creator_id
        WHERE p.is_deleted = 0
-         AND (p.company_id IS NULL OR p.company_id = '' OR FIND_IN_SET(?, p.company_id) > 0)
+         AND (
+           p.creator_id = ?
+           OR (
+             (p.company_id IS NULL OR p.company_id = '') AND
+             (p.employee_ids IS NULL OR p.employee_ids = '') AND
+             (p.position_ids IS NULL OR p.position_ids = '')
+           )
+           OR (p.company_id IS NOT NULL AND p.company_id <> '' AND FIND_IN_SET(?, p.company_id) > 0)
+           OR (p.employee_ids IS NOT NULL AND p.employee_ids <> '' AND FIND_IN_SET(?, p.employee_ids) > 0)
+           OR (p.position_ids IS NOT NULL AND p.position_ids <> '' AND FIND_IN_SET(?, p.position_ids) > 0)
+         )
        ORDER BY p.created_at DESC`,
-      [emp.company_id]
+      [emp.employee_id, emp.company_id, emp.employee_id, emp.position_id]
     );
     res.json({ data: rows });
   } catch (err) {
@@ -70,7 +82,7 @@ export async function createWorkspace(req, res) {
     const emp = await getSessionEmployee(req);
     if (!emp) return res.status(401).json({ message: "Unauthorized" });
 
-    const { title, desc, company_ids } = req.body;
+    const { title, desc, company_ids, employee_ids, position_ids } = req.body;
     if (!title?.trim()) return res.status(400).json({ message: "Nama workspace wajib diisi" });
 
     let companyIdStr = null;
@@ -78,10 +90,21 @@ export async function createWorkspace(req, res) {
       companyIdStr = company_ids.map(Number).join(",");
     }
 
+    let employeeIdStr = null;
+    if (Array.isArray(employee_ids) && employee_ids.length > 0) {
+      const uniqueEmployeeIds = Array.from(new Set([emp.employee_id, ...employee_ids.map(Number)]));
+      employeeIdStr = uniqueEmployeeIds.join(",");
+    }
+
+    let positionIdStr = null;
+    if (Array.isArray(position_ids) && position_ids.length > 0) {
+      positionIdStr = position_ids.map(Number).join(",");
+    }
+
     const [result] = await db.query(
-      `INSERT INTO tr_projectmanagement (title, \`desc\`, creator_id, company_id)
-       VALUES (?, ?, ?, ?)`,
-      [title.trim(), desc?.trim() || null, emp.employee_id, companyIdStr]
+      `INSERT INTO tr_projectmanagement (title, \`desc\`, creator_id, company_id, employee_ids, position_ids)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [title.trim(), desc?.trim() || null, emp.employee_id, companyIdStr, employeeIdStr, positionIdStr]
     );
 
     res.status(201).json({ message: "Workspace berhasil dibuat", id: result.insertId });
@@ -101,7 +124,7 @@ export async function updateWorkspace(req, res) {
     if (!emp) return res.status(401).json({ message: "Unauthorized" });
 
     const { id } = req.params;
-    const { title, desc, company_ids } = req.body;
+    const { title, desc, company_ids, employee_ids, position_ids } = req.body;
     if (!title?.trim()) return res.status(400).json({ message: "Nama workspace wajib diisi" });
 
     const [rows] = await db.query(
@@ -115,9 +138,21 @@ export async function updateWorkspace(req, res) {
       companyIdStr = company_ids.map(Number).join(",");
     }
 
+    let employeeIdStr = null;
+    if (Array.isArray(employee_ids) && employee_ids.length > 0) {
+      const creatorId = rows[0].creator_id;
+      const uniqueEmployeeIds = Array.from(new Set([creatorId, emp.employee_id, ...employee_ids.map(Number)]));
+      employeeIdStr = uniqueEmployeeIds.join(",");
+    }
+
+    let positionIdStr = null;
+    if (Array.isArray(position_ids) && position_ids.length > 0) {
+      positionIdStr = position_ids.map(Number).join(",");
+    }
+
     await db.query(
-      `UPDATE tr_projectmanagement SET title = ?, \`desc\` = ?, company_id = ? WHERE id = ?`,
-      [title.trim(), desc?.trim() || null, companyIdStr, id]
+      `UPDATE tr_projectmanagement SET title = ?, \`desc\` = ?, company_id = ?, employee_ids = ?, position_ids = ? WHERE id = ?`,
+      [title.trim(), desc?.trim() || null, companyIdStr, employeeIdStr, positionIdStr, id]
     );
 
     res.json({ message: "Workspace berhasil diperbarui" });
