@@ -12,7 +12,8 @@ import {
   listSubWorkspaces, createSubWorkspace, updateSubWorkspace, deleteSubWorkspace,
   // Tasks
   listTasks, createTask, updateTask, updateTaskStatus, deleteTask,
-  getTaskDetail, uploadTaskEvidence, listMyTasks, listWorkspaceTasks,
+  getTaskDetail, uploadTaskEvidence, listTaskEvidences, deleteTaskEvidence,
+  listMyTasks, listWorkspaceTasks,
   // Discussion / Comments
   listTaskComments, createTaskComment,
   // Helpers
@@ -74,8 +75,10 @@ router.delete("/tasks/:id",               deleteTask);
 router.get("/tasks/:id/comments",         listTaskComments);
 router.post("/tasks/:id/comments",        createTaskComment);
 
-// ── Task Evidence Upload ───────────────────────────────────────────────────────
+// ── Task Evidence Upload & Management ─────────────────────────────────────────
+router.get("/tasks/:id/evidence",                  listTaskEvidences);
 router.post("/tasks/:id/evidence", uploadPmEvidence.single("file"), uploadTaskEvidence);
+router.delete("/tasks/:id/evidence/:evidenceId",   deleteTaskEvidence);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 router.get("/employees",   listEmployees);

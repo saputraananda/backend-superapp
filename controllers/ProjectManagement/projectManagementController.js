@@ -688,6 +688,15 @@ export async function getTaskDetail(req, res) {
     );
     task.reviewers = revRows.map(r => String(r.employee_id));
 
+    const [evRows] = await db.query(
+      `SELECT id, file_name, file_path, file_type, file_size, created_at
+       FROM tr_projectmanagement_task_evidance
+       WHERE id_pm_task = ?
+       ORDER BY created_at ASC`,
+      [id]
+    );
+    task.evidences = evRows;
+
     res.json({ data: task });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -866,6 +875,77 @@ export async function uploadTaskEvidence(req, res) {
     );
 
     res.status(201).json({ message: "File berhasil diunggah", file_path: filePath, file_name: fileName });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+/**
+ * GET /api/pm2/tasks/:id/evidence
+ * List semua evidence file milik task
+ */
+export async function listTaskEvidences(req, res) {
+  if (!requireAuth(req, res)) return;
+  try {
+    const { id } = req.params;
+    const [rows] = await db.query(
+      `SELECT id, file_name, file_path, file_type, file_size, created_at
+       FROM tr_projectmanagement_task_evidance
+       WHERE id_pm_task = ?
+       ORDER BY created_at ASC`,
+      [id]
+    );
+    res.json({ data: rows });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+/**
+ * DELETE /api/pm2/tasks/:id/evidence/:evidenceId
+ * Hapus satu evidence file milik task
+ */
+export async function deleteTaskEvidence(req, res) {
+  if (!requireAuth(req, res)) return;
+  try {
+    const emp = await getSessionEmployee(req);
+    if (!emp) return res.status(401).json({ message: "Unauthorized" });
+
+    const { id, evidenceId } = req.params;
+
+    // Cek evidence ada & milik task ini
+    const [rows] = await db.query(
+      `SELECT * FROM tr_projectmanagement_task_evidance WHERE id = ? AND id_pm_task = ?`,
+      [evidenceId, id]
+    );
+    if (!rows.length) return res.status(404).json({ message: "Evidence tidak ditemukan" });
+
+    // Hapus record dari DB
+    await db.query(
+      `DELETE FROM tr_projectmanagement_task_evidance WHERE id = ?`,
+      [evidenceId]
+    );
+
+    // Cek apakah masih ada evidence lain untuk task ini
+    const [remaining] = await db.query(
+      `SELECT id, file_name, file_path FROM tr_projectmanagement_task_evidance
+       WHERE id_pm_task = ? ORDER BY created_at DESC LIMIT 1`,
+      [id]
+    );
+
+    if (remaining.length > 0) {
+      await db.query(
+        `UPDATE tr_projectmanagement_task SET evidance_path = ?, evidance = ? WHERE id = ?`,
+        [remaining[0].file_path, remaining[0].file_name, id]
+      );
+    } else {
+      await db.query(
+        `UPDATE tr_projectmanagement_task SET evidance_path = NULL, evidance = NULL WHERE id = ?`,
+        [id]
+      );
+    }
+
+    res.json({ message: "Evidence berhasil dihapus" });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
