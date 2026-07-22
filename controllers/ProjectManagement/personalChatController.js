@@ -40,6 +40,7 @@ export async function listChatContacts(req, res) {
          e.employee_id AS id,
          e.full_name AS name,
          e.email,
+         e.profile_path,
          COALESCE(jl.job_level_name, 'Staff') AS role,
          (
            SELECT message
