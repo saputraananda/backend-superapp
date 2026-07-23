@@ -10,6 +10,8 @@ import {
   updateComplaint,
   deleteComplaint,
   addProgressLog,
+  updateProgressLog,
+  deleteProgressLog,
   getComplaintPeriods,
   getComplaintSameDayComparison,
 } from "../controllers/complaintController.js";
@@ -58,5 +60,7 @@ router.post(
   uploadComplaintDoc.array("documents", 10),
   addProgressLog
 );
+router.put("/progress-log/:logId", requireAuth, updateProgressLog);
+router.delete("/progress-log/:logId", requireAuth, deleteProgressLog);
 
 export default router;

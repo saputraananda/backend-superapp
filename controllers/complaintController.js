@@ -36,6 +36,56 @@ function getLastCutoffPeriods(count = 6) {
   });
 }
 
+const syncComplaintProgress = async (complaintId) => {
+  const [latestLog] = await safeQuery(
+    `SELECT progress FROM tr_complaint_progress_log 
+     WHERE complaint_id = ? 
+     ORDER BY logged_at DESC, log_id DESC 
+     LIMIT 1`,
+    [complaintId]
+  );
+
+  const [complaint] = await safeQuery(
+    `SELECT submitted_at, in_progress_at, waiting_customer_at, resolved_at, closed_at FROM tr_complaint WHERE complaint_id = ?`,
+    [complaintId]
+  );
+
+  if (latestLog && latestLog.length > 0) {
+    const newProgress = latestLog[0].progress;
+    let updateFields = ["progress = ?", "updated_at = NOW()"];
+    let updateValues = [newProgress];
+
+    if (complaint && complaint.length > 0) {
+      const cRow = complaint[0];
+      if (newProgress === "On Progress" && !cRow.in_progress_at) {
+        updateFields.push("in_progress_at = NOW()");
+      }
+      if (newProgress === "Waiting Customer" && !cRow.waiting_customer_at) {
+        updateFields.push("waiting_customer_at = NOW()");
+      }
+      if (newProgress === "Resolved" && !cRow.resolved_at) {
+        updateFields.push("resolved_at = NOW()");
+        updateFields.push("duration_to_resolve = TIMESTAMPDIFF(MINUTE, submitted_at, NOW())");
+      }
+      if (newProgress === "Closed" && !cRow.closed_at) {
+        updateFields.push("closed_at = NOW()");
+        updateFields.push("duration_to_close = TIMESTAMPDIFF(MINUTE, submitted_at, NOW())");
+      }
+    }
+
+    await safeQuery(
+      `UPDATE tr_complaint SET ${updateFields.join(", ")} WHERE complaint_id = ?`,
+      [...updateValues, complaintId]
+    );
+  } else {
+    // If no logs left, set progress back to Open
+    await safeQuery(
+      `UPDATE tr_complaint SET progress = 'Open', updated_at = NOW() WHERE complaint_id = ?`,
+      [complaintId]
+    );
+  }
+};
+
 // ─── Periods (distinct months from submitted_at for filter dropdown) ──────────
 
 export const getComplaintPeriods = async (_req, res) => {
@@ -604,3 +654,84 @@ export const addProgressLog = async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 };
+
+// ─── Update progress log ──────────────────────────────────────────────────────
+
+export const updateProgressLog = async (req, res) => {
+  try {
+    const userId = req.session?.userId;
+    if (!userId) return res.status(401).json({ message: "Unauthorized" });
+
+    const logId = Number(req.params.logId);
+    if (!logId) return res.status(400).json({ message: "Log ID tidak valid." });
+
+    const [existing] = await safeQuery(
+      "SELECT complaint_id FROM tr_complaint_progress_log WHERE log_id = ?",
+      [logId]
+    );
+    if (!existing.length) return res.status(404).json({ message: "Log tidak ditemukan." });
+
+    const complaintId = existing[0].complaint_id;
+
+    const progress = req.body.progress;
+    const validProgress = ["Open", "On Progress", "Waiting Customer", "Resolved", "Closed"];
+    if (!validProgress.includes(progress)) {
+      return res.status(400).json({ message: "Progress tidak valid." });
+    }
+
+    const note = String(req.body.note || "").trim() || null;
+    const picName = String(req.body.pic_name || "").trim() || null;
+
+    await safeQuery(
+      `UPDATE tr_complaint_progress_log 
+       SET progress = ?, note = ?, pic_name = ?
+       WHERE log_id = ?`,
+      [progress, note, picName, logId]
+    );
+
+    // Sync complaint progress
+    await syncComplaintProgress(complaintId);
+
+    res.json({ message: "Progress log berhasil diupdate." });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ─── Delete progress log ──────────────────────────────────────────────────────
+
+export const deleteProgressLog = async (req, res) => {
+  try {
+    const userId = req.session?.userId;
+    if (!userId) return res.status(401).json({ message: "Unauthorized" });
+
+    const logId = Number(req.params.logId);
+    if (!logId) return res.status(400).json({ message: "Log ID tidak valid." });
+
+    const [existing] = await safeQuery(
+      "SELECT complaint_id FROM tr_complaint_progress_log WHERE log_id = ?",
+      [logId]
+    );
+    if (!existing.length) return res.status(404).json({ message: "Log tidak ditemukan." });
+
+    const complaintId = existing[0].complaint_id;
+
+    // Delete associated files
+    const [pdocs] = await safeQuery(
+      "SELECT file_path FROM tr_complaint_progress_document WHERE log_id = ?",
+      [logId]
+    );
+    pdocs.forEach((d) => removeFile(d.file_path));
+
+    // Delete database records
+    await safeQuery("DELETE FROM tr_complaint_progress_log WHERE log_id = ?", [logId]);
+
+    // Sync complaint progress
+    await syncComplaintProgress(complaintId);
+
+    res.json({ message: "Progress log berhasil dihapus." });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
