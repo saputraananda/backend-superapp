@@ -5,6 +5,7 @@ import {
   getTodayTeamMood,
   getMoodSummary,
   getEmployeeMoodHistory,
+  getMostFrequentMoodEmployees,
 } from "../controllers/knowYourEmpController.js";
 
 const router = express.Router();
@@ -17,6 +18,9 @@ router.get("/mood/today", requireAuth, getTodayTeamMood);
 
 // GET statistik / ringkasan mood bulanan
 router.get("/mood/summary", requireAuth, getMoodSummary);
+
+// GET karyawan paling sering mood tertentu (all time)
+router.get("/mood/most-frequent", requireAuth, getMostFrequentMoodEmployees);
 
 // GET riwayat mood 1 karyawan
 router.get("/mood/:employeeId", requireAuth, getEmployeeMoodHistory);

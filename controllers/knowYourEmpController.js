@@ -264,3 +264,79 @@ export const getEmployeeMoodHistory = async (req, res) => {
     return res.status(500).json({ success: false, message: err.message });
   }
 };
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GET /know-your-employee/mood/most-frequent — karyawan paling sering mood tertentu
+// ═══════════════════════════════════════════════════════════════════════════
+export const getMostFrequentMoodEmployees = async (req, res) => {
+  try {
+    const { company_id = "" } = req.query;
+
+    const conditions = [];
+    const params = [];
+
+    if (company_id) {
+      conditions.push("e.company_id = ?");
+      params.push(company_id);
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+    const query = `
+      WITH RankedMoods AS (
+        SELECT
+          tm.mood_level,
+          tm.employee_id,
+          e.full_name,
+          e.employee_code,
+          p.position_name,
+          d.department_name,
+          c.company_name,
+          COUNT(*) AS total_count,
+          ROW_NUMBER() OVER (
+            PARTITION BY tm.mood_level 
+            ORDER BY COUNT(*) DESC, e.full_name ASC
+          ) as rn
+        FROM tr_employee_mood tm
+        JOIN mst_employee e ON tm.employee_id = e.employee_id
+        LEFT JOIN mst_position p ON e.position_id = p.position_id
+        LEFT JOIN mst_department d ON e.department_id = d.department_id
+        LEFT JOIN mst_company c ON e.company_id = c.company_id
+        ${whereClause}
+        GROUP BY 
+          tm.mood_level, 
+          tm.employee_id, 
+          e.full_name, 
+          e.employee_code, 
+          p.position_name, 
+          d.department_name, 
+          c.company_name
+      )
+      SELECT *
+      FROM RankedMoods
+      WHERE rn <= 5
+      ORDER BY mood_level ASC, rn ASC
+    `;
+
+    const [rows] = await safeQuery(query, params);
+
+    const grouped = {
+      lagi_bersinar: [],
+      santai_positif: [],
+      mode_standar: [],
+      agak_mendung: [],
+      cuaca_hati_kurang_baik: []
+    };
+
+    rows.forEach(row => {
+      if (grouped[row.mood_level]) {
+        grouped[row.mood_level].push(row);
+      }
+    });
+
+    return res.json({ success: true, data: grouped });
+  } catch (err) {
+    console.error("[getMostFrequentMoodEmployees] Error:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};

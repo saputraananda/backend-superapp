@@ -157,11 +157,25 @@ export const getBurnoutMonitoringList = async (req, res) => {
       department_id = "",
       date_from = "",
       date_to = "",
+      risk_level = "",
     } = req.query;
 
     const p = Number(page);
     const l = Number(limit);
     const offset = (p - 1) * l;
+
+    const burnoutScoreExpr = `
+      ROUND( (
+        (COALESCE(t.a1,1)+COALESCE(t.a2,1)+COALESCE(t.a3,1)+COALESCE(t.a4,1)+
+         COALESCE(t.b1,1)+COALESCE(t.b2,1)+COALESCE(t.b3,1)+COALESCE(t.b4,1)+
+         COALESCE(t.c1,1)+COALESCE(t.c2,1)+COALESCE(t.c3,1)+COALESCE(t.c4,1)+
+         COALESCE(t.d1,1)+COALESCE(t.d2,1)+COALESCE(t.d3,1)+COALESCE(t.d4,1)+
+         COALESCE(t.e1,1)+COALESCE(t.e2,1)+COALESCE(t.e3,1)+COALESCE(t.e4,1)+
+         COALESCE(t.f1,1)+COALESCE(t.f2,1)+COALESCE(t.f3,1)+COALESCE(t.f4,1)+
+         COALESCE(t.g1,1)+COALESCE(t.g2,1)+COALESCE(t.g3,1)+COALESCE(t.g4,1)+
+         COALESCE(t.h1,1)+COALESCE(t.h2,1)+COALESCE(t.h3,1)+COALESCE(t.h4,1)) - 32
+      ) * 25 / 32 )
+    `;
 
     const conditions = ["1=1"];
     const params = [];
@@ -184,6 +198,14 @@ export const getBurnoutMonitoringList = async (req, res) => {
     if (date_to) {
       conditions.push("DATE(t.created_at) <= ?");
       params.push(date_to);
+    }
+
+    if (risk_level === "high") {
+      conditions.push(`${burnoutScoreExpr} >= 70`);
+    } else if (risk_level === "warning") {
+      conditions.push(`${burnoutScoreExpr} >= 40 AND ${burnoutScoreExpr} < 70`);
+    } else if (risk_level === "low") {
+      conditions.push(`${burnoutScoreExpr} < 40`);
     }
 
     const whereClause = `WHERE ${conditions.join(" AND ")}`;
@@ -252,12 +274,29 @@ export const getBurnoutMonitoringList = async (req, res) => {
       ${whereClause}
     `;
 
+    const statsQuery = `
+      SELECT
+        SUM(CASE WHEN ${burnoutScoreExpr} >= 70 THEN 1 ELSE 0 END) AS high,
+        SUM(CASE WHEN ${burnoutScoreExpr} >= 40 AND ${burnoutScoreExpr} < 70 THEN 1 ELSE 0 END) AS warning,
+        SUM(CASE WHEN ${burnoutScoreExpr} < 40 THEN 1 ELSE 0 END) AS low
+      FROM tr_analysis_burnout t
+      JOIN mst_employee e ON e.employee_id = t.employee_id AND e.is_deleted = 0
+      LEFT JOIN mst_department d ON d.department_id = t.department_id
+      ${whereClause}
+    `;
+
     const [rows] = await safeQuery(dataQuery, [...params, l, offset]);
     const [[{ total }]] = await safeQuery(countQuery, params);
+    const [[stats]] = await safeQuery(statsQuery, params);
 
     return res.json({
       success: true,
       data: rows,
+      summary: {
+        high: Number(stats?.high || 0),
+        warning: Number(stats?.warning || 0),
+        low: Number(stats?.low || 0),
+      },
       pagination: {
         total: Number(total || 0),
         page: p,
@@ -334,6 +373,98 @@ export const getBurnoutMonitoringDetail = async (req, res) => {
     return res.json({ success: true, data: rows[0] });
   } catch (err) {
     console.error("[getBurnoutMonitoringDetail] Error:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GET /api/analysis-burnout/dashboard-stats — statistik ringkasan & top 10 burnout
+// ═══════════════════════════════════════════════════════════════════════════
+export const getBurnoutDashboardStats = async (req, res) => {
+  try {
+    const { company_id = "" } = req.query;
+
+    const conditions = ["e.is_deleted = 0"];
+    const params = [];
+
+    if (company_id) {
+      conditions.push("e.company_id = ?");
+      params.push(company_id);
+    }
+
+    const whereClause = `WHERE ${conditions.join(" AND ")}`;
+
+    const burnoutScoreExpr = `
+      ROUND( (
+        (COALESCE(t.a1,1)+COALESCE(t.a2,1)+COALESCE(t.a3,1)+COALESCE(t.a4,1)+
+         COALESCE(t.b1,1)+COALESCE(t.b2,1)+COALESCE(t.b3,1)+COALESCE(t.b4,1)+
+         COALESCE(t.c1,1)+COALESCE(t.c2,1)+COALESCE(t.c3,1)+COALESCE(t.c4,1)+
+         COALESCE(t.d1,1)+COALESCE(t.d2,1)+COALESCE(t.d3,1)+COALESCE(t.d4,1)+
+         COALESCE(t.e1,1)+COALESCE(t.e2,1)+COALESCE(t.e3,1)+COALESCE(t.e4,1)+
+         COALESCE(t.f1,1)+COALESCE(t.f2,1)+COALESCE(t.f3,1)+COALESCE(t.f4,1)+
+         COALESCE(t.g1,1)+COALESCE(t.g2,1)+COALESCE(t.g3,1)+COALESCE(t.g4,1)+
+         COALESCE(t.h1,1)+COALESCE(t.h2,1)+COALESCE(t.h3,1)+COALESCE(t.h4,1)) - 32
+      ) * 25 / 32 )
+    `;
+
+    // 1. Get Top 10 Karyawan dengan risiko burnout tertinggi
+    const top10Query = `
+      SELECT
+        e.employee_id,
+        e.full_name AS name,
+        d.department_name AS dept,
+        ${burnoutScoreExpr} AS score
+      FROM tr_analysis_burnout t
+      JOIN mst_employee e ON t.employee_id = e.employee_id
+      LEFT JOIN mst_department d ON t.department_id = d.department_id
+      ${whereClause}
+      ORDER BY score DESC, e.full_name ASC
+      LIMIT 10
+    `;
+
+    // 2. Get counts per risk category
+    const statsQuery = `
+      SELECT
+        SUM(CASE WHEN ${burnoutScoreExpr} >= 70 THEN 1 ELSE 0 END) AS high,
+        SUM(CASE WHEN ${burnoutScoreExpr} >= 40 AND ${burnoutScoreExpr} < 70 THEN 1 ELSE 0 END) AS warning,
+        SUM(CASE WHEN ${burnoutScoreExpr} < 40 THEN 1 ELSE 0 END) AS low,
+        COUNT(*) AS total
+      FROM tr_analysis_burnout t
+      JOIN mst_employee e ON t.employee_id = e.employee_id
+      ${whereClause}
+    `;
+
+    const [top10] = await safeQuery(top10Query, params);
+    const [statsRows] = await safeQuery(statsQuery, params);
+    const stats = statsRows[0] || {};
+
+    const formattedTop10 = top10.map((row, idx) => {
+      let level = "Rendah";
+      if (row.score >= 70) level = "Tinggi";
+      else if (row.score >= 40) level = "Warning";
+      return {
+        rank: idx + 1,
+        name: row.name,
+        dept: row.dept || "Tanpa Departemen",
+        score: row.score,
+        level
+      };
+    });
+
+    return res.json({
+      success: true,
+      data: {
+        top10: formattedTop10,
+        summary: {
+          high: Number(stats.high || 0),
+          warning: Number(stats.warning || 0),
+          low: Number(stats.low || 0),
+          total: Number(stats.total || 0),
+        }
+      }
+    });
+  } catch (err) {
+    console.error("[getBurnoutDashboardStats] Error:", err);
     return res.status(500).json({ success: false, message: err.message });
   }
 };
