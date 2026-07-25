@@ -776,7 +776,25 @@ export const createPR = async (req, res) => {
         // Reimburse-only fields
         let bankId = null, nomorRekening = null, atasNama = null;
         if (type === "reimburse") {
-            bankId        = req.body.bank_id ? Number(req.body.bank_id) : (me.bank_id || null);
+            const rawBankName = sanitize(req.body.bank_name);
+            if (rawBankName) {
+                const bankNameTrim = rawBankName.trim();
+                const bankRows = await safeQuery(
+                    `SELECT bank_id FROM mst_bank WHERE TRIM(bank_name) = ? LIMIT 1`,
+                    [bankNameTrim]
+                );
+                if (bankRows.length) {
+                    bankId = bankRows[0].bank_id;
+                } else {
+                    const insBank = await safeQuery(
+                        `INSERT INTO mst_bank (bank_name, is_active) VALUES (?, 1)`,
+                        [bankNameTrim]
+                    );
+                    bankId = insBank.insertId;
+                }
+            } else {
+                bankId = req.body.bank_id ? Number(req.body.bank_id) : (me.bank_id || null);
+            }
             nomorRekening = sanitize(req.body.bank_account_number) || me.bank_account_number || null;
             atasNama      = titleCase(sanitize(req.body.atas_nama));
             if (!atasNama) return res.status(400).json({ message: "Atas Nama wajib diisi" });
@@ -1041,8 +1059,26 @@ export const updatePR = async (req, res) => {
 
         let bankId = null, nomorRekening = null, atasNama = null;
         if (type === "reimburse") {
-            bankId        = me.bank_id || null;
-            nomorRekening = me.bank_account_number || null;
+            const rawBankName = sanitize(req.body.bank_name);
+            if (rawBankName) {
+                const bankNameTrim = rawBankName.trim();
+                const bankRows = await safeQuery(
+                    `SELECT bank_id FROM mst_bank WHERE TRIM(bank_name) = ? LIMIT 1`,
+                    [bankNameTrim]
+                );
+                if (bankRows.length) {
+                    bankId = bankRows[0].bank_id;
+                } else {
+                    const insBank = await safeQuery(
+                        `INSERT INTO mst_bank (bank_name, is_active) VALUES (?, 1)`,
+                        [bankNameTrim]
+                    );
+                    bankId = insBank.insertId;
+                }
+            } else {
+                bankId = req.body.bank_id ? Number(req.body.bank_id) : (me.bank_id || null);
+            }
+            nomorRekening = sanitize(req.body.bank_account_number) || me.bank_account_number || null;
             atasNama      = titleCase(sanitize(req.body.atas_nama));
             if (!atasNama) return res.status(400).json({ message: "Atas Nama wajib diisi" });
         }
