@@ -16,7 +16,10 @@ import {
 
 const router = express.Router();
 
-// Apply auth check globally on these routes
+// Allow public image loading for signature-proxy (used by <img> tags)
+router.get("/signature-proxy", proxySignature);
+
+// Apply auth check globally on remaining routes
 router.use(requireAuth);
 
 router.get("/", getLinenTransactions);
@@ -25,7 +28,6 @@ router.get("/hospitals", getHospitals);
 router.get("/hospitals/:hospitalId/rooms", getHospitalRooms);
 router.get("/hospitals/:hospitalId/linens", getHospitalLinens);
 router.get("/employees", getEmployees);
-router.get("/signature-proxy", proxySignature);
 router.get("/:id", getLinenTransactionById);
 router.post("/", createLinenTransaction);
 router.put("/:id", updateLinenTransaction);

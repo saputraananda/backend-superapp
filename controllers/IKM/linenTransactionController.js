@@ -1,3 +1,5 @@
+import fs from "fs";
+import path from "path";
 import { safeIKMQuery, safeQuery } from "../../db/pool.js";
 
 function toISODateString(v) {
@@ -297,6 +299,66 @@ export const getLinenTransactionById = async (req, res) => {
       };
     });
 
+    // Fetch Kurang Kirim Deliveries (Surat Jalan)
+    const [deliveries] = await safeIKMQuery(
+      `SELECT kd.id, kd.transaction_id, kd.surat_jalan_number, kd.delivery_date, kd.vehicle_number,
+              kd.recipient_name, kd.hospital_staff, kd.valet_id, kd.signature_valet, kd.signature_hospital,
+              kd.notes, kd.created_at,
+              tr.pickup_date AS original_pickup_date,
+              tr.form_number AS original_form_number
+       FROM tr_kurang_kirim_delivery kd
+       LEFT JOIN tr_linen_transaction tr ON tr.id = kd.transaction_id
+       WHERE kd.transaction_id = ?
+       ORDER BY kd.delivery_date DESC, kd.id DESC`,
+      [id]
+    );
+
+    let enrichedDeliveries = [];
+    if (deliveries.length > 0) {
+      // Get valet names
+      const valetIds = [...new Set(deliveries.map(d => d.valet_id).filter(Boolean))];
+      let valetMap = new Map();
+      if (valetIds.length > 0) {
+        const phValets = valetIds.map(() => "?").join(",");
+        const [valetRows] = await safeQuery(
+          `SELECT employee_id, full_name FROM mst_employee WHERE employee_id IN (${phValets})`,
+          valetIds
+        );
+        valetMap = new Map(valetRows.map(v => [v.employee_id, v.full_name]));
+      }
+
+      // Fetch delivery details
+      const deliveryIds = deliveries.map(d => d.id);
+      const phDeliveries = deliveryIds.map(() => "?").join(",");
+      const [allDeliveryDetails] = await safeIKMQuery(
+        `SELECT kdd.id, kdd.delivery_id, kdd.hospital_linen_id, kdd.qty_delivered, kdd.grammage, kdd.total_weight, kdd.notes,
+                hl.hospital_linen_name, l.linen_name, sz.size_name, cl.color_name, mt.material_name
+         FROM tr_kurang_kirim_delivery_detail kdd
+         LEFT JOIN mst_hospital_linen hl ON hl.id = kdd.hospital_linen_id
+         LEFT JOIN mst_linen l ON l.id = hl.linen_id
+         LEFT JOIN mst_size sz ON l.size_id = sz.id
+         LEFT JOIN mst_color cl ON l.color_id = cl.id
+         LEFT JOIN mst_material mt ON l.material_id = mt.id
+         WHERE kdd.delivery_id IN (${phDeliveries})
+         ORDER BY kdd.id ASC`,
+        deliveryIds
+      );
+
+      const detailsByDeliveryId = new Map();
+      allDeliveryDetails.forEach(dt => {
+        if (!detailsByDeliveryId.has(dt.delivery_id)) {
+          detailsByDeliveryId.set(dt.delivery_id, []);
+        }
+        detailsByDeliveryId.get(dt.delivery_id).push(dt);
+      });
+
+      enrichedDeliveries = deliveries.map(d => ({
+        ...d,
+        valet_name: valetMap.get(d.valet_id) || "-",
+        details: detailsByDeliveryId.get(d.id) || []
+      }));
+    }
+
     res.json({
       success: true,
       data: {
@@ -308,7 +370,8 @@ export const getLinenTransactionById = async (req, res) => {
             linen_display_name: d.hospital_linen_name || parts.join(" ")
           };
         }),
-        auditLogs: enrichedLogs
+        auditLogs: enrichedLogs,
+        kurangKirimDeliveries: enrichedDeliveries
       }
     });
 
@@ -754,15 +817,28 @@ export const getRekapCuciLinen = async (req, res) => {
 
 export const proxySignature = async (req, res) => {
   try {
-    const name = String(req.query.name || "").trim();
-    if (!name) {
+    let rawName = String(req.query.name || "").trim();
+    if (!rawName) {
       return res.status(400).json({ success: false, message: "Parameter 'name' wajib diisi" });
     }
-    // Prevent path traversal
-    if (name.includes("..") || name.includes("/") || name.includes("\\")) {
-      return res.status(400).json({ success: false, message: "Nama file tidak valid" });
+
+    const name = path.basename(rawName);
+
+    // 1. In Development, check local folder first if configured or default local directory exists
+    const localDir = process.env.IKM_SIGNATURE_LOCAL_DIR || "C:\\Users\\oemar\\Music\\PT Waschen Alora Indonesia\\linen-monitoring-system\\assets\\serahterimalinen";
+    const localFilePath = path.join(localDir, name);
+    const existsLocally = fs.existsSync(localFilePath);
+
+    if (localDir && existsLocally) {
+      const ext = path.extname(localFilePath).toLowerCase();
+      const contentType = ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : ext === ".svg" ? "image/svg+xml" : "image/png";
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Cache-Control", "public, max-age=86400");
+      const fileData = await fs.promises.readFile(localFilePath);
+      return res.end(fileData);
     }
 
+    // 2. Fetch from remote URL (Production or remote fallback)
     const baseUrl = process.env.IKM_SIGNATURE_BASE_URL || "https://linen.ikmalora.com/storage/assets/serahterimalinen";
     const targetUrl = `${baseUrl.replace(/\/$/, "")}/${encodeURIComponent(name)}`;
 
@@ -773,10 +849,10 @@ export const proxySignature = async (req, res) => {
 
     const contentType = upstream.headers.get("content-type") || "image/png";
     res.setHeader("Content-Type", contentType);
-    res.setHeader("Cache-Control", "private, max-age=300");
+    res.setHeader("Cache-Control", "public, max-age=86400");
 
     const arrayBuf = await upstream.arrayBuffer();
-    res.end(Buffer.from(arrayBuf));
+    return res.end(Buffer.from(arrayBuf));
   } catch (err) {
     console.error("[proxySignature] Error:", err);
     if (!res.headersSent) {
