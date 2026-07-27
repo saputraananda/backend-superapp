@@ -117,7 +117,7 @@ export const getRewashLinens = async (req, res) => {
     const headerIds = headers.map((h) => h.id);
     const [details] = await safeIKMQuery(
       `SELECT d.id, d.rewash_id, d.hospital_linen_id, d.qty, d.clear, d.detail_notes, d.created_at, d.updated_at,
-              hl.hospital_linen_name, hl.ownership_type, l.linen_name AS master_linen_name,
+              hl.linen_id, hl.hospital_linen_name, hl.ownership_type, l.linen_name AS master_linen_name,
               sz.size_name, cl.color_name, mt.material_name
        FROM tr_rewash_detail d
        LEFT JOIN mst_hospital_linen hl ON hl.id = d.hospital_linen_id
@@ -138,6 +138,7 @@ export const getRewashLinens = async (req, res) => {
       detailMap[d.rewash_id].push({
         id: d.id,
         hospital_linen_id: d.hospital_linen_id,
+        linen_id: d.linen_id,
         hospital_linen_name: d.hospital_linen_name,
         linen_display_name: parts.join(" "),
         master_linen_name: d.master_linen_name,
@@ -275,9 +276,17 @@ export const updateRewashDetail = async (req, res) => {
       return res.status(404).json({ message: "Data detail rewash tidak ditemukan" });
     }
 
-    const { qty, clear, detail_notes } = req.body;
+    const { qty, clear, detail_notes, hospital_linen_id } = req.body;
     const fields = [];
     const vals   = [];
+
+    if (hospital_linen_id !== undefined) {
+      const cleanHLI = toPositiveInt(hospital_linen_id);
+      if (cleanHLI) {
+        fields.push("hospital_linen_id = ?");
+        vals.push(cleanHLI);
+      }
+    }
 
     if (qty !== undefined) {
       const cleanQty = toUInt(qty, 0);
@@ -501,7 +510,7 @@ async function getRewashSnapshot(rewashId) {
 
     const [details] = await safeIKMQuery(
       `SELECT d.id, d.rewash_id, d.hospital_linen_id, d.qty, d.clear, d.detail_notes,
-              hl.hospital_linen_name, l.linen_name AS master_linen_name,
+              hl.linen_id, hl.hospital_linen_name, hl.ownership_type, l.linen_name AS master_linen_name,
               sz.size_name, cl.color_name, mt.material_name
        FROM tr_rewash_detail d
        LEFT JOIN mst_hospital_linen hl ON hl.id = d.hospital_linen_id
@@ -518,6 +527,8 @@ async function getRewashSnapshot(rewashId) {
       return {
         id: d.id,
         hospital_linen_id: d.hospital_linen_id,
+        linen_id: d.linen_id,
+        ownership_type: d.ownership_type,
         qty: d.qty,
         clear: d.clear,
         detail_notes: d.detail_notes,
