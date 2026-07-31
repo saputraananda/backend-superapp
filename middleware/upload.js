@@ -423,7 +423,8 @@ export const uploadTrainingEvidence = multer({
 // =========================
 // Upload IKM Payslip
 // =========================
-const PAYSLIP_DIR = process.env.IKM_PAYSLIP_BASE_URL || path.join(BASE_DIR, "payslip");
+// Pakai BASE_DIR yang sudah otomatis menyesuaikan dev/prod via UPLOAD_BASE_DIR
+export const PAYSLIP_DIR = path.join(BASE_DIR, "payslip");
 if (!fs.existsSync(PAYSLIP_DIR)) fs.mkdirSync(PAYSLIP_DIR, { recursive: true });
 
 const payslipStorage = multer.diskStorage({
@@ -439,4 +440,4 @@ export const uploadPayslip = multer({
   storage: payslipStorage,
   fileFilter: documentFilter,
   limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB per file
-});
+});

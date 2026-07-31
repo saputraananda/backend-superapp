@@ -234,6 +234,7 @@ app.use("/assets/purchase", express.static(path.join(ASSETS_BASE, "purchase")));
 app.use("/assets/document_alora", express.static(path.join(ASSETS_BASE, "document_alora")));
 app.use("/assets/training_evidence", express.static(path.join(ASSETS_BASE, "training_evidence")));
 app.use("/assets/pm_evidence", express.static(path.join(ASSETS_BASE, "pm_evidence")));
+app.use("/storage/assets/payslip", express.static(path.join(ASSETS_BASE, "payslip")));
 
 
 
