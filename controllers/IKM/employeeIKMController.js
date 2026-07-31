@@ -1,5 +1,11 @@
 import bcrypt from "bcrypt";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import { pool, safeQuery, safeIKMQuery } from "../../db/pool.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const FIXED_COMPANY_ID = 2;
 const SPECIAL_IKM_EMPLOYEE_ID = 25; // Employee yang diizinkan masuk IKM walau company_id != 2
@@ -568,5 +574,193 @@ export const setIKMEmployeeFloor = async (req, res) => {
 	} catch (error) {
 		console.error("[setIKMEmployeeFloor] Error:", error);
 		return res.status(500).json({ message: error.message || "Gagal mengubah lantai karyawan" });
+	}
+};
+
+export const listIKMEmployeePayslips = async (req, res) => {
+	try {
+		const employeeId = Number(req.params.id);
+		const month = req.query.month; // format: YYYY-MM
+
+		let sql = "SELECT id, employee_id, payslip_month, file_path, file_name, uploaded_by, created_at, updated_at FROM tr_payslip_ikm WHERE employee_id = ?";
+		const params = [employeeId];
+
+		if (month) {
+			sql += " AND payslip_month = ?";
+			params.push(month);
+		}
+
+		sql += " ORDER BY payslip_month DESC, id DESC";
+
+		const [rows] = await safeIKMQuery(sql, params);
+		return res.json({ success: true, data: rows });
+	} catch (error) {
+		console.error("[listIKMEmployeePayslips] Error:", error);
+		return res.status(500).json({
+			success: false,
+			message: error.message || "Gagal mengambil data slip gaji",
+		});
+	}
+};
+
+export const uploadIKMEmployeePayslip = async (req, res) => {
+	try {
+		const employeeId = Number(req.params.id);
+		const { payslip_month } = req.body;
+
+		if (!payslip_month || !/^\d{4}-\d{2}$/.test(payslip_month)) {
+			return res.status(400).json({ success: false, message: "Format bulan tidak valid (harus YYYY-MM)" });
+		}
+
+		if (!req.file) {
+			return res.status(400).json({ success: false, message: "Tidak ada file yang diupload" });
+		}
+
+		// Verify employee exists in company (company_id = 2) or has SPECIAL_IKM_EMPLOYEE_ID
+		const [empRows] = await safeQuery(
+			"SELECT employee_id FROM mst_employee WHERE employee_id = ? AND (company_id = ? OR employee_id = ?) AND is_deleted = 0 LIMIT 1",
+			[employeeId, FIXED_COMPANY_ID, SPECIAL_IKM_EMPLOYEE_ID]
+		);
+		if (empRows.length === 0) {
+			return res.status(404).json({ success: false, message: "Karyawan tidak ditemukan" });
+		}
+
+		const file_name = req.file.originalname;
+		const file_path = req.file.filename;
+		const uploaded_by = req.session?.userId || null;
+
+		// Check if there is an existing payslip for this employee and month
+		const [existing] = await safeIKMQuery(
+			"SELECT id, file_path FROM tr_payslip_ikm WHERE employee_id = ? AND payslip_month = ?",
+			[employeeId, payslip_month]
+		);
+
+		const payslipDir = process.env.IKM_PAYSLIP_BASE_URL || path.join(__dirname, "..", "assets", "payslip");
+
+		if (existing.length > 0) {
+			// Delete the old file
+			const oldFilePath = existing[0].file_path;
+			const oldAbsPath = path.join(payslipDir, path.basename(oldFilePath));
+			if (fs.existsSync(oldAbsPath)) {
+				try {
+					fs.unlinkSync(oldAbsPath);
+				} catch (err) {
+					console.error("[uploadIKMEmployeePayslip] Error deleting old file:", err);
+				}
+			}
+
+			// Update database entry
+			await safeIKMQuery(
+				"UPDATE tr_payslip_ikm SET file_name = ?, file_path = ?, uploaded_by = ?, updated_at = NOW() WHERE id = ?",
+				[file_name, file_path, uploaded_by, existing[0].id]
+			);
+		} else {
+			// Insert new database entry
+			await safeIKMQuery(
+				"INSERT INTO tr_payslip_ikm (employee_id, payslip_month, file_path, file_name, uploaded_by) VALUES (?, ?, ?, ?, ?)",
+				[employeeId, payslip_month, file_path, file_name, uploaded_by]
+			);
+		}
+
+		return res.json({
+			success: true,
+			message: "Slip gaji berhasil diupload",
+			data: {
+				payslip_month,
+				file_name,
+				file_path,
+			},
+		});
+	} catch (error) {
+		console.error("[uploadIKMEmployeePayslip] Error:", error);
+		// Clean up the newly uploaded file if DB query fails
+		if (req.file) {
+			const payslipDir = process.env.IKM_PAYSLIP_BASE_URL || path.join(__dirname, "..", "assets", "payslip");
+			const absPath = path.join(payslipDir, req.file.filename);
+			if (fs.existsSync(absPath)) {
+				try {
+					fs.unlinkSync(absPath);
+				} catch (_) {}
+			}
+		}
+		return res.status(500).json({ success: false, message: error.message || "Gagal mengupload slip gaji" });
+	}
+};
+
+export const viewIKMEmployeePayslip = async (req, res) => {
+	try {
+		const employeeId = Number(req.params.id);
+		const payslipId = Number(req.params.payslipId);
+
+		// Verify relation
+		const [rows] = await safeIKMQuery(
+			"SELECT file_path, file_name FROM tr_payslip_ikm WHERE id = ? AND employee_id = ?",
+			[payslipId, employeeId]
+		);
+
+		if (rows.length === 0) {
+			return res.status(404).json({ success: false, message: "Slip gaji tidak ditemukan" });
+		}
+
+		const { file_path, file_name } = rows[0];
+		const payslipDir = process.env.IKM_PAYSLIP_BASE_URL || path.join(__dirname, "..", "assets", "payslip");
+		const absPath = path.join(payslipDir, path.basename(file_path));
+
+		if (!fs.existsSync(absPath)) {
+			return res.status(404).json({ success: false, message: "File fisik tidak ditemukan di server" });
+		}
+
+		const ext = path.extname(absPath).toLowerCase();
+		let contentType = "application/octet-stream";
+		if (ext === ".pdf") contentType = "application/pdf";
+		else if (ext === ".jpg" || ext === ".jpeg") contentType = "image/jpeg";
+		else if (ext === ".png") contentType = "image/png";
+		else if (ext === ".webp") contentType = "image/webp";
+
+		res.setHeader("Content-Type", contentType);
+		res.setHeader("Content-Disposition", `inline; filename="${file_name}"`);
+
+		const fileStream = fs.createReadStream(absPath);
+		fileStream.pipe(res);
+	} catch (error) {
+		console.error("[viewIKMEmployeePayslip] Error:", error);
+		if (!res.headersSent) {
+			return res.status(500).json({ success: false, message: error.message || "Gagal memuat slip gaji" });
+		}
+	}
+};
+
+export const deleteIKMEmployeePayslip = async (req, res) => {
+	try {
+		const employeeId = Number(req.params.id);
+		const payslipId = Number(req.params.payslipId);
+
+		const [rows] = await safeIKMQuery(
+			"SELECT file_path FROM tr_payslip_ikm WHERE id = ? AND employee_id = ?",
+			[payslipId, employeeId]
+		);
+
+		if (rows.length === 0) {
+			return res.status(404).json({ success: false, message: "Slip gaji tidak ditemukan" });
+		}
+
+		const { file_path } = rows[0];
+		const payslipDir = process.env.IKM_PAYSLIP_BASE_URL || path.join(__dirname, "..", "assets", "payslip");
+		const absPath = path.join(payslipDir, path.basename(file_path));
+
+		if (fs.existsSync(absPath)) {
+			try {
+				fs.unlinkSync(absPath);
+			} catch (err) {
+				console.error("[deleteIKMEmployeePayslip] Error deleting file:", err);
+			}
+		}
+
+		await safeIKMQuery("DELETE FROM tr_payslip_ikm WHERE id = ?", [payslipId]);
+
+		return res.json({ success: true, message: "Slip gaji berhasil dihapus" });
+	} catch (error) {
+		console.error("[deleteIKMEmployeePayslip] Error:", error);
+		return res.status(500).json({ success: false, message: error.message || "Gagal menghapus slip gaji" });
 	}
 };

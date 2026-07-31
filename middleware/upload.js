@@ -418,4 +418,25 @@ export const uploadTrainingEvidence = multer({
   storage: trainingEvidenceStorage,
   fileFilter: documentFilter,
   limits: { fileSize: 10 * 1024 * 1024 },
+});
+
+// =========================
+// Upload IKM Payslip
+// =========================
+const PAYSLIP_DIR = process.env.IKM_PAYSLIP_BASE_URL || path.join(BASE_DIR, "payslip");
+if (!fs.existsSync(PAYSLIP_DIR)) fs.mkdirSync(PAYSLIP_DIR, { recursive: true });
+
+const payslipStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, PAYSLIP_DIR),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    const unique = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    cb(null, `payslip_${unique}${ext}`);
+  },
+});
+
+export const uploadPayslip = multer({
+  storage: payslipStorage,
+  fileFilter: documentFilter,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB per file
 });
