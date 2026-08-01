@@ -54,6 +54,22 @@ async function resolveLeaderEmployeeIds(leaderRole) {
 	};
 }
 
+async function isAuthorizedForPayslips(employeeId) {
+	const loggedInEmpId = Number(employeeId);
+	if (!loggedInEmpId) return false;
+	const ALLOWED_IDS = [25, 30, 31, 42, 43];
+	if (ALLOWED_IDS.includes(loggedInEmpId)) return true;
+
+	const [empRows] = await safeQuery(
+		"SELECT job_level_id FROM mst_employee WHERE employee_id = ? AND is_deleted = 0 LIMIT 1",
+		[loggedInEmpId]
+	);
+	if (empRows.length > 0 && Number(empRows[0].job_level_id) === 1) {
+		return true;
+	}
+	return false;
+}
+
 export const listIKMEmployees = async (req, res) => {
 	try {
 		const search = String(req.query.search || "").trim();
@@ -580,6 +596,11 @@ export const setIKMEmployeeFloor = async (req, res) => {
 
 export const listIKMEmployeePayslips = async (req, res) => {
 	try {
+		const authorized = await isAuthorizedForPayslips(req.session?.employeeId);
+		if (!authorized) {
+			return res.status(403).json({ success: false, message: "Anda tidak memiliki akses untuk melihat slip gaji karyawan ini" });
+		}
+
 		const employeeId = Number(req.params.id);
 		const month = req.query.month; // format: YYYY-MM
 
@@ -606,6 +627,14 @@ export const listIKMEmployeePayslips = async (req, res) => {
 
 export const uploadIKMEmployeePayslip = async (req, res) => {
 	try {
+		const authorized = await isAuthorizedForPayslips(req.session?.employeeId);
+		if (!authorized) {
+			if (req.file) {
+				try { fs.unlinkSync(req.file.path); } catch (_) {}
+			}
+			return res.status(403).json({ success: false, message: "Anda tidak memiliki akses untuk mengupload slip gaji" });
+		}
+
 		const employeeId = Number(req.params.id);
 		const { payslip_month } = req.body;
 
@@ -677,6 +706,11 @@ export const uploadIKMEmployeePayslip = async (req, res) => {
 
 export const viewIKMEmployeePayslip = async (req, res) => {
 	try {
+		const authorized = await isAuthorizedForPayslips(req.session?.employeeId);
+		if (!authorized) {
+			return res.status(403).json({ success: false, message: "Anda tidak memiliki akses untuk melihat slip gaji ini" });
+		}
+
 		const employeeId = Number(req.params.id);
 		const payslipId = Number(req.params.payslipId);
 
@@ -717,6 +751,11 @@ export const viewIKMEmployeePayslip = async (req, res) => {
 
 export const deleteIKMEmployeePayslip = async (req, res) => {
 	try {
+		const authorized = await isAuthorizedForPayslips(req.session?.employeeId);
+		if (!authorized) {
+			return res.status(403).json({ success: false, message: "Anda tidak memiliki akses untuk menghapus slip gaji ini" });
+		}
+
 		const employeeId = Number(req.params.id);
 		const payslipId = Number(req.params.payslipId);
 
