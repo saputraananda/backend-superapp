@@ -11,14 +11,14 @@ export const getHospitals = async (req, res) => {
   try {
     const [rows] = await safeIKMQuery(
       `SELECT id, hospital_name, hospital_id, company_name, address,
-              latitude, longitude, username, password, created_at, updated_at
+              latitude, longitude, username, password, username_unit, password_unit, created_at, updated_at
        FROM mst_hospital
        ORDER BY hospital_name ASC`
     );
 
     // Fetch all rooms
     const [roomRows] = await safeIKMQuery(
-      `SELECT id, hospital_id, room_name FROM mst_rooms_rs ORDER BY room_name ASC`
+      `SELECT id, hospital_id, room_name, user_1, user_2, user_3, user_4, user_5 FROM mst_rooms_rs ORDER BY room_name ASC`
     );
 
     // Map rooms to hospitals
@@ -42,7 +42,7 @@ export const getHospitals = async (req, res) => {
 
 // ── CREATE ─────────────────────────────────────────────────────────────────
 export const createHospital = async (req, res) => {
-  const { hospital_name, hospital_id, company_name, address, latitude, longitude, username, password, rooms } = req.body;
+  const { hospital_name, hospital_id, company_name, address, latitude, longitude, username, password, username_unit, password_unit, rooms } = req.body;
 
   if (!hospital_name?.trim())
     return res.status(400).json({ message: "Nama rumah sakit wajib diisi" });
@@ -63,8 +63,8 @@ export const createHospital = async (req, res) => {
     }
 
     const [result] = await safeIKMQuery(
-      `INSERT INTO mst_hospital (hospital_name, hospital_id, company_name, address, latitude, longitude, username, password)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO mst_hospital (hospital_name, hospital_id, company_name, address, latitude, longitude, username, password, username_unit, password_unit)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         hospital_name.trim(),
         hospital_id?.trim() || null,
@@ -74,16 +74,25 @@ export const createHospital = async (req, res) => {
         parseCoord(longitude),
         username?.trim() || null,
         password || null,
+        username_unit?.trim() || null,
+        password_unit || null,
       ]
     );
 
     // Save rooms
     if (Array.isArray(rooms) && rooms.length > 0) {
       for (const room of rooms) {
-        if (room?.trim()) {
+        const isObj = typeof room === "object" && room !== null;
+        const name = (isObj ? room.room_name : room)?.trim();
+        if (name) {
+          const u1 = isObj ? (room.user_1?.trim() || null) : null;
+          const u2 = isObj ? (room.user_2?.trim() || null) : null;
+          const u3 = isObj ? (room.user_3?.trim() || null) : null;
+          const u4 = isObj ? (room.user_4?.trim() || null) : null;
+          const u5 = isObj ? (room.user_5?.trim() || null) : null;
           await safeIKMQuery(
-            `INSERT INTO mst_rooms_rs (hospital_id, room_name) VALUES (?, ?)`,
-            [result.insertId, room.trim()]
+            `INSERT INTO mst_rooms_rs (hospital_id, room_name, user_1, user_2, user_3, user_4, user_5) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [result.insertId, name, u1, u2, u3, u4, u5]
           );
         }
       }
@@ -99,7 +108,7 @@ export const createHospital = async (req, res) => {
 // ── UPDATE ─────────────────────────────────────────────────────────────────
 export const updateHospital = async (req, res) => {
   const { id } = req.params;
-  const { hospital_name, hospital_id, company_name, address, latitude, longitude, username, password, rooms } = req.body;
+  const { hospital_name, hospital_id, company_name, address, latitude, longitude, username, password, username_unit, password_unit, rooms } = req.body;
 
   if (!hospital_name?.trim())
     return res.status(400).json({ message: "Nama rumah sakit wajib diisi" });
@@ -126,7 +135,7 @@ export const updateHospital = async (req, res) => {
     await safeIKMQuery(
       `UPDATE mst_hospital
        SET hospital_name=?, hospital_id=?, company_name=?, address=?,
-           latitude=?, longitude=?, username=?, password=?, updated_at=NOW()
+           latitude=?, longitude=?, username=?, password=?, username_unit=?, password_unit=?, updated_at=NOW()
        WHERE id=?`,
       [
         hospital_name.trim(),
@@ -137,21 +146,63 @@ export const updateHospital = async (req, res) => {
         parseCoord(longitude),
         username?.trim() || null,
         password || null,
+        username_unit?.trim() || null,
+        password_unit || null,
         id,
       ]
     );
 
-    // Update rooms
-    await safeIKMQuery(`DELETE FROM mst_rooms_rs WHERE hospital_id = ?`, [id]);
-    if (Array.isArray(rooms) && rooms.length > 0) {
+    // Update rooms safely to keep existing room IDs
+    if (Array.isArray(rooms)) {
+      // Find all existing room IDs in database for this hospital
+      const [existingRows] = await safeIKMQuery(
+        `SELECT id FROM mst_rooms_rs WHERE hospital_id = ?`,
+        [id]
+      );
+      const existingIds = existingRows.map((r) => r.id);
+      const keepIds = [];
+
       for (const room of rooms) {
-        if (room?.trim()) {
+        const isObj = typeof room === "object" && room !== null;
+        const name = (isObj ? room.room_name : room)?.trim();
+        if (!name) continue;
+
+        const roomId = isObj ? room.id : null;
+        const u1 = isObj ? (room.user_1?.trim() || null) : null;
+        const u2 = isObj ? (room.user_2?.trim() || null) : null;
+        const u3 = isObj ? (room.user_3?.trim() || null) : null;
+        const u4 = isObj ? (room.user_4?.trim() || null) : null;
+        const u5 = isObj ? (room.user_5?.trim() || null) : null;
+
+        if (roomId && existingIds.includes(Number(roomId))) {
+          // Update existing room
           await safeIKMQuery(
-            `INSERT INTO mst_rooms_rs (hospital_id, room_name) VALUES (?, ?)`,
-            [id, room.trim()]
+            `UPDATE mst_rooms_rs 
+             SET room_name = ?, user_1 = ?, user_2 = ?, user_3 = ?, user_4 = ?, user_5 = ? 
+             WHERE id = ?`,
+            [name, u1, u2, u3, u4, u5, roomId]
+          );
+          keepIds.push(Number(roomId));
+        } else {
+          // Insert new room
+          await safeIKMQuery(
+            `INSERT INTO mst_rooms_rs (hospital_id, room_name, user_1, user_2, user_3, user_4, user_5) 
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [id, name, u1, u2, u3, u4, u5]
           );
         }
       }
+
+      // Delete rooms that are not in the update request
+      const deleteIds = existingIds.filter((eid) => !keepIds.includes(eid));
+      if (deleteIds.length > 0) {
+        await safeIKMQuery(
+          `DELETE FROM mst_rooms_rs WHERE id IN (?)`,
+          [deleteIds]
+        );
+      }
+    } else {
+      await safeIKMQuery(`DELETE FROM mst_rooms_rs WHERE hospital_id = ?`, [id]);
     }
 
     res.json({ message: "Rumah sakit berhasil diperbarui" });
