@@ -18,7 +18,7 @@ export const getHospitals = async (req, res) => {
 
     // Fetch all rooms
     const [roomRows] = await safeIKMQuery(
-      `SELECT id, hospital_id, room_name FROM mst_rooms_rs ORDER BY room_name ASC`
+      `SELECT id, hospital_id, room_name, is_gudang_linen FROM mst_rooms_rs ORDER BY room_name ASC`
     );
 
     // Map rooms to hospitals
@@ -82,12 +82,19 @@ export const createHospital = async (req, res) => {
 
     // Save rooms
     if (Array.isArray(rooms) && rooms.length > 0) {
+      const gudangLinenCount = rooms.filter(r => (typeof r === "object" && r !== null ? r.is_gudang_linen : false)).length;
+      if (gudangLinenCount > 1) {
+        return res.status(400).json({ message: "Hanya diperbolehkan maksimal 1 ruangan sebagai gudang linen" });
+      }
+
       for (const room of rooms) {
-        const name = (typeof room === "object" && room !== null ? room.room_name : room)?.trim();
+        const isObj = typeof room === "object" && room !== null;
+        const name = (isObj ? room.room_name : room)?.trim();
+        const isGudangLinen = isObj ? (room.is_gudang_linen ? 1 : 0) : 0;
         if (name) {
           await safeIKMQuery(
-            `INSERT INTO mst_rooms_rs (hospital_id, room_name) VALUES (?, ?)`,
-            [result.insertId, name]
+            `INSERT INTO mst_rooms_rs (hospital_id, room_name, is_gudang_linen) VALUES (?, ?, ?)`,
+            [result.insertId, name, isGudangLinen]
           );
         }
       }
@@ -150,6 +157,11 @@ export const updateHospital = async (req, res) => {
 
     // Update rooms safely to keep existing room IDs
     if (Array.isArray(rooms)) {
+      const gudangLinenCount = rooms.filter(r => (typeof r === "object" && r !== null ? r.is_gudang_linen : false)).length;
+      if (gudangLinenCount > 1) {
+        return res.status(400).json({ message: "Hanya diperbolehkan maksimal 1 ruangan sebagai gudang linen" });
+      }
+
       // Find all existing room IDs in database for this hospital
       const [existingRows] = await safeIKMQuery(
         `SELECT id FROM mst_rooms_rs WHERE hospital_id = ?`,
@@ -164,22 +176,23 @@ export const updateHospital = async (req, res) => {
         if (!name) continue;
 
         const roomId = isObj ? room.id : null;
+        const isGudangLinen = isObj ? (room.is_gudang_linen ? 1 : 0) : 0;
 
         if (roomId && existingIds.includes(Number(roomId))) {
           // Update existing room
           await safeIKMQuery(
             `UPDATE mst_rooms_rs 
-             SET room_name = ? 
+             SET room_name = ?, is_gudang_linen = ? 
              WHERE id = ?`,
-            [name, roomId]
+            [name, isGudangLinen, roomId]
           );
           keepIds.push(Number(roomId));
         } else {
           // Insert new room
           await safeIKMQuery(
-            `INSERT INTO mst_rooms_rs (hospital_id, room_name) 
-             VALUES (?, ?)`,
-            [id, name]
+            `INSERT INTO mst_rooms_rs (hospital_id, room_name, is_gudang_linen) 
+             VALUES (?, ?, ?)`,
+            [id, name, isGudangLinen]
           );
         }
       }
@@ -222,18 +235,29 @@ export const deleteHospital = async (req, res) => {
 // ── ROOM OPERATIONS ────────────────────────────────────────────────────────
 export const createRoom = async (req, res) => {
   const { hospitalId } = req.params;
-  const { room_name } = req.body;
+  const { room_name, is_gudang_linen } = req.body;
 
   if (!room_name?.trim()) {
     return res.status(400).json({ message: "Nama ruangan wajib diisi" });
   }
 
   try {
+    const isGudang = is_gudang_linen ? 1 : 0;
+    if (isGudang) {
+      const [existing] = await safeIKMQuery(
+        `SELECT id FROM mst_rooms_rs WHERE hospital_id = ? AND is_gudang_linen = 1`,
+        [hospitalId]
+      );
+      if (existing.length > 0) {
+        return res.status(400).json({ message: "Rumah sakit ini sudah memiliki gudang linen" });
+      }
+    }
+
     const [result] = await safeIKMQuery(
-      `INSERT INTO mst_rooms_rs (hospital_id, room_name) VALUES (?, ?)`,
-      [hospitalId, room_name.trim()]
+      `INSERT INTO mst_rooms_rs (hospital_id, room_name, is_gudang_linen) VALUES (?, ?, ?)`,
+      [hospitalId, room_name.trim(), isGudang]
     );
-    res.status(201).json({ message: "Ruangan berhasil ditambahkan", id: result.insertId });
+    res.status(201).json({ message: "Ruangan berhasil ditambahkan", id: result.insertId, is_gudang_linen: isGudang });
   } catch (err) {
     console.error("createRoom:", err);
     res.status(500).json({ message: err.message });
@@ -242,16 +266,30 @@ export const createRoom = async (req, res) => {
 
 export const updateRoom = async (req, res) => {
   const { roomId } = req.params;
-  const { room_name } = req.body;
+  const { room_name, is_gudang_linen } = req.body;
 
   if (!room_name?.trim()) {
     return res.status(400).json({ message: "Nama ruangan wajib diisi" });
   }
 
   try {
+    const isGudang = is_gudang_linen ? 1 : 0;
+    if (isGudang) {
+      const [roomInfo] = await safeIKMQuery(`SELECT hospital_id FROM mst_rooms_rs WHERE id = ?`, [roomId]);
+      if (roomInfo.length > 0) {
+        const [existing] = await safeIKMQuery(
+          `SELECT id FROM mst_rooms_rs WHERE hospital_id = ? AND is_gudang_linen = 1 AND id != ?`,
+          [roomInfo[0].hospital_id, roomId]
+        );
+        if (existing.length > 0) {
+          return res.status(400).json({ message: "Rumah sakit ini sudah memiliki gudang linen" });
+        }
+      }
+    }
+
     await safeIKMQuery(
-      `UPDATE mst_rooms_rs SET room_name = ? WHERE id = ?`,
-      [room_name.trim(), roomId]
+      `UPDATE mst_rooms_rs SET room_name = ?, is_gudang_linen = ? WHERE id = ?`,
+      [room_name.trim(), isGudang, roomId]
     );
     res.json({ message: "Nama ruangan berhasil diperbarui" });
   } catch (err) {

@@ -518,12 +518,40 @@ export async function createTask(req, res) {
 export async function updateTaskStatus(req, res) {
   if (!requireAuth(req, res)) return;
   try {
+    const emp = await getSessionEmployee(req);
+    if (!emp) return res.status(401).json({ message: "Unauthorized" });
+
     const { id } = req.params;
     const { status } = req.body;
 
     const validStatuses = ["To Do", "In Progress", "Review", "Completed"];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ message: "Status tidak valid" });
+    }
+
+    // Check if user is owner, PIC, or Co-PIC
+    const [taskRows] = await db.query(
+      `SELECT owner_employee_id, pic_employee_id FROM tr_projectmanagement_task WHERE id = ? AND is_deleted = 0`,
+      [id]
+    );
+    if (!taskRows.length) return res.status(404).json({ message: "Task tidak ditemukan" });
+
+    const ownerId = taskRows[0].owner_employee_id;
+    const picId = taskRows[0].pic_employee_id;
+
+    // Check if user is Co-PIC
+    const [assigneeRows] = await db.query(
+      `SELECT id FROM tr_projectmanagement_task_assignee 
+       WHERE id_pm_task = ? AND employee_id = ? AND role = 'co-pic'`,
+      [id, emp.employee_id]
+    );
+
+    const isOwner = (emp.employee_id === ownerId);
+    const isPic = (emp.employee_id === picId);
+    const isCoPic = (assigneeRows.length > 0);
+
+    if (!isOwner && !isPic && !isCoPic) {
+      return res.status(403).json({ message: "Anda tidak memiliki akses untuk mengubah status task ini" });
     }
 
     await db.query(
@@ -557,10 +585,28 @@ export async function updateTask(req, res) {
     if (!title?.trim()) return res.status(400).json({ message: "Judul task wajib diisi" });
 
     const [taskRows] = await db.query(
-      `SELECT owner_employee_id FROM tr_projectmanagement_task WHERE id = ? AND is_deleted = 0`,
+      `SELECT owner_employee_id, pic_employee_id FROM tr_projectmanagement_task WHERE id = ? AND is_deleted = 0`,
       [id]
     );
     if (!taskRows.length) return res.status(404).json({ message: "Task tidak ditemukan" });
+
+    const ownerId = taskRows[0].owner_employee_id;
+    const picId = taskRows[0].pic_employee_id;
+
+    // Check if user is Co-PIC
+    const [assigneeRows] = await db.query(
+      `SELECT id FROM tr_projectmanagement_task_assignee 
+       WHERE id_pm_task = ? AND employee_id = ? AND role = 'co-pic'`,
+      [id, emp.employee_id]
+    );
+
+    const isOwner = (emp.employee_id === ownerId);
+    const isPic = (emp.employee_id === picId);
+    const isCoPic = (assigneeRows.length > 0);
+
+    if (!isOwner && !isPic && !isCoPic) {
+      return res.status(403).json({ message: "Anda tidak memiliki akses untuk mengupdate task ini" });
+    }
 
     await db.query(
       `UPDATE tr_projectmanagement_task
@@ -761,7 +807,22 @@ export async function createTaskComment(req, res) {
 export async function deleteTask(req, res) {
   if (!requireAuth(req, res)) return;
   try {
+    const emp = await getSessionEmployee(req);
+    if (!emp) return res.status(401).json({ message: "Unauthorized" });
+
     const { id } = req.params;
+
+    // Check if the user is the owner of the task
+    const [taskRows] = await db.query(
+      `SELECT owner_employee_id FROM tr_projectmanagement_task WHERE id = ? AND is_deleted = 0`,
+      [id]
+    );
+    if (!taskRows.length) return res.status(404).json({ message: "Task tidak ditemukan" });
+
+    if (taskRows[0].owner_employee_id !== emp.employee_id) {
+      return res.status(403).json({ message: "Hanya owner task yang dapat menghapus task ini" });
+    }
+
     await db.query(
       `UPDATE tr_projectmanagement_task SET is_deleted = 1 WHERE id = ?`,
       [id]
@@ -857,6 +918,32 @@ export async function uploadTaskEvidence(req, res) {
     const emp = await getSessionEmployee(req);
     if (!emp) return res.status(401).json({ message: "Unauthorized" });
     const { id } = req.params;
+
+    // Check if user is owner, PIC, or Co-PIC
+    const [taskRows] = await db.query(
+      `SELECT owner_employee_id, pic_employee_id FROM tr_projectmanagement_task WHERE id = ? AND is_deleted = 0`,
+      [id]
+    );
+    if (!taskRows.length) return res.status(404).json({ message: "Task tidak ditemukan" });
+
+    const ownerId = taskRows[0].owner_employee_id;
+    const picId = taskRows[0].pic_employee_id;
+
+    // Check if user is Co-PIC
+    const [assigneeRows] = await db.query(
+      `SELECT id FROM tr_projectmanagement_task_assignee 
+       WHERE id_pm_task = ? AND employee_id = ? AND role = 'co-pic'`,
+      [id, emp.employee_id]
+    );
+
+    const isOwner = (emp.employee_id === ownerId);
+    const isPic = (emp.employee_id === picId);
+    const isCoPic = (assigneeRows.length > 0);
+
+    if (!isOwner && !isPic && !isCoPic) {
+      return res.status(403).json({ message: "Anda tidak memiliki akses untuk mengunggah evidence pada task ini" });
+    }
+
     if (!req.file) return res.status(400).json({ message: "File tidak ditemukan" });
 
     const fileName = req.file.originalname;
@@ -912,6 +999,31 @@ export async function deleteTaskEvidence(req, res) {
     if (!emp) return res.status(401).json({ message: "Unauthorized" });
 
     const { id, evidenceId } = req.params;
+
+    // Check if user is owner, PIC, or Co-PIC
+    const [taskRows] = await db.query(
+      `SELECT owner_employee_id, pic_employee_id FROM tr_projectmanagement_task WHERE id = ? AND is_deleted = 0`,
+      [id]
+    );
+    if (!taskRows.length) return res.status(404).json({ message: "Task tidak ditemukan" });
+
+    const ownerId = taskRows[0].owner_employee_id;
+    const picId = taskRows[0].pic_employee_id;
+
+    // Check if user is Co-PIC
+    const [assigneeRows] = await db.query(
+      `SELECT id FROM tr_projectmanagement_task_assignee 
+       WHERE id_pm_task = ? AND employee_id = ? AND role = 'co-pic'`,
+      [id, emp.employee_id]
+    );
+
+    const isOwner = (emp.employee_id === ownerId);
+    const isPic = (emp.employee_id === picId);
+    const isCoPic = (assigneeRows.length > 0);
+
+    if (!isOwner && !isPic && !isCoPic) {
+      return res.status(403).json({ message: "Anda tidak memiliki akses untuk menghapus evidence pada task ini" });
+    }
 
     // Cek evidence ada & milik task ini
     const [rows] = await db.query(
