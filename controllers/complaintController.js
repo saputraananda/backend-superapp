@@ -45,32 +45,57 @@ const syncComplaintProgress = async (complaintId) => {
     [complaintId]
   );
 
-  const [complaint] = await safeQuery(
-    `SELECT submitted_at, in_progress_at, waiting_customer_at, resolved_at, closed_at FROM tr_complaint WHERE complaint_id = ?`,
-    [complaintId]
-  );
-
   if (latestLog && latestLog.length > 0) {
     const newProgress = latestLog[0].progress;
-    let updateFields = ["progress = ?", "updated_at = NOW()"];
-    let updateValues = [newProgress];
 
-    if (complaint && complaint.length > 0) {
-      const cRow = complaint[0];
-      if (newProgress === "On Progress" && !cRow.in_progress_at) {
-        updateFields.push("in_progress_at = NOW()");
-      }
-      if (newProgress === "Waiting Customer" && !cRow.waiting_customer_at) {
-        updateFields.push("waiting_customer_at = NOW()");
-      }
-      if (newProgress === "Resolved" && !cRow.resolved_at) {
-        updateFields.push("resolved_at = NOW()");
-        updateFields.push("duration_to_resolve = TIMESTAMPDIFF(MINUTE, submitted_at, NOW())");
-      }
-      if (newProgress === "Closed" && !cRow.closed_at) {
-        updateFields.push("closed_at = NOW()");
-        updateFields.push("duration_to_close = TIMESTAMPDIFF(MINUTE, submitted_at, NOW())");
-      }
+    const [datesResult] = await safeQuery(
+      `SELECT 
+         MIN(IF(progress = 'Open', logged_at, NULL)) as open_at,
+         MIN(IF(progress = 'On Progress', logged_at, NULL)) as in_progress_at,
+         MIN(IF(progress = 'Waiting Customer', logged_at, NULL)) as waiting_customer_at,
+         MIN(IF(progress = 'Resolved', logged_at, NULL)) as resolved_at,
+         MIN(IF(progress = 'Closed', logged_at, NULL)) as closed_at
+       FROM tr_complaint_progress_log 
+       WHERE complaint_id = ?`,
+      [complaintId]
+    );
+
+    const dates = datesResult[0] || {};
+    let updateFields = [
+      "progress = ?",
+      "in_progress_at = ?",
+      "waiting_customer_at = ?",
+      "resolved_at = ?",
+      "closed_at = ?",
+      "updated_at = NOW()"
+    ];
+    let updateValues = [
+      newProgress,
+      dates.in_progress_at || null,
+      dates.waiting_customer_at || null,
+      dates.resolved_at || null,
+      dates.closed_at || null
+    ];
+
+    if (dates.open_at) {
+      updateFields.push("submitted_at = ?");
+      updateValues.push(dates.open_at);
+    }
+
+    const finalSubmittedAt = dates.open_at || null;
+
+    if (dates.resolved_at && finalSubmittedAt) {
+      updateFields.push("duration_to_resolve = TIMESTAMPDIFF(MINUTE, ?, ?)");
+      updateValues.push(finalSubmittedAt, dates.resolved_at);
+    } else {
+      updateFields.push("duration_to_resolve = NULL");
+    }
+
+    if (dates.closed_at && finalSubmittedAt) {
+      updateFields.push("duration_to_close = TIMESTAMPDIFF(MINUTE, ?, ?)");
+      updateValues.push(finalSubmittedAt, dates.closed_at);
+    } else {
+      updateFields.push("duration_to_close = NULL");
     }
 
     await safeQuery(
@@ -80,7 +105,16 @@ const syncComplaintProgress = async (complaintId) => {
   } else {
     // If no logs left, set progress back to Open
     await safeQuery(
-      `UPDATE tr_complaint SET progress = 'Open', updated_at = NOW() WHERE complaint_id = ?`,
+      `UPDATE tr_complaint 
+       SET progress = 'Open', 
+           in_progress_at = NULL, 
+           waiting_customer_at = NULL, 
+           resolved_at = NULL, 
+           closed_at = NULL,
+           duration_to_resolve = NULL,
+           duration_to_close = NULL,
+           updated_at = NOW() 
+       WHERE complaint_id = ?`,
       [complaintId]
     );
   }
@@ -432,6 +466,7 @@ export const createComplaint = async (req, res) => {
     const deduction = ["None", "Company", "Management"].includes(req.body.deduction) ? req.body.deduction : "None";
     const picEmployeeId = req.body.pic_employee_id ? Number(req.body.pic_employee_id) : null;
     const picName = String(req.body.pic_name || "").trim() || null;
+    const submittedAt = (req.body.submitted_at && req.body.submitted_at !== "null" && req.body.submitted_at !== "") ? req.body.submitted_at : null;
 
     if (!typeId || !categoryId || !topicId || !outletId || !name || !nota || !description) {
       return res.status(400).json({ message: "Semua field wajib diisi." });
@@ -446,7 +481,7 @@ export const createComplaint = async (req, res) => {
        VALUES (?,?,?,?,?,?,?,?,?,?,?,'Open',COALESCE(?, NOW()),?,?)`,
       [typeId, categoryId, topicId, outletId, name, nota, qty, description,
         deduction, picEmployeeId, picName,
-        req.body.submitted_at || null,
+        submittedAt,
         Number(userId), req.session?.employeeId ? Number(req.session.employeeId) : null]
     );
 
@@ -465,10 +500,10 @@ export const createComplaint = async (req, res) => {
     // Auto-create first progress log
     await safeQuery(
       `INSERT INTO tr_complaint_progress_log
-         (complaint_id, progress, note, pic_employee_id, pic_name, logged_by_user_id, logged_by_employee_id)
-       VALUES (?,?,?,?,?,?,?)`,
+         (complaint_id, progress, note, pic_employee_id, pic_name, logged_by_user_id, logged_by_employee_id, logged_at)
+       VALUES (?,?,?,?,?,?,?,COALESCE(?, NOW()))`,
       [complaintId, "Open", "Komplain dibuat.", picEmployeeId, picName,
-        Number(userId), req.session?.employeeId ? Number(req.session.employeeId) : null]
+        Number(userId), req.session?.employeeId ? Number(req.session.employeeId) : null, submittedAt]
     );
 
     res.status(201).json({ message: "Komplain berhasil disimpan.", complaint_id: complaintId });
@@ -503,6 +538,7 @@ export const updateComplaint = async (req, res) => {
     const deduction = ["None", "Company", "Management"].includes(req.body.deduction) ? req.body.deduction : "None";
     const picEmployeeId = req.body.pic_employee_id ? Number(req.body.pic_employee_id) : null;
     const picName = String(req.body.pic_name || "").trim() || null;
+    const submittedAt = (req.body.submitted_at && req.body.submitted_at !== "null" && req.body.submitted_at !== "") ? req.body.submitted_at : null;
 
     if (!typeId || !categoryId || !topicId || !outletId || !name || !nota || !description) {
       return res.status(400).json({ message: "Semua field wajib diisi." });
@@ -520,9 +556,21 @@ export const updateComplaint = async (req, res) => {
        WHERE complaint_id=?`,
       [typeId, categoryId, topicId, outletId, name, nota, qty, description,
         deduction, picEmployeeId, picName,
-        req.body.submitted_at || null, req.body.submitted_at || null, req.body.submitted_at || null,
+        submittedAt, submittedAt, submittedAt,
         id]
     );
+
+    if (submittedAt) {
+      await safeQuery(
+        `UPDATE tr_complaint_progress_log 
+         SET logged_at = ? 
+         WHERE complaint_id = ? AND progress = 'Open' 
+         ORDER BY logged_at ASC, log_id ASC 
+         LIMIT 1`,
+        [submittedAt, id]
+      );
+      await syncComplaintProgress(id);
+    }
 
     // Handle new file uploads
     const files = req.files || [];
@@ -590,7 +638,7 @@ export const addProgressLog = async (req, res) => {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ message: "ID tidak valid." });
 
-    const [existing] = await safeQuery("SELECT complaint_id, submitted_at, in_progress_at, waiting_customer_at, resolved_at, closed_at FROM tr_complaint WHERE complaint_id=?", [id]);
+    const [existing] = await safeQuery("SELECT complaint_id FROM tr_complaint WHERE complaint_id=?", [id]);
     if (!existing.length) return res.status(404).json({ message: "Komplain tidak ditemukan." });
 
     const progress = req.body.progress;
@@ -602,13 +650,14 @@ export const addProgressLog = async (req, res) => {
     const note = String(req.body.note || "").trim() || null;
     const picEmployeeId = req.body.pic_employee_id ? Number(req.body.pic_employee_id) : null;
     const picName = String(req.body.pic_name || "").trim() || null;
+    const loggedAt = (req.body.logged_at && req.body.logged_at !== "null" && req.body.logged_at !== "") ? req.body.logged_at : null;
 
     const [logResult] = await safeQuery(
       `INSERT INTO tr_complaint_progress_log
-         (complaint_id, progress, note, pic_employee_id, pic_name, logged_by_user_id, logged_by_employee_id)
-       VALUES (?,?,?,?,?,?,?)`,
+         (complaint_id, progress, note, pic_employee_id, pic_name, logged_by_user_id, logged_by_employee_id, logged_at)
+       VALUES (?,?,?,?,?,?,?,COALESCE(?, NOW()))`,
       [id, progress, note, picEmployeeId, picName,
-        Number(userId), req.session?.employeeId ? Number(req.session.employeeId) : null]
+        Number(userId), req.session?.employeeId ? Number(req.session.employeeId) : null, loggedAt]
     );
 
     const logId = logResult.insertId;
@@ -623,31 +672,8 @@ export const addProgressLog = async (req, res) => {
       );
     }
 
-    // Determine new values
-    let updateFields = ["progress=?", "updated_at=NOW()"];
-    let updateValues = [progress];
-
-    const cRow = existing[0];
-    if (progress === "On Progress" && !cRow.in_progress_at) {
-      updateFields.push("in_progress_at=NOW()");
-    }
-    if (progress === "Waiting Customer" && !cRow.waiting_customer_at) {
-      updateFields.push("waiting_customer_at=NOW()");
-    }
-    if (progress === "Resolved" && !cRow.resolved_at) {
-      updateFields.push("resolved_at=NOW()");
-      updateFields.push("duration_to_resolve=TIMESTAMPDIFF(MINUTE, submitted_at, NOW())");
-    }
-    if (progress === "Closed" && !cRow.closed_at) {
-      updateFields.push("closed_at=NOW()");
-      updateFields.push("duration_to_close=TIMESTAMPDIFF(MINUTE, submitted_at, NOW())");
-    }
-
-    // Update complaint progress
-    await safeQuery(
-      `UPDATE tr_complaint SET ${updateFields.join(", ")} WHERE complaint_id=?`,
-      [...updateValues, id]
-    );
+    // Sync complaint progress
+    await syncComplaintProgress(id);
 
     res.status(201).json({ message: "Progress log berhasil ditambahkan.", log_id: logId });
   } catch (err) {
@@ -681,12 +707,13 @@ export const updateProgressLog = async (req, res) => {
 
     const note = String(req.body.note || "").trim() || null;
     const picName = String(req.body.pic_name || "").trim() || null;
+    const loggedAt = (req.body.logged_at && req.body.logged_at !== "null" && req.body.logged_at !== "") ? req.body.logged_at : null;
 
     await safeQuery(
       `UPDATE tr_complaint_progress_log 
-       SET progress = ?, note = ?, pic_name = ?
+       SET progress = ?, note = ?, pic_name = ?, logged_at = COALESCE(?, logged_at)
        WHERE log_id = ?`,
-      [progress, note, picName, logId]
+      [progress, note, picName, loggedAt, logId]
     );
 
     // Sync complaint progress
