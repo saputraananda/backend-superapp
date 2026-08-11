@@ -201,7 +201,7 @@ export const getLinenTransactionById = async (req, res) => {
 
     // Fetch Details
     let detailSql = `
-      SELECT d.id, d.transaction_id, d.hospital_linen_id, d.qty_kotor, d.qty_bersih, d.notes,
+      SELECT d.id, d.transaction_id, d.hospital_linen_id, d.room_id, d.qty_kotor, d.qty_bersih, d.notes,
              hl.hospital_linen_name, hl.ownership_type,
              l.linen_name AS master_linen_name, sz.size_name, cl.color_name, mt.material_name
       FROM tr_linen_transaction_detail d
@@ -214,10 +214,9 @@ export const getLinenTransactionById = async (req, res) => {
     const params = [];
     if (roomId) {
       detailSql += `
-        INNER JOIN mst_hospital_linen_rooms hlr ON hlr.hospital_linen_id = d.hospital_linen_id AND hlr.room_id = ?
-        WHERE d.transaction_id = ?
+        WHERE d.transaction_id = ? AND d.room_id = ?
       `;
-      params.push(roomId, id);
+      params.push(id, roomId);
     } else {
       detailSql += `
         WHERE d.transaction_id = ?
@@ -477,13 +476,16 @@ export const getHospitalLinens = async (req, res) => {
     }
     const [rows] = await safeIKMQuery(
       `SELECT hl.id AS hospital_linen_id, hl.hospital_linen_name, hl.ownership_type,
-              l.linen_name AS master_linen_name, sz.size_name, cl.color_name, mt.material_name
+              l.linen_name AS master_linen_name, sz.size_name, cl.color_name, mt.material_name,
+              GROUP_CONCAT(hlr.room_id) AS room_ids
        FROM mst_hospital_linen hl
        LEFT JOIN mst_linen l ON l.id = hl.linen_id
        LEFT JOIN mst_size sz ON l.size_id = sz.id
        LEFT JOIN mst_color cl ON l.color_id = cl.id
        LEFT JOIN mst_material mt ON l.material_id = mt.id
+       LEFT JOIN mst_hospital_linen_rooms hlr ON hlr.hospital_linen_id = hl.id
        WHERE hl.hospital_id = ? AND hl.is_active = 1
+       GROUP BY hl.id, hl.hospital_linen_name, hl.ownership_type, l.linen_name, sz.size_name, cl.color_name, mt.material_name
        ORDER BY hl.hospital_linen_name ASC, l.linen_name ASC`,
       [hospitalId]
     );
@@ -567,10 +569,11 @@ export const createLinenTransaction = async (req, res) => {
       const detailValues = [];
       const queryParams = [];
       details.forEach(d => {
-        detailValues.push("(?, ?, ?, ?, ?)");
+        detailValues.push("(?, ?, ?, ?, ?, ?)");
         queryParams.push(
           transactionId,
           Number(d.hospital_linen_id),
+          d.room_id ? Number(d.room_id) : null,
           Number(d.qty_kotor || 0),
           d.qty_bersih !== undefined && d.qty_bersih !== null ? Number(d.qty_bersih) : null,
           d.notes || null
@@ -579,7 +582,7 @@ export const createLinenTransaction = async (req, res) => {
 
       await safeIKMQuery(
         `INSERT INTO tr_linen_transaction_detail 
-         (transaction_id, hospital_linen_id, qty_kotor, qty_bersih, notes) 
+         (transaction_id, hospital_linen_id, room_id, qty_kotor, qty_bersih, notes) 
          VALUES ${detailValues.join(", ")}`,
         queryParams
       );
@@ -672,10 +675,11 @@ export const updateLinenTransaction = async (req, res) => {
       const detailValues = [];
       const queryParams = [];
       details.forEach(d => {
-        detailValues.push("(?, ?, ?, ?, ?)");
+        detailValues.push("(?, ?, ?, ?, ?, ?)");
         queryParams.push(
           id,
           Number(d.hospital_linen_id),
+          d.room_id ? Number(d.room_id) : null,
           Number(d.qty_kotor || 0),
           d.qty_bersih !== undefined && d.qty_bersih !== null ? Number(d.qty_bersih) : null,
           d.notes || null
@@ -684,7 +688,7 @@ export const updateLinenTransaction = async (req, res) => {
 
       await safeIKMQuery(
         `INSERT INTO tr_linen_transaction_detail 
-         (transaction_id, hospital_linen_id, qty_kotor, qty_bersih, notes) 
+         (transaction_id, hospital_linen_id, room_id, qty_kotor, qty_bersih, notes) 
          VALUES ${detailValues.join(", ")}`,
         queryParams
       );

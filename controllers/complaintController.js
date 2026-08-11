@@ -85,14 +85,14 @@ const syncComplaintProgress = async (complaintId) => {
     const finalSubmittedAt = dates.open_at || null;
 
     if (dates.resolved_at && finalSubmittedAt) {
-      updateFields.push("duration_to_resolve = TIMESTAMPDIFF(MINUTE, ?, ?)");
+      updateFields.push("duration_to_resolve = GREATEST(TIMESTAMPDIFF(MINUTE, ?, ?), 0)");
       updateValues.push(finalSubmittedAt, dates.resolved_at);
     } else {
       updateFields.push("duration_to_resolve = NULL");
     }
 
     if (dates.closed_at && finalSubmittedAt) {
-      updateFields.push("duration_to_close = TIMESTAMPDIFF(MINUTE, ?, ?)");
+      updateFields.push("duration_to_close = GREATEST(TIMESTAMPDIFF(MINUTE, ?, ?), 0)");
       updateValues.push(finalSubmittedAt, dates.closed_at);
     } else {
       updateFields.push("duration_to_close = NULL");
@@ -550,8 +550,8 @@ export const updateComplaint = async (req, res) => {
          complaint_name=?, nota_number=?, qty=?, description=?,
          deduction=?, pic_employee_id=?, pic_name=?,
          submitted_at=COALESCE(?, submitted_at),
-         duration_to_resolve = IF(resolved_at IS NOT NULL, TIMESTAMPDIFF(MINUTE, COALESCE(?, submitted_at), resolved_at), duration_to_resolve),
-         duration_to_close = IF(closed_at IS NOT NULL, TIMESTAMPDIFF(MINUTE, COALESCE(?, submitted_at), closed_at), duration_to_close),
+         duration_to_resolve = IF(resolved_at IS NOT NULL, GREATEST(TIMESTAMPDIFF(MINUTE, COALESCE(?, submitted_at), resolved_at), 0), duration_to_resolve),
+         duration_to_close = IF(closed_at IS NOT NULL, GREATEST(TIMESTAMPDIFF(MINUTE, COALESCE(?, submitted_at), closed_at), 0), duration_to_close),
          updated_at=NOW()
        WHERE complaint_id=?`,
       [typeId, categoryId, topicId, outletId, name, nota, qty, description,
