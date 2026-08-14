@@ -510,6 +510,10 @@ export const createLinenTransaction = async (req, res) => {
       hospital_id,
       user_pickup,
       user_delivery,
+      hospital_staff_pickup,
+      hospital_staff_delivery,
+      hospital_assistant_pickup,
+      hospital_assistant_delivery,
       pickup_date,
       delivery_date,
       notes_pickup,
@@ -547,13 +551,17 @@ export const createLinenTransaction = async (req, res) => {
     // Insert Header
     const [result] = await safeIKMQuery(
       `INSERT INTO tr_linen_transaction 
-       (form_number, hospital_id, user_pickup, user_delivery, pickup_date, delivery_date, status, notes_pickup, notes_delivery) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (form_number, hospital_id, user_pickup, user_delivery, hospital_staff_pickup, hospital_staff_delivery, hospital_assistant_pickup, hospital_assistant_delivery, pickup_date, delivery_date, status, notes_pickup, notes_delivery) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         form_number,
         Number(hospital_id),
         Number(user_pickup),
         user_delivery ? Number(user_delivery) : null,
+        hospital_staff_pickup || null,
+        hospital_staff_delivery || null,
+        hospital_assistant_pickup || null,
+        hospital_assistant_delivery || null,
         pickup_date,
         delivery_date || null,
         status || "PROSES",
