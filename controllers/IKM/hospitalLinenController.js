@@ -33,7 +33,19 @@ export const getByHospital = async (req, res) => {
        JOIN mst_rooms_rs r ON hlr.room_id = r.id`
     );
 
-    // Group by hospital_linen_id
+    // Fetch all IKM rooms
+    const [ikmRooms] = await safeIKMQuery(
+      `SELECT id, room_name FROM mst_rooms_ikm ORDER BY room_name ASC`
+    );
+
+    // Fetch IKM room stocks
+    const [ikmRoomStocks] = await safeIKMQuery(
+      `SELECT milr.id, milr.hospital_linen_id, milr.room_ikm_id, milr.stock_in_ikm, r.room_name AS ikm_room_name
+       FROM mst_ikm_linen_rooms milr
+       JOIN mst_rooms_ikm r ON milr.room_ikm_id = r.id`
+    );
+
+    // Group by hospital_linen_id for RS
     const roomStocksMap = {};
     roomStocks.forEach(rs => {
       if (!roomStocksMap[rs.hospital_linen_id]) roomStocksMap[rs.hospital_linen_id] = [];
@@ -45,12 +57,25 @@ export const getByHospital = async (req, res) => {
       });
     });
 
+    // Group by hospital_linen_id for IKM
+    const ikmRoomStocksMap = {};
+    ikmRoomStocks.forEach(irs => {
+      if (!ikmRoomStocksMap[irs.hospital_linen_id]) ikmRoomStocksMap[irs.hospital_linen_id] = [];
+      ikmRoomStocksMap[irs.hospital_linen_id].push({
+        id: irs.id,
+        room_ikm_id: irs.room_ikm_id,
+        ikm_room_name: irs.ikm_room_name,
+        stock_in_ikm: irs.stock_in_ikm
+      });
+    });
+
     const data = rows.map(r => ({
       ...r,
-      room_stocks: roomStocksMap[r.id] || []
+      room_stocks: roomStocksMap[r.id] || [],
+      ikm_room_stocks: ikmRoomStocksMap[r.id] || []
     }));
 
-    res.json({ data });
+    res.json({ data, ikm_rooms: ikmRooms });
   } catch (err) {
     console.error("getByHospital:", err);
     res.status(500).json({ message: err.message });
@@ -87,16 +112,20 @@ export const create = async (req, res) => {
   const {
     linen_id, hospital_linen_name, ownership_type, unit, grammage,
     washing_price_type, washing_price, rental_price, par_stock, min_stock,
-    stock_in_ikm, stock_in_rs, is_active, room_stocks,
+    stock_in_ikm, stock_in_rs, is_active, room_stocks, ikm_room_stocks,
   } = req.body;
 
   if (!linen_id) return res.status(400).json({ message: "Linen wajib dipilih" });
+
+  const totalIkmStock = Array.isArray(ikm_room_stocks) && ikm_room_stocks.length > 0
+    ? ikm_room_stocks.reduce((sum, r) => sum + (Number(r.stock_in_ikm) || 0), 0)
+    : Number(stock_in_ikm) || 0;
 
   const totalRsStock = Array.isArray(room_stocks) && room_stocks.length > 0
     ? room_stocks.reduce((sum, r) => sum + (Number(r.stock_in_rs) || 0), 0)
     : Number(stock_in_rs) || 0;
 
-  const currentStock = (Number(stock_in_ikm) || 0) + totalRsStock;
+  const currentStock = totalIkmStock + totalRsStock;
 
   try {
     const [result] = await safeIKMQuery(
@@ -116,7 +145,7 @@ export const create = async (req, res) => {
         rental_price ?? 0,
         par_stock ?? 0,
         min_stock ?? 0,
-        Number(stock_in_ikm) || 0,
+        totalIkmStock,
         totalRsStock,
         currentStock,
         is_active !== undefined ? (is_active ? 1 : 0) : 1,
@@ -135,6 +164,18 @@ export const create = async (req, res) => {
       }
     }
 
+    // Save IKM room stocks
+    if (Array.isArray(ikm_room_stocks) && ikm_room_stocks.length > 0) {
+      for (const r of ikm_room_stocks) {
+        if (r.room_ikm_id) {
+          await safeIKMQuery(
+            `INSERT INTO mst_ikm_linen_rooms (hospital_linen_id, room_ikm_id, stock_in_ikm) VALUES (?, ?, ?)`,
+            [result.insertId, r.room_ikm_id, Number(r.stock_in_ikm) || 0]
+          );
+        }
+      }
+    }
+
     res.status(201).json({ message: "Linen RS berhasil ditambahkan", id: result.insertId });
   } catch (err) {
     console.error("create:", err);
@@ -148,7 +189,7 @@ export const update = async (req, res) => {
   const {
     linen_id, hospital_linen_name, ownership_type, unit, grammage,
     washing_price_type, washing_price, rental_price, par_stock, min_stock,
-    stock_in_ikm, stock_in_rs, is_active, room_stocks,
+    stock_in_ikm, stock_in_rs, is_active, room_stocks, ikm_room_stocks,
   } = req.body;
 
   try {
@@ -160,7 +201,10 @@ export const update = async (req, res) => {
       return res.status(404).json({ message: hospitalNotFound(hospitalId) });
     }
 
-    const ikmStock = stock_in_ikm !== undefined ? Number(stock_in_ikm) : 0;
+    const ikmStock = Array.isArray(ikm_room_stocks) && ikm_room_stocks.length > 0
+      ? ikm_room_stocks.reduce((sum, r) => sum + (Number(r.stock_in_ikm) || 0), 0)
+      : (stock_in_ikm !== undefined ? Number(stock_in_ikm) : 0);
+
     const totalRsStock = Array.isArray(room_stocks) && room_stocks.length > 0
       ? room_stocks.reduce((sum, r) => sum + (Number(r.stock_in_rs) || 0), 0)
       : Number(stock_in_rs) || 0;
@@ -200,6 +244,19 @@ export const update = async (req, res) => {
           await safeIKMQuery(
             `INSERT INTO mst_hospital_linen_rooms (hospital_linen_id, room_id, stock_in_rs) VALUES (?, ?, ?)`,
             [id, r.room_id, Number(r.stock_in_rs) || 0]
+          );
+        }
+      }
+    }
+
+    // Update IKM room stocks
+    await safeIKMQuery(`DELETE FROM mst_ikm_linen_rooms WHERE hospital_linen_id = ?`, [id]);
+    if (Array.isArray(ikm_room_stocks) && ikm_room_stocks.length > 0) {
+      for (const r of ikm_room_stocks) {
+        if (r.room_ikm_id) {
+          await safeIKMQuery(
+            `INSERT INTO mst_ikm_linen_rooms (hospital_linen_id, room_ikm_id, stock_in_ikm) VALUES (?, ?, ?)`,
+            [id, r.room_ikm_id, Number(r.stock_in_ikm) || 0]
           );
         }
       }
