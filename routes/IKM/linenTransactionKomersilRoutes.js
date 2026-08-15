@@ -6,13 +6,13 @@ import {
   getHospitals,
   getHospitalRooms,
   getEmployees,
-  getHospitalCustomLinens,
+  getHospitalKomersilLinens,
   createLinenTransaction,
   updateLinenTransaction,
   deleteLinenTransaction,
   proxySignature,
   getRekapCuciLinen,
-} from "../../controllers/IKM/linenTransactionCustomController.js";
+} from "../../controllers/IKM/linenTransactionKomersilController.js";
 
 const router = express.Router();
 
@@ -26,7 +26,7 @@ router.get("/", getLinenTransactions);
 router.get("/rekap/cuci", getRekapCuciLinen);
 router.get("/hospitals", getHospitals);
 router.get("/hospitals/:hospitalId/rooms", getHospitalRooms);
-router.get("/hospitals/:hospitalId/linens", getHospitalCustomLinens);
+router.get("/hospitals/:hospitalId/linens", getHospitalKomersilLinens);
 router.get("/employees", getEmployees);
 router.get("/:id", getLinenTransactionById);
 router.post("/", createLinenTransaction);
