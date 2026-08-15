@@ -55,6 +55,23 @@ const normalizeServiceName = (name) => {
   return s || "Tanpa Nama Item";
 };
 
+/** Cleanox Only KPI: only home_service | take_home (no all). */
+const parseOnlyServiceMode = (raw) => {
+  const mode = String(raw || "").trim();
+  if (mode === "home_service" || mode === "take_home") return mode;
+  return null;
+};
+
+const onlyServiceModeSql = (serviceMode) => {
+  if (serviceMode === "take_home") {
+    return { sql: " AND t.service_mode = 'take_home'", params: [] };
+  }
+  return {
+    sql: " AND (t.service_mode = 'home_service' OR t.service_mode IS NULL OR t.service_mode = '')",
+    params: [],
+  };
+};
+
 /* ── KPI Summary ────────────────────────────────────────── */
 export const getKpiSummary = async (req, res) => {
   const { date_start, date_end, date_field = "tgl_terima", outlet } = req.query;
@@ -752,5 +769,575 @@ export const exportSlaItems = async (_req, res) => {
   } catch (err) {
     console.error("[kpiProduksi/exportSlaItems]", err.message);
     return res.status(500).json({ message: "Gagal generate export", error: err.message });
+  }
+};
+
+/* ── Cleanox Only — helpers ─────────────────────────────── */
+const ONLY_KPI_KEYS = ["pickup", "cuci_jemur", "packing", "pengantaran"];
+
+const getTakehomeStageBundle = (progressRow) => {
+  if (!progressRow) {
+    return {
+      at: { pickup: null, cuci_jemur: null, packing: null, pengantaran: null },
+      by: { pickup: [], cuci_jemur: [], packing: [], pengantaran: [] },
+    };
+  }
+
+  const pengantaranAt = progressRow.pengantaran_at || progressRow.diantar_at || null;
+  const pengantaranBy = [
+    ...parseJson(progressRow.pengantaran_by),
+    ...(progressRow.pengantaran_at ? [] : parseJson(progressRow.diantar_by)),
+  ];
+
+  return {
+    at: {
+      pickup: progressRow.diambil_at || null,
+      cuci_jemur: progressRow.dicuci_at || null,
+      packing: progressRow.packing_at || null,
+      pengantaran: pengantaranAt,
+    },
+    by: {
+      pickup: parseJson(progressRow.diambil_by),
+      cuci_jemur: parseJson(progressRow.dicuci_by),
+      packing: parseJson(progressRow.packing_by),
+      pengantaran: pengantaranBy,
+    },
+  };
+};
+
+const getHomeServiceStageTimestamps = (assignmentRow) => {
+  if (!assignmentRow) {
+    return { pickup: null, cuci_jemur: null, packing: null, pengantaran: null };
+  }
+  const pickupAt = assignmentRow.arrival_at || assignmentRow.started_at || null;
+  const pengantaranAt =
+    assignmentRow.completed_at ||
+    (assignmentRow.assignment_status === "Done" ? assignmentRow.updated_at || assignmentRow.completed_at : null);
+  return {
+    pickup: pickupAt,
+    cuci_jemur: assignmentRow.before_photo_at || null,
+    packing: assignmentRow.after_photo_at || null,
+    pengantaran: pengantaranAt,
+  };
+};
+
+const creditEmployeeStages = (empMap, names, key) => {
+  for (const name of names) {
+    if (!name || name === "Admin") continue;
+    if (!empMap[name]) {
+      empMap[name] = {
+        name,
+        pickup: 0,
+        cuci_jemur: 0,
+        packing: 0,
+        pengantaran: 0,
+        total: 0,
+      };
+    }
+    empMap[name][key] += 1;
+  }
+};
+
+const earliestAt = (values) => {
+  let best = null;
+  let bestTs = Infinity;
+  for (const v of values) {
+    const d = parseDate(v);
+    if (!d) continue;
+    const ts = d.getTime();
+    if (ts < bestTs) {
+      bestTs = ts;
+      best = v;
+    }
+  }
+  return best;
+};
+
+const latestAt = (values) => {
+  let best = null;
+  let bestTs = -Infinity;
+  for (const v of values) {
+    const d = parseDate(v);
+    if (!d) continue;
+    const ts = d.getTime();
+    if (ts > bestTs) {
+      bestTs = ts;
+      best = v;
+    }
+  }
+  return best;
+};
+
+/* ── Cleanox Only — Available Periods ───────────────────── */
+export const getKpiOnlyAvailablePeriods = async (_req, res) => {
+  try {
+    const [rows] = await cleanoxPool.query(
+      `SELECT DISTINCT
+         CASE
+           WHEN DAY(service_date) >= 26 THEN
+             CASE WHEN MONTH(service_date) = 12 THEN YEAR(service_date) + 1 ELSE YEAR(service_date) END
+           ELSE YEAR(service_date)
+         END AS yr,
+         CASE
+           WHEN DAY(service_date) >= 26 THEN
+             CASE WHEN MONTH(service_date) = 12 THEN 1 ELSE MONTH(service_date) + 1 END
+           ELSE MONTH(service_date)
+         END AS mo
+       FROM tr_transactions
+       WHERE service_date IS NOT NULL
+         AND status <> 'Cancelled'
+       ORDER BY yr DESC, mo DESC`
+    );
+
+    const now = new Date(Date.now() + 7 * 60 * 60 * 1000);
+    const jktDate = now.getUTCDate();
+    const jktMonth = now.getUTCMonth() + 1;
+    const jktYear = now.getUTCFullYear();
+
+    let activeMonth;
+    let activeYear;
+    if (jktDate >= 26) {
+      if (jktMonth === 12) {
+        activeMonth = 1;
+        activeYear = jktYear + 1;
+      } else {
+        activeMonth = jktMonth + 1;
+        activeYear = jktYear;
+      }
+    } else {
+      activeMonth = jktMonth;
+      activeYear = jktYear;
+    }
+
+    const exists = rows.some((r) => Number(r.yr) === activeYear && Number(r.mo) === activeMonth);
+    if (!exists) {
+      rows.push({ yr: activeYear, mo: activeMonth });
+      rows.sort((a, b) => b.yr - a.yr || b.mo - a.mo);
+    }
+
+    return res.json({
+      periods: rows.map((r) => ({ yr: Number(r.yr), mo: Number(r.mo) })),
+    });
+  } catch (err) {
+    console.error("[kpiProduksi/getKpiOnlyAvailablePeriods]", err.message);
+    return res.status(500).json({ message: "Gagal mengambil data periode Cleanox Only", error: err.message });
+  }
+};
+
+/* ── Cleanox Only — Summary ─────────────────────────────── */
+export const getKpiOnlySummary = async (req, res) => {
+  const { date_start, date_end, service_mode: serviceModeRaw } = req.query;
+
+  if (!date_start || !date_end) {
+    return res.status(400).json({ message: "date_start dan date_end wajib diisi" });
+  }
+
+  const serviceMode = parseOnlyServiceMode(serviceModeRaw);
+  if (!serviceMode) {
+    return res.status(400).json({
+      message: "service_mode harus home_service atau take_home",
+    });
+  }
+
+  const modeFilter = onlyServiceModeSql(serviceMode);
+
+  try {
+    const [txRows] = await cleanoxPool.query(
+      `SELECT t.id, t.transaction_no, t.customer_name, t.service_date, t.service_mode,
+              t.status, t.final_amount
+       FROM tr_transactions t
+       WHERE DATE(t.service_date) BETWEEN DATE(?) AND DATE(?)
+         AND t.status <> 'Cancelled'
+         ${modeFilter.sql}`,
+      [date_start, date_end, ...modeFilter.params]
+    );
+
+    const takehomeIds = txRows
+      .filter((t) => String(t.service_mode || "home_service") === "take_home")
+      .map((t) => Number(t.id));
+    const homeIds = txRows
+      .filter((t) => String(t.service_mode || "home_service") !== "take_home")
+      .map((t) => Number(t.id));
+
+    let progressRows = [];
+    if (takehomeIds.length > 0) {
+      const [rows] = await cleanoxPool.query(
+        `SELECT * FROM tr_takehome_progress WHERE transaction_id IN (?)`,
+        [takehomeIds]
+      );
+      progressRows = rows;
+    }
+
+    let assignmentRows = [];
+    if (homeIds.length > 0) {
+      const [rows] = await cleanoxPool.query(
+        `SELECT id, transaction_id, employee_name, assignment_status,
+                started_at, arrival_at, before_photo_at, after_photo_at, completed_at, updated_at
+         FROM tr_worker_assignments
+         WHERE transaction_id IN (?)
+           AND assignment_status NOT IN ('Rejected', 'Cancelled', 'Replaced')`,
+        [homeIds]
+      );
+      assignmentRows = rows;
+    }
+
+    const [itemRows] = await cleanoxPool.query(
+      `SELECT i.transaction_id, i.line_total, COALESCE(s.name, 'Tanpa Nama Item') AS service_name
+       FROM tr_transaction_items i
+       INNER JOIN tr_transactions t ON t.id = i.transaction_id
+       LEFT JOIN mst_services s ON s.id = i.service_id
+       WHERE DATE(t.service_date) BETWEEN DATE(?) AND DATE(?)
+         AND t.status <> 'Cancelled'
+         ${modeFilter.sql}`,
+      [date_start, date_end, ...modeFilter.params]
+    );
+
+    const progressByTx = new Map();
+    for (const p of progressRows) {
+      progressByTx.set(Number(p.transaction_id), p);
+    }
+
+    const assignmentsByTx = new Map();
+    for (const a of assignmentRows) {
+      const tid = Number(a.transaction_id);
+      if (!assignmentsByTx.has(tid)) assignmentsByTx.set(tid, []);
+      assignmentsByTx.get(tid).push(a);
+    }
+
+    const empMap = {};
+    const overallDone = {
+      pickup: 0,
+      cuci_jemur: 0,
+      packing: 0,
+      pengantaran: 0,
+    };
+    const dailyMap = new Map();
+    const pickupToCuci = [];
+    const cuciToPacking = [];
+    const packingToDelivery = [];
+    const pickupToDelivery = [];
+    const txStageAt = new Map();
+
+    const ensureDaily = (dateKey) => {
+      if (!dailyMap.has(dateKey)) {
+        dailyMap.set(dateKey, {
+          date: dateKey,
+          pickup: 0,
+          cuci_jemur: 0,
+          packing: 0,
+          pengantaran: 0,
+          total: 0,
+        });
+      }
+      return dailyMap.get(dateKey);
+    };
+
+    for (const tx of txRows) {
+      const tid = Number(tx.id);
+      const isTakeHome = String(tx.service_mode || "home_service") === "take_home";
+      const stageFilled = {
+        pickup: false,
+        cuci_jemur: false,
+        packing: false,
+        pengantaran: false,
+      };
+      const stageAts = {
+        pickup: null,
+        cuci_jemur: null,
+        packing: null,
+        pengantaran: null,
+      };
+
+      if (isTakeHome) {
+        const bundle = getTakehomeStageBundle(progressByTx.get(tid) || null);
+        for (const key of ONLY_KPI_KEYS) {
+          if (bundle.at[key]) {
+            stageFilled[key] = true;
+            stageAts[key] = bundle.at[key];
+            const dateKey = toLocalDateKey(bundle.at[key]);
+            if (dateKey) {
+              const d = ensureDaily(dateKey);
+              d[key] += 1;
+              d.total += 1;
+            }
+          }
+          creditEmployeeStages(empMap, bundle.by[key], key);
+        }
+      } else {
+        const assignments = assignmentsByTx.get(tid) || [];
+        const pickupAts = [];
+        const cuciAts = [];
+        const packingAts = [];
+        const pengAts = [];
+
+        for (const a of assignments) {
+          const ts = getHomeServiceStageTimestamps(a);
+          const name = a.employee_name;
+          for (const key of ONLY_KPI_KEYS) {
+            if (!ts[key]) continue;
+            stageFilled[key] = true;
+            if (key === "pickup") pickupAts.push(ts[key]);
+            if (key === "cuci_jemur") cuciAts.push(ts[key]);
+            if (key === "packing") packingAts.push(ts[key]);
+            if (key === "pengantaran") pengAts.push(ts[key]);
+            creditEmployeeStages(empMap, [name], key);
+            const dateKey = toLocalDateKey(ts[key]);
+            if (dateKey) {
+              const d = ensureDaily(dateKey);
+              d[key] += 1;
+              d.total += 1;
+            }
+          }
+        }
+
+        stageAts.pickup = earliestAt(pickupAts);
+        stageAts.cuci_jemur = earliestAt(cuciAts);
+        stageAts.packing = earliestAt(packingAts);
+        stageAts.pengantaran = latestAt(pengAts);
+      }
+
+      for (const key of ONLY_KPI_KEYS) {
+        if (stageFilled[key]) overallDone[key] += 1;
+      }
+
+      txStageAt.set(tid, stageAts);
+
+      const h1 = diffHours(stageAts.pickup, stageAts.cuci_jemur);
+      const h2 = diffHours(stageAts.cuci_jemur, stageAts.packing);
+      const h3 = diffHours(stageAts.packing, stageAts.pengantaran);
+      const h4 = diffHours(stageAts.pickup, stageAts.pengantaran);
+      if (h1 !== null) pickupToCuci.push(h1);
+      if (h2 !== null) cuciToPacking.push(h2);
+      if (h3 !== null) packingToDelivery.push(h3);
+      if (h4 !== null) pickupToDelivery.push(h4);
+    }
+
+    const list = Object.values(empMap).map((e) => ({
+      ...e,
+      total: e.pickup + e.cuci_jemur + e.packing + e.pengantaran,
+    }));
+    list.sort((a, b) => b.total - a.total);
+    list.forEach((e, i) => {
+      e.rank = i + 1;
+    });
+
+    const overall = {
+      total_items: txRows.length,
+      pickup_done: overallDone.pickup,
+      cuci_jemur_done: overallDone.cuci_jemur,
+      packing_done: overallDone.packing,
+      pengantaran_done: overallDone.pengantaran,
+    };
+
+    const dailyStage = Array.from(dailyMap.values()).sort((a, b) => a.date.localeCompare(b.date));
+
+    const agingProcessingHours = [
+      { stage: "pickup_to_cuci_jemur", ...summarizeHours(pickupToCuci) },
+      { stage: "cuci_jemur_to_packing", ...summarizeHours(cuciToPacking) },
+      { stage: "packing_to_delivery", ...summarizeHours(packingToDelivery) },
+      { stage: "pickup_to_delivery", ...summarizeHours(pickupToDelivery) },
+    ].filter((a) => a.sample_count > 0);
+
+    const serviceMap = new Map();
+    for (const item of itemRows) {
+      const serviceName = normalizeServiceName(item.service_name);
+      if (!serviceMap.has(serviceName)) {
+        serviceMap.set(serviceName, {
+          service_name: serviceName,
+          volume: 0,
+          revenue: 0,
+          _cycle_sum: 0,
+          _cycle_count: 0,
+        });
+      }
+      const svc = serviceMap.get(serviceName);
+      svc.volume += 1;
+      const rev = Number(item.line_total || 0);
+      if (Number.isFinite(rev)) svc.revenue += rev;
+
+      const stageAts = txStageAt.get(Number(item.transaction_id));
+      if (stageAts) {
+        const cycle = diffHours(stageAts.pickup, stageAts.pengantaran);
+        if (cycle !== null) {
+          svc._cycle_sum += cycle;
+          svc._cycle_count += 1;
+        }
+      }
+    }
+
+    const topServices = Array.from(serviceMap.values())
+      .map((s) => ({
+        service_name: s.service_name,
+        volume: s.volume,
+        revenue: Math.round(s.revenue),
+        avg_cycle_hours:
+          s._cycle_count > 0 ? Number((s._cycle_sum / s._cycle_count).toFixed(2)) : null,
+        cycle_sample_count: s._cycle_count,
+      }))
+      .sort((a, b) => {
+        if (b.volume !== a.volume) return b.volume - a.volume;
+        return b.revenue - a.revenue;
+      })
+      .slice(0, 5);
+
+    return res.json({
+      summary: list,
+      overall,
+      insights: {
+        daily_stage: dailyStage,
+        aging_processing_hours: agingProcessingHours,
+        top_services: topServices,
+        sla: null,
+      },
+    });
+  } catch (err) {
+    console.error("[kpiProduksi/getKpiOnlySummary]", err.message);
+    return res.status(500).json({ message: "Gagal mengambil data KPI Cleanox Only", error: err.message });
+  }
+};
+
+/* ── Cleanox Only — Detail per employee ─────────────────── */
+export const getKpiOnlyDetail = async (req, res) => {
+  const { employee_name, date_start, date_end, service_mode: serviceModeRaw } = req.query;
+
+  if (!employee_name || !date_start || !date_end) {
+    return res.status(400).json({ message: "employee_name, date_start, date_end wajib diisi" });
+  }
+
+  const serviceMode = parseOnlyServiceMode(serviceModeRaw);
+  if (!serviceMode) {
+    return res.status(400).json({
+      message: "service_mode harus home_service atau take_home",
+    });
+  }
+
+  const modeFilter = onlyServiceModeSql(serviceMode);
+
+  try {
+    const [txRows] = await cleanoxPool.query(
+      `SELECT t.id, t.transaction_no, t.customer_name, t.service_date, t.service_mode, t.status
+       FROM tr_transactions t
+       WHERE DATE(t.service_date) BETWEEN DATE(?) AND DATE(?)
+         AND t.status <> 'Cancelled'
+         ${modeFilter.sql}`,
+      [date_start, date_end, ...modeFilter.params]
+    );
+
+    if (txRows.length === 0) {
+      return res.json({ employee_name, items: [], service_mode: serviceMode });
+    }
+
+    const txIds = txRows.map((t) => Number(t.id));
+    const takehomeIds = txRows
+      .filter((t) => String(t.service_mode || "home_service") === "take_home")
+      .map((t) => Number(t.id));
+    const homeIds = txRows
+      .filter((t) => String(t.service_mode || "home_service") !== "take_home")
+      .map((t) => Number(t.id));
+
+    let progressRows = [];
+    if (takehomeIds.length > 0) {
+      const [rows] = await cleanoxPool.query(
+        `SELECT * FROM tr_takehome_progress WHERE transaction_id IN (?)`,
+        [takehomeIds]
+      );
+      progressRows = rows;
+    }
+
+    let assignmentRows = [];
+    if (homeIds.length > 0) {
+      const [rows] = await cleanoxPool.query(
+        `SELECT id, transaction_id, employee_name, assignment_status,
+                started_at, arrival_at, before_photo_at, after_photo_at, completed_at, updated_at
+         FROM tr_worker_assignments
+         WHERE transaction_id IN (?)
+           AND assignment_status NOT IN ('Rejected', 'Cancelled', 'Replaced')`,
+        [homeIds]
+      );
+      assignmentRows = rows;
+    }
+
+    const [itemRows] = await cleanoxPool.query(
+      `SELECT i.transaction_id, COALESCE(s.name, 'Tanpa Nama Item') AS service_name
+       FROM tr_transaction_items i
+       LEFT JOIN mst_services s ON s.id = i.service_id
+       WHERE i.transaction_id IN (?)`,
+      [txIds]
+    );
+
+    const progressByTx = new Map();
+    for (const p of progressRows) progressByTx.set(Number(p.transaction_id), p);
+
+    const assignmentsByTx = new Map();
+    for (const a of assignmentRows) {
+      const tid = Number(a.transaction_id);
+      if (!assignmentsByTx.has(tid)) assignmentsByTx.set(tid, []);
+      assignmentsByTx.get(tid).push(a);
+    }
+
+    const itemNamesByTx = new Map();
+    for (const item of itemRows) {
+      const tid = Number(item.transaction_id);
+      if (!itemNamesByTx.has(tid)) itemNamesByTx.set(tid, []);
+      itemNamesByTx.get(tid).push(item.service_name);
+    }
+
+    const items = [];
+
+    for (const tx of txRows) {
+      const tid = Number(tx.id);
+      const itemNameList = itemNamesByTx.get(tid) || [];
+      const item_name =
+        itemNameList.length > 0
+          ? [...new Set(itemNameList.map(normalizeServiceName))].join(", ")
+          : "Transaksi Cleanox Only";
+
+      const base = {
+        id: tx.id,
+        invoice: tx.transaction_no,
+        outlet: null,
+        customer_name: tx.customer_name,
+        item_name,
+        jumlah: null,
+        satuan_item: null,
+        status: tx.status,
+        tgl_terima: tx.service_date,
+        tgl_selesai: null,
+      };
+
+      const isTakeHome = String(tx.service_mode || "home_service") === "take_home";
+
+      if (isTakeHome) {
+        const bundle = getTakehomeStageBundle(progressByTx.get(tid) || null);
+        for (const key of ONLY_KPI_KEYS) {
+          if (bundle.by[key].includes(employee_name)) {
+            items.push({ ...base, stage: key, date: bundle.at[key] });
+          }
+        }
+      } else {
+        const assignments = (assignmentsByTx.get(tid) || []).filter(
+          (a) => a.employee_name === employee_name
+        );
+        for (const a of assignments) {
+          const ts = getHomeServiceStageTimestamps(a);
+          for (const key of ONLY_KPI_KEYS) {
+            if (ts[key]) {
+              items.push({ ...base, stage: key, date: ts[key] });
+            }
+          }
+        }
+      }
+    }
+
+    items.sort((a, b) => {
+      const da = parseDate(a.date)?.getTime() || 0;
+      const db = parseDate(b.date)?.getTime() || 0;
+      return db - da;
+    });
+
+    return res.json({ employee_name, items });
+  } catch (err) {
+    console.error("[kpiProduksi/getKpiOnlyDetail]", err.message);
+    return res.status(500).json({ message: "Gagal mengambil detail KPI Cleanox Only", error: err.message });
   }
 };
