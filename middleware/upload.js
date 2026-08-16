@@ -371,6 +371,33 @@ export const uploadIKMKasbon = multer({
 });
 
 // =========================
+// Upload Cleanox Kasbon proof (gambar + PDF, 10 MB)
+// =========================
+const CLEANOX_KASBON_DIR = process.env.CLEANOX_KASBON_DIR
+  ? path.resolve(process.env.CLEANOX_KASBON_DIR)
+  : path.join(BASE_DIR, "cleanox_kasbon");
+if (!fs.existsSync(CLEANOX_KASBON_DIR)) fs.mkdirSync(CLEANOX_KASBON_DIR, { recursive: true });
+
+const cleanoxKasbonStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, CLEANOX_KASBON_DIR),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    const baseName = path
+      .basename(file.originalname, ext)
+      .replace(/[^a-zA-Z0-9_\-]/g, "_")
+      .slice(0, 60);
+    const unique = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    cb(null, `${baseName}_${unique}${ext}`);
+  },
+});
+
+export const uploadCleanoxKasbon = multer({
+  storage: cleanoxKasbonStorage,
+  fileFilter: documentFilter,
+  limits: { fileSize: 10 * 1024 * 1024 },
+});
+
+// =========================
 // Upload Document Alora (gambar + PDF, 10 MB)
 // =========================
 const DOC_ALORA_DIR = path.join(BASE_DIR, "document_alora");
