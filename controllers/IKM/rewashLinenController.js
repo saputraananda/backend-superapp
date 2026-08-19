@@ -75,11 +75,30 @@ export const getRewashLinens = async (req, res) => {
 
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
-    // Count total headers
-    const [[{ total }]] = await safeIKMQuery(
-      `SELECT COUNT(*) AS total FROM tr_rewash tr ${whereSql}`,
+    // Count total headers & total rewash qty across entire filter dataset
+    const [[summary]] = await safeIKMQuery(
+      `SELECT COUNT(DISTINCT tr.id) AS total,
+              COALESCE(SUM(d.qty), 0) AS total_qty
+       FROM tr_rewash tr
+       LEFT JOIN mst_hospital h ON h.id = tr.hospital_id
+       LEFT JOIN tr_rewash_detail d ON d.rewash_id = tr.id
+       ${whereSql}`,
       params
     );
+
+    const total = Number(summary?.total || 0);
+    const totalQty = Number(summary?.total_qty || 0);
+
+    // Sorting logic for backend SQL query
+    const { sortCol, sortDir } = req.query;
+    const allowedCols = {
+      report_date: "tr.report_date",
+      reporter_name: "tr.reporter_name",
+      hospital_name: "h.hospital_name"
+    };
+    const sortField = allowedCols[sortCol] || "tr.report_date";
+    const dir = sortDir?.toUpperCase() === "ASC" ? "ASC" : "DESC";
+    const orderBySql = `ORDER BY ${sortField} ${dir}, tr.id ${dir}`;
 
     // Fetch headers
     const [headers] = await safeIKMQuery(
@@ -89,7 +108,7 @@ export const getRewashLinens = async (req, res) => {
        FROM tr_rewash tr
        LEFT JOIN mst_hospital h ON h.id = tr.hospital_id
        ${whereSql}
-       ORDER BY tr.report_date DESC, tr.id DESC
+       ${orderBySql}
        LIMIT ? OFFSET ?`,
       [...params, lm, offset]
     );
@@ -98,7 +117,12 @@ export const getRewashLinens = async (req, res) => {
       const [hospitals] = await safeIKMQuery(
         "SELECT id, hospital_name FROM mst_hospital ORDER BY hospital_name ASC"
       );
-      return res.json({ data: [], pagination: { page: pg, limit: lm, total: 0, totalPages: 0 }, hospitals });
+      return res.json({
+        data: [],
+        pagination: { page: pg, limit: lm, total: 0, totalPages: 0, totalQty: 0 },
+        totalQty: 0,
+        hospitals
+      });
     }
 
     // Enrich reported_by with employee name
@@ -171,7 +195,8 @@ export const getRewashLinens = async (req, res) => {
 
     res.json({
       data: records,
-      pagination: { page: pg, limit: lm, total, totalPages: Math.ceil(total / lm) },
+      pagination: { page: pg, limit: lm, total, totalPages: Math.ceil(total / lm), totalQty },
+      totalQty,
       hospitals,
     });
   } catch (err) {
@@ -196,7 +221,7 @@ export const getRewashLinenMeta = async (req, res) => {
 // ── POST Create — header (upsert) + detail ──
 export const createRewashLinen = async (req, res) => {
   try {
-    const { reporter_name, report_date, hospital_id, hospital_linen_id, qty, notes } = req.body;
+    const { rewash_id, reporter_name, report_date, hospital_id, hospital_linen_id, qty, notes } = req.body;
 
     if (!reporter_name?.trim()) {
       return res.status(400).json({ message: "Nama pelapor wajib diisi" });
@@ -212,22 +237,16 @@ export const createRewashLinen = async (req, res) => {
       return res.status(400).json({ message: "Linen wajib dipilih" });
     }
     const cleanQty = toUInt(qty, 0);
-
     const reportedBy = resolveReportedBy(req);
 
-    // Upsert header — find existing by (report_date, hospital_id, reporter_name)
-    const [existing] = await safeIKMQuery(
-      `SELECT id FROM tr_rewash
-       WHERE report_date = ? AND hospital_id = ? AND reporter_name = ?`,
-      [date, Number(hospital_id), reporter_name.trim()]
-    );
-
-    let oldSnapshot = null;
     let headerId;
-    if (existing.length) {
-      headerId = existing[0].id;
-      oldSnapshot = await getRewashSnapshot(headerId);
-      // Update notes if provided
+    let action = "INSERT";
+    const cleanRewashId = toPositiveInt(rewash_id);
+
+    if (cleanRewashId) {
+      // Header ID explicitly specified (e.g. adding item from Detail Modal)
+      headerId = cleanRewashId;
+      action = "UPDATE";
       if (notes != null) {
         await safeIKMQuery(
           `UPDATE tr_rewash SET notes = ?, updated_at = NOW() WHERE id = ?`,
@@ -235,13 +254,35 @@ export const createRewashLinen = async (req, res) => {
         );
       }
     } else {
-      const [result] = await safeIKMQuery(
-        `INSERT INTO tr_rewash (reporter_name, report_date, hospital_id, notes, reported_by)
-         VALUES (?, ?, ?, ?, ?)`,
-        [reporter_name.trim(), date, Number(hospital_id), notes || null, reportedBy]
+      // Find existing header by (report_date, hospital_id, reporter_name)
+      const [existing] = await safeIKMQuery(
+        `SELECT id FROM tr_rewash
+         WHERE report_date = ? AND hospital_id = ? AND reporter_name = ?
+         ORDER BY id ASC LIMIT 1`,
+        [date, Number(hospital_id), reporter_name.trim()]
       );
-      headerId = result.insertId;
+
+      if (existing.length) {
+        headerId = existing[0].id;
+        action = "UPDATE";
+        if (notes != null) {
+          await safeIKMQuery(
+            `UPDATE tr_rewash SET notes = ?, updated_at = NOW() WHERE id = ?`,
+            [notes, headerId]
+          );
+        }
+      } else {
+        const [result] = await safeIKMQuery(
+          `INSERT INTO tr_rewash (reporter_name, report_date, hospital_id, notes, reported_by)
+           VALUES (?, ?, ?, ?, ?)`,
+          [reporter_name.trim(), date, Number(hospital_id), notes || null, reportedBy]
+        );
+        headerId = result.insertId;
+        action = "INSERT";
+      }
     }
+
+    const oldSnapshot = action === "UPDATE" ? await getRewashSnapshot(headerId) : null;
 
     // Insert detail
     const [result] = await safeIKMQuery(
@@ -250,7 +291,6 @@ export const createRewashLinen = async (req, res) => {
       [headerId, Number(hospital_linen_id), cleanQty]
     );
 
-    const action = existing.length ? "UPDATE" : "INSERT";
     const newSnapshot = await getRewashSnapshot(headerId);
     await writeRewashAuditLog(headerId, action, req, oldSnapshot, newSnapshot);
 
