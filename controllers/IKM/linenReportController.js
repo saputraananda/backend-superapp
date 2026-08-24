@@ -71,7 +71,7 @@ function buildAttachmentUrl(filename) {
 // ── GET list ───────────────────────────────────────────────────────────────
 export const getLinenReports = async (req, res) => {
   try {
-    const { startDate, endDate, area_id, hospital_id, finding_location, floor, search, page, limit } = req.query;
+    const { startDate, endDate, area_id, hospital_id, finding_location, floor, status, search, page, limit } = req.query;
 
     const defaultCutoff = getDefaultCutoffDates();
     const start = toISODateString(startDate) || defaultCutoff.start;
@@ -94,6 +94,10 @@ export const getLinenReports = async (req, res) => {
     if (floor) {
       where.push("f.floor = ?");
       params.push(floor);
+    }
+    if (status && ["terkirim", "proses", "selesai"].includes(status)) {
+      where.push("lr.status = ?");
+      params.push(status);
     }
     if (search?.trim()) {
       const like = `%${search.trim()}%`;
