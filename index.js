@@ -311,7 +311,6 @@ app.use("/personal-tasklist", personalTasklistRoutes);
 app.use("/ikm/absensi", absensiIKMRoutes);
 app.use("/ikm/employees", employeeIKMRoutes);
 app.use("/ikm/leaves", leavesIKMRoutes);
-app.use("/alora/leaves", leavesAloraRoutes);
 app.use("/ikm/master-absensi", masterAbsensiRoutes);
 app.use("/ikm/master-rs", masterRsIkmRoutes);
 app.use("/ikm/linen-report", linenReportRoutes);
