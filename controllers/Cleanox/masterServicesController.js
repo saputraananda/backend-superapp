@@ -1,5 +1,24 @@
 import { safeQuery, safeCleanoxQuery } from "../../db/pool.js";
 
+function toMoney(value) {
+  return Number(Number(value || 0).toFixed(2));
+}
+
+/** Sync POS price row. On duplicate, update price only — never null out existing coret_price. */
+async function upsertServicePrice(serviceId, price) {
+  const money = toMoney(price);
+  await safeCleanoxQuery(
+    `
+      INSERT INTO mst_service_prices (service_id, price, coret_price, created_at, updated_at)
+      VALUES (?, ?, NULL, CURRENT_TIMESTAMP(0), CURRENT_TIMESTAMP(0))
+      ON DUPLICATE KEY UPDATE
+        price = VALUES(price),
+        updated_at = CURRENT_TIMESTAMP(0)
+    `,
+    [serviceId, money]
+  );
+}
+
 // Initialize tables
 const initDb = async () => {
   try {
@@ -42,6 +61,21 @@ const initDb = async () => {
     if (cats[0].count === 0) {
       await safeCleanoxQuery("INSERT INTO mst_category (name) VALUES ('Kiloan'), ('Satuan'), ('Dry Clean'), ('Special')");
     }
+
+    // Backfill POS prices for services created from Superapp without mst_service_prices
+    try {
+      await safeCleanoxQuery(`
+        INSERT INTO mst_service_prices (service_id, price, created_at, updated_at)
+        SELECT s.id, s.price,
+               COALESCE(s.created_at, CURRENT_TIMESTAMP(0)),
+               COALESCE(s.updated_at, CURRENT_TIMESTAMP(0))
+        FROM mst_services s
+        LEFT JOIN mst_service_prices sp ON sp.service_id = s.id
+        WHERE sp.id IS NULL
+      `);
+    } catch (err) {
+      console.warn("⚠️ [initDb] Could not backfill mst_service_prices:", err.message);
+    }
   } catch (err) {
     console.error("❌ Failed to initialize Cleanox Master Service tables:", err.message);
   }
@@ -79,10 +113,15 @@ export const createService = async (req, res) => {
   const durationUnitVal = duration_unit !== undefined && duration_unit !== "" ? duration_unit : null;
 
   try {
-    await safeCleanoxQuery(`
+    const [result] = await safeCleanoxQuery(
+      `
       INSERT INTO mst_services (name, price, satuan_id, satuan_name, category_id, duration_value, duration_unit)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `, [name, price, satuanIdVal, satuanNameVal, categoryIdVal, durationValueVal, durationUnitVal]);
+    `,
+      [name, price, satuanIdVal, satuanNameVal, categoryIdVal, durationValueVal, durationUnitVal]
+    );
+
+    await upsertServicePrice(result.insertId, price);
 
     return res.status(201).json({ message: "Layanan berhasil dibuat" });
   } catch (err) {
@@ -107,11 +146,16 @@ export const updateService = async (req, res) => {
   const durationUnitVal = duration_unit !== undefined && duration_unit !== "" ? duration_unit : null;
 
   try {
-    await safeCleanoxQuery(`
+    await safeCleanoxQuery(
+      `
       UPDATE mst_services
       SET name = ?, price = ?, satuan_id = ?, satuan_name = ?, category_id = ?, duration_value = ?, duration_unit = ?, status = ?
       WHERE id = ?
-    `, [name, price, satuanIdVal, satuanNameVal, categoryIdVal, durationValueVal, durationUnitVal, status || 'Aktif', id]);
+    `,
+      [name, price, satuanIdVal, satuanNameVal, categoryIdVal, durationValueVal, durationUnitVal, status || "Aktif", id]
+    );
+
+    await upsertServicePrice(id, price);
 
     return res.json({ message: "Layanan berhasil diupdate" });
   } catch (err) {
@@ -124,6 +168,8 @@ export const updateService = async (req, res) => {
 export const deleteService = async (req, res) => {
   const { id } = req.params;
   try {
+    await safeCleanoxQuery("DELETE FROM mst_service_promos WHERE service_id = ?", [id]);
+    await safeCleanoxQuery("DELETE FROM mst_service_prices WHERE service_id = ?", [id]);
     await safeCleanoxQuery("DELETE FROM mst_services WHERE id = ?", [id]);
     return res.json({ message: "Layanan berhasil dihapus" });
   } catch (err) {
