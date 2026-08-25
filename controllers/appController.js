@@ -65,7 +65,7 @@ export const getApps = async (req, res) => {
     return allowedRoles.includes(myRole);
   });
 
-  res.json({ apps: filteredApps });
+  res.json({ apps: filteredApps, role: myRole });
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
