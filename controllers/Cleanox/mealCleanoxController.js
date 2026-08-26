@@ -8,7 +8,7 @@ const ALLOWED_TYPES = new Set(["half_day", "full_day"]);
 const ALLOWED_STATUSES = new Set(["menunggu_tf", "selesai"]);
 const OFFICE_AMOUNT = 10000;
 const HALF_TOTAL = 25000;
-const FULL_AMOUNT = 20000;
+const FULL_TOTAL = 30000;
 
 function toISODateString(value) {
 	return /^\d{4}-\d{2}-\d{2}$/.test(value || "") ? value : null;
@@ -366,7 +366,7 @@ export const getMealRekap = async (req, res) => {
 					totalAmount += HALF_TOTAL;
 				} else if (sub.type === "full_day") {
 					fullDays += 1;
-					totalAmount += FULL_AMOUNT;
+					totalAmount += FULL_TOTAL;
 				} else {
 					officeDays += 1;
 					totalAmount += OFFICE_AMOUNT;
