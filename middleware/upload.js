@@ -40,9 +40,18 @@ export const CLEANOX_KEBERSIHAN_DIR = CLEANOX_BASE
 export const CLEANOX_KASBON_DIR = CLEANOX_BASE
   ? path.join(CLEANOX_BASE, "worker-kasbon")
   : null;
+export const CLEANOX_MEAL_DIR = CLEANOX_BASE
+  ? path.join(CLEANOX_BASE, "worker-meal")
+  : null;
 
 if (CLEANOX_BASE) {
-  [CLEANOX_ATTENDANCE_DIR, CLEANOX_LEAVE_DIR, CLEANOX_KEBERSIHAN_DIR, CLEANOX_KASBON_DIR].forEach((dir) => {
+  [
+    CLEANOX_ATTENDANCE_DIR,
+    CLEANOX_LEAVE_DIR,
+    CLEANOX_KEBERSIHAN_DIR,
+    CLEANOX_KASBON_DIR,
+    CLEANOX_MEAL_DIR,
+  ].forEach((dir) => {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   });
 }
@@ -421,6 +430,33 @@ export const uploadCleanoxKasbon = multer({
   storage: cleanoxKasbonStorage,
   fileFilter: documentFilter,
   limits: { fileSize: 10 * 1024 * 1024 },
+});
+
+// =========================
+// Upload Cleanox Makan Siang TF proof (gambar, 5 MB)
+// =========================
+const cleanoxMealStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    if (!CLEANOX_MEAL_DIR) {
+      return cb(new Error("CLEANOX_BASE_DIR belum dikonfigurasi"));
+    }
+    cb(null, CLEANOX_MEAL_DIR);
+  },
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname) || ".jpg";
+    const baseName = path
+      .basename(file.originalname, ext)
+      .replace(/[^a-zA-Z0-9_\-]/g, "_")
+      .slice(0, 60);
+    const unique = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    cb(null, `${baseName}_${unique}${ext}`);
+  },
+});
+
+export const uploadCleanoxMeal = multer({
+  storage: cleanoxMealStorage,
+  fileFilter: imageFilter,
+  limits: { fileSize: 5 * 1024 * 1024 },
 });
 
 // =========================
