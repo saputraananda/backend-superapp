@@ -1,14 +1,9 @@
 import fs from "fs";
 import path from "path";
 import { pool, cleanoxPool, safeQuery, safeCleanoxQuery } from "../../db/pool.js";
+import { CLEANOX_KEBERSIHAN_DIR } from "../../middleware/upload.js";
 
 const VALID_SCORES = [0, 0.5, 1];
-
-function getKebersihanDir() {
-  const dir = process.env.CLEANOX_KEBERSIHAN_DIR;
-  if (!dir) return null;
-  return path.resolve(dir);
-}
 
 function toDateOnly(value) {
   if (!value) return null;
@@ -528,11 +523,11 @@ export const listKebersihanRecords = async (req, res) => {
 
 export const serveKebersihanPhoto = async (req, res) => {
   try {
-    const dir = getKebersihanDir();
+    const dir = CLEANOX_KEBERSIHAN_DIR;
     if (!dir) {
       return res.status(500).json({
         success: false,
-        message: "CLEANOX_KEBERSIHAN_DIR belum dikonfigurasi",
+        message: "CLEANOX_BASE_DIR belum dikonfigurasi",
       });
     }
 

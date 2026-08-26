@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { pool, cleanoxPool, safeQuery, safeCleanoxQuery } from "../../db/pool.js";
+import { CLEANOX_ATTENDANCE_DIR } from "../../middleware/upload.js";
 
 const PHOTO_TYPES = ["full_body", "side", "back", "hand"];
 
@@ -17,12 +18,6 @@ const PHOTO_FILE_FIELDS = {
   back: "back_photo_file",
   hand: "hand_photo_file",
 };
-
-function getAttendanceDir() {
-  const dir = process.env.CLEANOX_ATTENDANCE_DIR;
-  if (!dir) return null;
-  return path.resolve(dir);
-}
 
 function toDateOnly(value) {
   if (!value) return null;
@@ -638,11 +633,11 @@ export const listEmployeeAttendanceRecords = async (req, res) => {
 
 export const serveAttendancePhoto = async (req, res) => {
   try {
-    const dir = getAttendanceDir();
+    const dir = CLEANOX_ATTENDANCE_DIR;
     if (!dir) {
       return res.status(500).json({
         success: false,
-        message: "CLEANOX_ATTENDANCE_DIR belum dikonfigurasi",
+        message: "CLEANOX_BASE_DIR belum dikonfigurasi",
       });
     }
 

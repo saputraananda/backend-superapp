@@ -22,6 +22,32 @@ const DEFAULT_PROD_BASE = process.env.UPLOAD_BASE_DIR || "/home/u420573163/domai
 const BASE_DIR = isProd ? DEFAULT_PROD_BASE : DEFAULT_DEV_BASE;
 
 // =========================
+// Cleanox assets (single env base + subfolders)
+// =========================
+export const CLEANOX_BASE = process.env.CLEANOX_BASE_DIR
+  ? path.resolve(process.env.CLEANOX_BASE_DIR)
+  : null;
+
+export const CLEANOX_ATTENDANCE_DIR = CLEANOX_BASE
+  ? path.join(CLEANOX_BASE, "worker-attendance")
+  : null;
+export const CLEANOX_LEAVE_DIR = CLEANOX_BASE
+  ? path.join(CLEANOX_BASE, "worker-leave")
+  : null;
+export const CLEANOX_KEBERSIHAN_DIR = CLEANOX_BASE
+  ? path.join(CLEANOX_BASE, "worker-kebersihan")
+  : null;
+export const CLEANOX_KASBON_DIR = CLEANOX_BASE
+  ? path.join(CLEANOX_BASE, "worker-kasbon")
+  : null;
+
+if (CLEANOX_BASE) {
+  [CLEANOX_ATTENDANCE_DIR, CLEANOX_LEAVE_DIR, CLEANOX_KEBERSIHAN_DIR, CLEANOX_KASBON_DIR].forEach((dir) => {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  });
+}
+
+// =========================
 // Folder upload
 // =========================
 
@@ -373,13 +399,13 @@ export const uploadIKMKasbon = multer({
 // =========================
 // Upload Cleanox Kasbon proof (gambar + PDF, 10 MB)
 // =========================
-const CLEANOX_KASBON_DIR = process.env.CLEANOX_KASBON_DIR
-  ? path.resolve(process.env.CLEANOX_KASBON_DIR)
-  : path.join(BASE_DIR, "cleanox_kasbon");
-if (!fs.existsSync(CLEANOX_KASBON_DIR)) fs.mkdirSync(CLEANOX_KASBON_DIR, { recursive: true });
-
 const cleanoxKasbonStorage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, CLEANOX_KASBON_DIR),
+  destination: (_req, _file, cb) => {
+    if (!CLEANOX_KASBON_DIR) {
+      return cb(new Error("CLEANOX_BASE_DIR belum dikonfigurasi"));
+    }
+    cb(null, CLEANOX_KASBON_DIR);
+  },
   filename: (_req, file, cb) => {
     const ext = path.extname(file.originalname);
     const baseName = path

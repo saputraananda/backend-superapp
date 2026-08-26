@@ -1,15 +1,7 @@
 import fs from "fs";
 import path from "path";
-import { fileURLToPath } from "url";
 import { safeQuery, safeCleanoxQuery } from "../../db/pool.js";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const isProd = process.env.NODE_ENV === "production";
-const BASE_DIR = isProd
-	? process.env.UPLOAD_BASE_DIR || "/home/u420573163/domains/api.waschenalora.com/storage/assets/"
-	: path.join(__dirname, "..", "..", "assets");
+import { CLEANOX_KASBON_DIR } from "../../middleware/upload.js";
 
 const CLEANOX_COMPANY_ID = 3;
 const ALLOWED_TYPES = new Set(["kasbon", "pinjaman"]);
@@ -90,12 +82,6 @@ function getCurrentUser(req) {
 	};
 }
 
-function getKasbonDir() {
-	const envDir = process.env.CLEANOX_KASBON_DIR;
-	if (envDir) return path.resolve(envDir);
-	return path.join(BASE_DIR, "cleanox_kasbon");
-}
-
 function buildProofUrl(filename) {
 	if (!filename) return null;
 	if (/^https?:\/\//i.test(filename)) return filename;
@@ -109,9 +95,9 @@ function proofPathFromFilename(filename) {
 }
 
 function unlinkProof(filename) {
-	if (!filename) return;
+	if (!filename || !CLEANOX_KASBON_DIR) return;
 	const safeName = path.basename(filename);
-	const fullPath = path.join(getKasbonDir(), safeName);
+	const fullPath = path.join(CLEANOX_KASBON_DIR, safeName);
 	fs.unlink(fullPath, () => {});
 }
 
@@ -527,7 +513,11 @@ export const getKasbons = async (req, res) => {
 // ── GET /proofs/:filename ──────────────────────────────────────────────────
 export const serveProof = async (req, res) => {
 	try {
-		const kasbonDir = getKasbonDir();
+		if (!CLEANOX_KASBON_DIR) {
+			return res.status(500).json({ message: "CLEANOX_BASE_DIR belum dikonfigurasi" });
+		}
+
+		const kasbonDir = CLEANOX_KASBON_DIR;
 		const safeFileName = path.basename(String(req.params.filename || ""));
 		if (!safeFileName) {
 			return res.status(400).json({ message: "Nama file tidak valid" });

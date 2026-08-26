@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { safeQuery, safeCleanoxQuery } from "../../db/pool.js";
+import { CLEANOX_LEAVE_DIR } from "../../middleware/upload.js";
 
 const ALLOWED_STATUSES = new Set(["pengajuan", "disetujui", "ditolak"]);
 const ALLOWED_LEAVE_TYPES = new Set(["izin", "sakit", "cuti"]);
@@ -55,17 +56,6 @@ function resolveApprovedById(req) {
 	for (const c of candidates) {
 		const n = toPositiveInt(c);
 		if (n) return n;
-	}
-	return null;
-}
-
-function getLeaveDir() {
-	const dir = process.env.CLEANOX_LEAVE_DIR;
-	if (dir) return path.resolve(dir);
-
-	const attendanceDir = process.env.CLEANOX_ATTENDANCE_DIR;
-	if (attendanceDir) {
-		return path.resolve(path.dirname(attendanceDir), "worker-leave");
 	}
 	return null;
 }
@@ -339,10 +329,10 @@ export const rejectLeave = async (req, res) => {
 
 export const serveDoctorNote = async (req, res) => {
 	try {
-		const leaveDir = getLeaveDir();
+		const leaveDir = CLEANOX_LEAVE_DIR;
 		if (!leaveDir) {
 			return res.status(500).json({
-				message: "CLEANOX_LEAVE_DIR belum dikonfigurasi",
+				message: "CLEANOX_BASE_DIR belum dikonfigurasi",
 			});
 		}
 
