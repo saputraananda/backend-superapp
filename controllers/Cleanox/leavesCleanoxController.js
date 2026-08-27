@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { safeQuery, safeCleanoxQuery } from "../../db/pool.js";
 import { CLEANOX_LEAVE_DIR } from "../../middleware/upload.js";
+import { getCleanoxProduksiRoleMap } from "../../utils/cleanoxProduksiEmployees.js";
 
 const ALLOWED_STATUSES = new Set(["pengajuan", "disetujui", "ditolak"]);
 const ALLOWED_LEAVE_TYPES = new Set(["izin", "sakit", "cuti"]);
@@ -90,9 +91,20 @@ async function getEmployeeMap(workerIds) {
 
 	const roleMap = new Map();
 	try {
-		const [roleRows] = await safeCleanoxQuery("SELECT employee_id, role FROM mst_role");
-		for (const r of roleRows || []) {
-			roleMap.set(Number(r.employee_id), r.role || null);
+		const produksiRoleMap = await getCleanoxProduksiRoleMap();
+		for (const [id, role] of produksiRoleMap.entries()) {
+			roleMap.set(id, role);
+		}
+		const missingIds = uniqueIds.filter((id) => !roleMap.has(id));
+		if (missingIds.length > 0) {
+			const ph = missingIds.map(() => "?").join(",");
+			const [roleRows] = await safeCleanoxQuery(
+				`SELECT employee_id, role FROM mst_role WHERE employee_id IN (${ph})`,
+				missingIds
+			);
+			for (const r of roleRows || []) {
+				roleMap.set(Number(r.employee_id), r.role || null);
+			}
 		}
 	} catch {
 		// optional
