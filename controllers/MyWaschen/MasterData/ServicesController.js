@@ -140,7 +140,7 @@ export const createService = async (req, res) => {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         Number(category_id),
-        unit_id ? Number(unit_id) : null,
+        unit_id ? Number(unit_id) : 1,
         unit?.trim() || "Kg",
         formattedCode,
         name.trim(),
@@ -208,7 +208,7 @@ export const updateService = async (req, res) => {
        WHERE id = ?`,
       [
         category_id ? Number(category_id) : null,
-        unit_id ? Number(unit_id) : null,
+        unit_id ? Number(unit_id) : 1,
         unit?.trim() || "Kg",
         formattedCode,
         name.trim(),

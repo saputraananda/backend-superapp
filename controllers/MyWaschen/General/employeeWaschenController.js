@@ -1,4 +1,4 @@
-import { pool, safeQuery, safeMyWaschenQuery } from "../../db/pool.js";
+import { pool, safeQuery, safeMyWaschenQuery } from "../../../db/pool.js";
 import bcrypt from "bcrypt";
 
 const SORT_COLUMNS = {

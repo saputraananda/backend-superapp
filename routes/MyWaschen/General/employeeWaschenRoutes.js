@@ -1,11 +1,11 @@
 import express from "express";
-import { requireAuth } from "../../middleware/auth.js";
+import { requireAuth } from "../../../middleware/auth.js";
 import {
   listWaschenEmployees,
   getAssignableEmployees,
   addWaschenEmployee,
   updateEmployeeRole,
-} from "../../controllers/MyWaschen/employeeWaschenController.js";
+} from "../../../controllers/MyWaschen/General/employeeWaschenController.js";
 
 const router = express.Router();
 

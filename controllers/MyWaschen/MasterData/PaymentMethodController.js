@@ -1,21 +1,23 @@
 import { safeMyWaschenQuery } from "../../../db/pool.js";
 
-const SORT_COLUMNS = ["id", "code", "name", "label", "sort_order", "created_at"];
+const SORT_COLUMNS = ["id", "code", "name", "label", "group", "created_at"];
 
 export const getPaymentMethods = async (req, res) => {
   try {
     const search = String(req.query.search || "").trim();
     const isActive = req.query.isActive;
-    const sortBy = SORT_COLUMNS.includes(req.query.sortBy) ? req.query.sortBy : "sort_order";
+    const group = String(req.query.group || "").trim();
+    const sortBy = SORT_COLUMNS.includes(req.query.sortBy) ? req.query.sortBy : "id";
     const sortDir = String(req.query.sortDir || "asc").toLowerCase() === "desc" ? "DESC" : "ASC";
+    const orderCol = sortBy === "group" ? "`group`" : sortBy;
 
     const where = [];
     const params = [];
 
     if (search) {
-      where.push("(code LIKE ? OR name LIKE ? OR label LIKE ?)");
+      where.push("(code LIKE ? OR name LIKE ? OR label LIKE ? OR `group` LIKE ?)");
       const like = `%${search}%`;
-      params.push(like, like, like);
+      params.push(like, like, like, like);
     }
 
     if (isActive !== undefined && isActive !== "") {
@@ -23,10 +25,15 @@ export const getPaymentMethods = async (req, res) => {
       params.push(Number(isActive));
     }
 
+    if (group) {
+      where.push("`group` = ?");
+      params.push(group);
+    }
+
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
     const [rows] = await safeMyWaschenQuery(
-      `SELECT * FROM mst_payment_method ${whereSql} ORDER BY ${sortBy} ${sortDir}, name ASC`,
+      `SELECT * FROM mst_payment_method ${whereSql} ORDER BY ${orderCol} ${sortDir}, name ASC`,
       params
     );
 
@@ -53,7 +60,7 @@ export const getPaymentMethodById = async (req, res) => {
 
 export const createPaymentMethod = async (req, res) => {
   try {
-    const { code, name, label, requires_member_balance, sort_order, is_active } = req.body;
+    const { code, name, label, group, requires_member_balance, is_active } = req.body;
 
     if (!code?.trim() || !name?.trim() || !label?.trim()) {
       return res.status(400).json({ success: false, message: "Kode, Nama, dan Label wajib diisi" });
@@ -67,14 +74,14 @@ export const createPaymentMethod = async (req, res) => {
     }
 
     const [result] = await safeMyWaschenQuery(
-      `INSERT INTO mst_payment_method (code, name, label, requires_member_balance, sort_order, is_active)
+      `INSERT INTO mst_payment_method (\`group\`, code, name, label, requires_member_balance, is_active)
        VALUES (?, ?, ?, ?, ?, ?)`,
       [
+        group?.trim() || "Tunai",
         formattedCode,
         name.trim(),
         label.trim(),
         requires_member_balance ? 1 : 0,
-        sort_order !== undefined ? Number(sort_order) : 0,
         is_active !== undefined ? Number(is_active) : 1,
       ]
     );
@@ -89,7 +96,7 @@ export const createPaymentMethod = async (req, res) => {
 export const updatePaymentMethod = async (req, res) => {
   try {
     const { id } = req.params;
-    const { code, name, label, requires_member_balance, sort_order, is_active } = req.body;
+    const { code, name, label, group, requires_member_balance, is_active } = req.body;
 
     const [exist] = await safeMyWaschenQuery("SELECT id FROM mst_payment_method WHERE id = ?", [id]);
     if (!exist.length) {
@@ -116,8 +123,8 @@ export const updatePaymentMethod = async (req, res) => {
        SET code = COALESCE(?, code),
            name = ?,
            label = ?,
+           \`group\` = ?,
            requires_member_balance = ?,
-           sort_order = ?,
            is_active = ?,
            updated_at = NOW()
        WHERE id = ?`,
@@ -125,8 +132,8 @@ export const updatePaymentMethod = async (req, res) => {
         formattedCode,
         name.trim(),
         label.trim(),
+        group?.trim() || "Tunai",
         requires_member_balance ? 1 : 0,
-        sort_order !== undefined ? Number(sort_order) : 0,
         is_active !== undefined ? Number(is_active) : 1,
         id,
       ]

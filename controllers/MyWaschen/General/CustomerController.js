@@ -1,14 +1,15 @@
 import { safeMyWaschenQuery } from "../../../db/pool.js";
 
 const SORT_COLUMNS = [
-  "id", "customer_code", "name", "phone", "gender", "email", "city", "district",
+  "id", "customer_code", "name", "phone", "email", "city",
   "total_orders", "total_spent", "deposit_balance", "monthly_spending", "created_at",
 ];
 
-const GENDERS = ["Laki-Laki", "Perempuan"];
-
 const CUSTOMER_SELECT = `
   SELECT c.*,
+         o.outlet_code AS preferred_outlet_code,
+         o.name AS preferred_outlet_name,
+         o.full_name AS preferred_outlet_full_name,
          ct.code AS spending_tier_code,
          ct.name AS spending_tier_name,
          ct.label AS spending_tier_label,
@@ -16,24 +17,43 @@ const CUSTOMER_SELECT = `
          cs.name AS customer_source_name,
          cs.label AS customer_source_label
   FROM mst_customer c
+  LEFT JOIN mst_outlet o ON o.id = c.preferred_outlet_id
   LEFT JOIN mst_customer_tier ct ON ct.id = c.spending_tier_id
   LEFT JOIN mst_customer_source cs ON cs.id = c.customer_source_id
 `;
 
-async function generateCustomerCode() {
-  const [rows] = await safeMyWaschenQuery(
-    "SELECT customer_code FROM mst_customer WHERE customer_code LIKE 'CUST-%' ORDER BY id DESC LIMIT 1"
-  );
-  if (!rows.length || !rows[0].customer_code) return "CUST-001";
-  const lastNum = parseInt(String(rows[0].customer_code).replace("CUST-", ""), 10);
-  const next = Number.isFinite(lastNum) ? lastNum + 1 : 1;
-  return `CUST-${String(next).padStart(3, "0")}`;
-}
+/** Format: CUS{outlet_code}{YYMM}{sequence 4 digit} — contoh CUSCG26080001 */
+async function generateCustomerCode(outletId) {
+  let outletCode = "XX";
+  if (outletId) {
+    const [outlets] = await safeMyWaschenQuery(
+      "SELECT outlet_code FROM mst_outlet WHERE id = ? LIMIT 1",
+      [outletId]
+    );
+    if (outlets.length && outlets[0].outlet_code) {
+      outletCode = String(outlets[0].outlet_code).toUpperCase();
+    }
+  }
 
-function normalizeGender(value) {
-  if (value === undefined || value === null || value === "") return null;
-  const gender = String(value).trim();
-  return GENDERS.includes(gender) ? gender : null;
+  const now = new Date();
+  const yy = String(now.getFullYear()).slice(-2);
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const prefix = `CUS${outletCode}${yy}${mm}`;
+
+  const [rows] = await safeMyWaschenQuery(
+    "SELECT customer_code FROM mst_customer WHERE customer_code LIKE ? ORDER BY customer_code DESC LIMIT 1",
+    [`${prefix}%`]
+  );
+
+  let nextSeq = 1;
+  if (rows.length && rows[0].customer_code) {
+    const last = String(rows[0].customer_code);
+    const seqPart = last.slice(prefix.length);
+    const parsed = parseInt(seqPart, 10);
+    if (Number.isFinite(parsed)) nextSeq = parsed + 1;
+  }
+
+  return `${prefix}${String(nextSeq).padStart(4, "0")}`;
 }
 
 function normalizeOptionalId(value) {
@@ -42,17 +62,13 @@ function normalizeOptionalId(value) {
   return Number.isFinite(num) ? num : null;
 }
 
-function normalizeDate(value) {
-  if (value === undefined || value === null || value === "") return null;
-  return String(value).trim() || null;
-}
-
 export const getCustomers = async (req, res) => {
   try {
     const search = String(req.query.search || "").trim();
     const isActive = req.query.isActive;
     const spendingTierId = req.query.spendingTierId;
     const customerSourceId = req.query.customerSourceId;
+    const preferredOutletId = req.query.preferredOutletId;
     const sortBy = SORT_COLUMNS.includes(req.query.sortBy) ? req.query.sortBy : "id";
     const sortDir = String(req.query.sortDir || "desc").toLowerCase() === "asc" ? "ASC" : "DESC";
 
@@ -62,10 +78,10 @@ export const getCustomers = async (req, res) => {
     if (search) {
       where.push(
         `(c.customer_code LIKE ? OR c.name LIKE ? OR c.phone LIKE ? OR c.email LIKE ?
-          OR c.address LIKE ? OR c.district LIKE ? OR c.city LIKE ?)`
+          OR c.address LIKE ? OR c.city LIKE ? OR c.landmark LIKE ? OR c.home_branch LIKE ?)`
       );
       const like = `%${search}%`;
-      params.push(like, like, like, like, like, like, like);
+      params.push(like, like, like, like, like, like, like, like);
     }
 
     if (isActive !== undefined && isActive !== "") {
@@ -81,6 +97,11 @@ export const getCustomers = async (req, res) => {
     if (customerSourceId) {
       where.push("c.customer_source_id = ?");
       params.push(Number(customerSourceId));
+    }
+
+    if (preferredOutletId) {
+      where.push("c.preferred_outlet_id = ?");
+      params.push(Number(preferredOutletId));
     }
 
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
@@ -114,22 +135,17 @@ export const getCustomerById = async (req, res) => {
 export const createCustomer = async (req, res) => {
   try {
     const {
-      customer_code, name, phone, gender, greeting, email, birth_date, occupation,
-      address, block, house_number, full_address, district, sub_district, city,
-      postal_code, landmark, home_branch,
+      customer_code, name, phone, email, address, city, postal_code, landmark, home_branch,
       preferred_outlet_id, spending_tier_id, customer_source_id,
-      notes, general_notes, is_active,
+      notes, is_active,
     } = req.body;
 
     if (!name?.trim() || !phone?.trim()) {
       return res.status(400).json({ success: false, message: "Nama dan Nomor Telepon wajib diisi" });
     }
 
-    if (gender !== undefined && gender !== null && gender !== "" && !GENDERS.includes(String(gender).trim())) {
-      return res.status(400).json({ success: false, message: "Gender harus Laki-Laki atau Perempuan" });
-    }
-
-    const code = customer_code?.trim() || (await generateCustomerCode());
+    const preferredOutletId = normalizeOptionalId(preferred_outlet_id);
+    const code = customer_code?.trim() || (await generateCustomerCode(preferredOutletId));
 
     const [existCode] = await safeMyWaschenQuery("SELECT id FROM mst_customer WHERE customer_code = ?", [code]);
     if (existCode.length) {
@@ -143,41 +159,33 @@ export const createCustomer = async (req, res) => {
 
     const [result] = await safeMyWaschenQuery(
       `INSERT INTO mst_customer (
-        customer_code, name, phone, gender, greeting, email, birth_date, occupation,
-        address, block, house_number, full_address, district, sub_district, city,
-        postal_code, landmark, home_branch,
-        preferred_outlet_id, spending_tier_id, customer_source_id,
-        notes, general_notes, is_active
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        customer_code, name, phone, email, address, city, postal_code, landmark, home_branch,
+        preferred_outlet_id, spending_tier_id, customer_source_id, notes, is_active
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         code,
         name.trim(),
         phone.trim(),
-        normalizeGender(gender),
-        greeting?.trim() || null,
         email?.trim() || null,
-        normalizeDate(birth_date),
-        occupation?.trim() || null,
         address?.trim() || null,
-        block?.trim() || null,
-        house_number?.trim() || null,
-        full_address?.trim() || null,
-        district?.trim() || null,
-        sub_district?.trim() || null,
-        city?.trim() || "Jakarta Selatan",
+        city?.trim() || null,
         postal_code?.trim() || null,
         landmark?.trim() || null,
         home_branch?.trim() || null,
-        normalizeOptionalId(preferred_outlet_id),
+        preferredOutletId,
         normalizeOptionalId(spending_tier_id),
         normalizeOptionalId(customer_source_id),
         notes?.trim() || null,
-        general_notes?.trim() || null,
         is_active !== undefined ? Number(is_active) : 1,
       ]
     );
 
-    res.status(201).json({ success: true, message: "Pelanggan berhasil ditambahkan", id: result.insertId });
+    res.status(201).json({
+      success: true,
+      message: "Pelanggan berhasil ditambahkan",
+      id: result.insertId,
+      customer_code: code,
+    });
   } catch (err) {
     console.error("createCustomer error:", err);
     res.status(500).json({ success: false, message: err.message });
@@ -188,11 +196,9 @@ export const updateCustomer = async (req, res) => {
   try {
     const { id } = req.params;
     const {
-      customer_code, name, phone, gender, greeting, email, birth_date, occupation,
-      address, block, house_number, full_address, district, sub_district, city,
-      postal_code, landmark, home_branch,
+      customer_code, name, phone, email, address, city, postal_code, landmark, home_branch,
       preferred_outlet_id, spending_tier_id, customer_source_id,
-      notes, general_notes, is_active,
+      notes, is_active,
     } = req.body;
 
     const [exist] = await safeMyWaschenQuery("SELECT id FROM mst_customer WHERE id = ?", [id]);
@@ -202,10 +208,6 @@ export const updateCustomer = async (req, res) => {
 
     if (!name?.trim() || !phone?.trim()) {
       return res.status(400).json({ success: false, message: "Nama dan Nomor Telepon wajib diisi" });
-    }
-
-    if (gender !== undefined && gender !== null && gender !== "" && !GENDERS.includes(String(gender).trim())) {
-      return res.status(400).json({ success: false, message: "Gender harus Laki-Laki atau Perempuan" });
     }
 
     if (customer_code?.trim()) {
@@ -231,17 +233,8 @@ export const updateCustomer = async (req, res) => {
         customer_code = COALESCE(?, customer_code),
         name = ?,
         phone = ?,
-        gender = ?,
-        greeting = ?,
         email = ?,
-        birth_date = ?,
-        occupation = ?,
         address = ?,
-        block = ?,
-        house_number = ?,
-        full_address = ?,
-        district = ?,
-        sub_district = ?,
         city = ?,
         postal_code = ?,
         landmark = ?,
@@ -250,7 +243,6 @@ export const updateCustomer = async (req, res) => {
         spending_tier_id = ?,
         customer_source_id = ?,
         notes = ?,
-        general_notes = ?,
         is_active = ?,
         updated_at = NOW()
        WHERE id = ?`,
@@ -258,18 +250,9 @@ export const updateCustomer = async (req, res) => {
         customer_code?.trim() || null,
         name.trim(),
         phone.trim(),
-        normalizeGender(gender),
-        greeting?.trim() || null,
         email?.trim() || null,
-        normalizeDate(birth_date),
-        occupation?.trim() || null,
         address?.trim() || null,
-        block?.trim() || null,
-        house_number?.trim() || null,
-        full_address?.trim() || null,
-        district?.trim() || null,
-        sub_district?.trim() || null,
-        city?.trim() || "Jakarta Selatan",
+        city?.trim() || null,
         postal_code?.trim() || null,
         landmark?.trim() || null,
         home_branch?.trim() || null,
@@ -277,7 +260,6 @@ export const updateCustomer = async (req, res) => {
         normalizeOptionalId(spending_tier_id),
         normalizeOptionalId(customer_source_id),
         notes?.trim() || null,
-        general_notes?.trim() || null,
         is_active !== undefined ? Number(is_active) : 1,
         id,
       ]
