@@ -275,7 +275,17 @@ export const createResponse = async (req, res) => {
     }
 
     const table = getTable(brand);
-    const { no_nota, nama, csat_score, csat_label, nps_score, nps_category, feedback_tags, feedback_text } = req.body;
+    const {
+      no_nota,
+      nama,
+      csat_score,
+      csat_label,
+      nps_score,
+      nps_category,
+      feedback_tags,
+      feedback_text,
+      layanan,
+    } = req.body;
 
     if (!csat_score || !csat_label || nps_score === undefined || !nps_category) {
       return res.status(400).json({ message: "Field wajib tidak lengkap" });
@@ -283,13 +293,101 @@ export const createResponse = async (req, res) => {
 
     const ip = req.ip || req.connection?.remoteAddress || null;
     const ua = req.headers["user-agent"] || null;
+    const nota = String(no_nota || "").trim();
+    const layananValue = layanan === undefined || layanan === null ? null : String(layanan).trim() || null;
 
     if (brand === "cleanox") {
+      // Replace-by-nota when no_nota provided (one row per transaction_no / no_nota).
+      if (nota) {
+        const [existing] = await safeQuery(
+          `SELECT id, layanan FROM ${table} WHERE TRIM(no_nota) = ? ORDER BY id ASC`,
+          [nota]
+        );
+        const keepId = existing.length > 0 ? Number(existing[0].id) : null;
+        const extraIds = existing.slice(1).map((row) => Number(row.id)).filter(Boolean);
+        const nextLayanan =
+          layanan !== undefined && layanan !== null
+            ? layananValue
+            : keepId
+              ? existing[0].layanan ?? null
+              : null;
+
+        if (keepId) {
+          await safeQuery(
+            `UPDATE ${table}
+             SET no_nota = ?,
+                 nama = ?,
+                 csat_score = ?,
+                 csat_label = ?,
+                 nps_score = ?,
+                 nps_category = ?,
+                 feedback_tags = ?,
+                 feedback_text = ?,
+                 layanan = ?,
+                 ip_address = ?,
+                 user_agent = ?
+             WHERE id = ?`,
+            [
+              nota,
+              nama || null,
+              Number(csat_score),
+              csat_label,
+              Number(nps_score),
+              nps_category,
+              feedback_tags || null,
+              feedback_text || null,
+              nextLayanan,
+              ip,
+              ua,
+              keepId,
+            ]
+          );
+          if (extraIds.length > 0) {
+            await safeQuery(`DELETE FROM ${table} WHERE id IN (?)`, [extraIds]);
+          }
+          return res.status(201).json({ message: "Survey berhasil disimpan", id: keepId, replaced: true });
+        }
+
+        const [result] = await safeQuery(
+          `INSERT INTO ${table}
+             (no_nota, nama, csat_score, csat_label, nps_score, nps_category,
+              feedback_tags, feedback_text, layanan, ip_address, user_agent)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            nota,
+            nama || null,
+            Number(csat_score),
+            csat_label,
+            Number(nps_score),
+            nps_category,
+            feedback_tags || null,
+            feedback_text || null,
+            nextLayanan,
+            ip,
+            ua,
+          ]
+        );
+        return res.status(201).json({ message: "Survey berhasil disimpan", id: result.insertId });
+      }
+
       const [result] = await safeQuery(
         `INSERT INTO ${table}
-           (no_nota, nama, csat_score, csat_label, nps_score, nps_category, feedback_tags, feedback_text, ip_address, user_agent)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [no_nota || null, nama || null, Number(csat_score), csat_label, Number(nps_score), nps_category, feedback_tags || null, feedback_text || null, ip, ua]
+           (no_nota, nama, csat_score, csat_label, nps_score, nps_category,
+            feedback_tags, feedback_text, layanan, ip_address, user_agent)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          null,
+          nama || null,
+          Number(csat_score),
+          csat_label,
+          Number(nps_score),
+          nps_category,
+          feedback_tags || null,
+          feedback_text || null,
+          layananValue,
+          ip,
+          ua,
+        ]
       );
       return res.status(201).json({ message: "Survey berhasil disimpan", id: result.insertId });
     }
