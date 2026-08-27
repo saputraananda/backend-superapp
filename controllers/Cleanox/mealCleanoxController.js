@@ -2,6 +2,10 @@ import fs from "fs";
 import path from "path";
 import { safeQuery, safeCleanoxQuery } from "../../db/pool.js";
 import { CLEANOX_MEAL_DIR } from "../../middleware/upload.js";
+import {
+	getCleanoxProduksiEmployeeIds,
+	getCleanoxProduksiRoleMap,
+} from "../../utils/cleanoxProduksiEmployees.js";
 
 const CLEANOX_COMPANY_ID = 3;
 const ALLOWED_TYPES = new Set(["half_day", "full_day"]);
@@ -113,9 +117,21 @@ async function getEmployeeMap(workerIds) {
 
 	const roleMap = new Map();
 	try {
-		const [roleRows] = await safeCleanoxQuery("SELECT employee_id, role FROM mst_role");
-		for (const r of roleRows || []) {
-			roleMap.set(Number(r.employee_id), r.role || null);
+		const produksiRoleMap = await getCleanoxProduksiRoleMap();
+		for (const [id, role] of produksiRoleMap.entries()) {
+			roleMap.set(id, role);
+		}
+		// Enrich historis: role non-produksi (jika ada di mst_role) tetap dilabeli untuk record lama
+		const missingIds = uniqueIds.filter((id) => !roleMap.has(id));
+		if (missingIds.length > 0) {
+			const ph = missingIds.map(() => "?").join(",");
+			const [roleRows] = await safeCleanoxQuery(
+				`SELECT employee_id, role FROM mst_role WHERE employee_id IN (${ph})`,
+				missingIds
+			);
+			for (const r of roleRows || []) {
+				roleMap.set(Number(r.employee_id), r.role || null);
+			}
 		}
 	} catch {
 		// optional
@@ -297,12 +313,8 @@ export const getMealRekap = async (req, res) => {
 		const dates = eachDateInclusive(startDate, endDate);
 		const days = dates.length;
 
-		const [roleRows] = await safeCleanoxQuery("SELECT employee_id, role FROM mst_role");
-		const roleMap = new Map();
-		for (const r of roleRows || []) {
-			roleMap.set(Number(r.employee_id), r.role || null);
-		}
-		const assignedIds = [...roleMap.keys()].filter((id) => Number.isInteger(id) && id > 0);
+		const assignedIds = await getCleanoxProduksiEmployeeIds();
+		const roleMap = await getCleanoxProduksiRoleMap();
 		if (assignedIds.length === 0) {
 			return res.json({
 				startDate,
@@ -320,6 +332,7 @@ export const getMealRekap = async (req, res) => {
 				FROM mst_employee e
 				WHERE e.is_deleted = 0
 					AND e.company_id = ?
+					AND e.exit_date IS NULL
 					AND e.employee_id IN (${ph})
 				ORDER BY e.full_name ASC
 			`,

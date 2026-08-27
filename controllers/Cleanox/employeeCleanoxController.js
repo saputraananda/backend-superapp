@@ -1,5 +1,6 @@
 import { pool, safeQuery, safeCleanoxQuery } from "../../db/pool.js";
 import bcrypt from "bcrypt";
+import { getCleanoxProduksiEmployeeIds, getCleanoxProduksiRoleMapObject } from "../../utils/cleanoxProduksiEmployees.js";
 
 const SORT_COLUMNS = {
   full_name: "e.full_name",
@@ -16,11 +17,9 @@ export const listCleanoxEmployees = async (req, res) => {
     const sortBy = SORT_COLUMNS[sortByKey] || SORT_COLUMNS.full_name;
     const sortDir = String(req.query.sortDir || "asc").toLowerCase() === "desc" ? "DESC" : "ASC";
 
-    // Fetch mst_role entries (produksi/frontliner from company 3 & 5)
-    const [roleRows] = await safeCleanoxQuery("SELECT employee_id, role FROM mst_role");
-    const roleMap = {};
-    for (const rr of roleRows) roleMap[rr.employee_id] = rr.role;
-    const assignedIds = Object.keys(roleMap).map(Number);
+    // List tampilan: hanya role produksi
+    const roleMap = await getCleanoxProduksiRoleMapObject();
+    const assignedIds = await getCleanoxProduksiEmployeeIds();
 
     if (assignedIds.length === 0) {
       return res.json({ success: true, total: 0, data: [] });
@@ -29,7 +28,7 @@ export const listCleanoxEmployees = async (req, res) => {
     const conditions = ["e.is_deleted = 0"];
     const params = [];
 
-    // Only company 3/5 that have mst_role
+    // Only company 3/5 that have mst_role produksi
     const ph = assignedIds.map(() => "?").join(", ");
     conditions.push(`e.company_id IN (3, 5)`);
     conditions.push(`e.employee_id IN (${ph})`);

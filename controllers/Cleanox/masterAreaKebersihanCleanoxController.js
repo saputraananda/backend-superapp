@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { pool, cleanoxPool, safeQuery, safeCleanoxQuery } from "../../db/pool.js";
+import { getCleanoxProduksiRoleMapObject } from "../../utils/cleanoxProduksiEmployees.js";
 import { CLEANOX_KEBERSIHAN_DIR } from "../../middleware/upload.js";
 
 const VALID_SCORES = [0, 0.5, 1];
@@ -34,12 +35,7 @@ function reviewStatusFromCount(count, required = 4) {
 }
 
 async function getCleanoxRoleMap() {
-  const [roleRows] = await safeCleanoxQuery("SELECT employee_id, role FROM mst_role");
-  const roleMap = {};
-  for (const rr of roleRows || []) {
-    roleMap[Number(rr.employee_id)] = rr.role;
-  }
-  return roleMap;
+  return getCleanoxProduksiRoleMapObject();
 }
 
 async function assertCleanoxCompany3Employee(employeeId) {
@@ -63,6 +59,7 @@ async function assertCleanoxCompany3Employee(employeeId) {
      WHERE e.employee_id = ?
        AND e.company_id = 3
        AND e.is_deleted = 0
+       AND e.exit_date IS NULL
      LIMIT 1`,
     [id],
   );
@@ -96,7 +93,7 @@ export const listKebersihanEmployees = async (req, res) => {
       return res.json({ success: true, total: 0, data: [], required_area_count: requiredCount });
     }
 
-    const conditions = ["e.is_deleted = 0", "e.company_id = 3"];
+    const conditions = ["e.is_deleted = 0", "e.company_id = 3", "e.exit_date IS NULL"];
     const params = [];
     const ph = assignedIds.map(() => "?").join(", ");
     conditions.push(`e.employee_id IN (${ph})`);
