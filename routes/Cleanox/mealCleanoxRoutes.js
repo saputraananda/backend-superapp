@@ -4,6 +4,9 @@ import {
 	listMeals,
 	getMealRekap,
 	getMealById,
+	createMeal,
+	updateMeal,
+	deleteMeal,
 	completeMeal,
 	serveMealProof,
 } from "../../controllers/Cleanox/mealCleanoxController.js";
@@ -14,6 +17,7 @@ const router = express.Router();
 router.get("/rekap", requireAuth, getMealRekap);
 router.get("/proofs/:filename", requireAuth, serveMealProof);
 router.get("/", requireAuth, listMeals);
+router.post("/", requireAuth, createMeal);
 router.get("/:id", requireAuth, getMealById);
 router.put(
 	"/:id/complete",
@@ -30,5 +34,7 @@ router.put(
 	},
 	completeMeal
 );
+router.put("/:id", requireAuth, updateMeal);
+router.delete("/:id", requireAuth, deleteMeal);
 
 export default router;

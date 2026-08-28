@@ -507,7 +507,61 @@ export const listAttendanceRecords = async (req, res) => {
         reviewed_count: reviewedCount,
         review_status: reviewStatusFromCount(reviewedCount),
         status_label: getRecordStatus(row),
+        is_off_day: false,
       };
+    });
+
+    const attendanceKeys = new Set(
+      (rows || []).map((r) => `${Number(r.worker_id)}|${toDateOnly(r.attendance_date)}`),
+    );
+
+    const [offRows] = await safeCleanoxQuery(
+      `
+        SELECT id, worker_id, off_date, note, created_by_name, created_at
+        FROM tr_worker_off_days
+        WHERE worker_id IN (${workerPh})
+          AND off_date >= ?
+          AND off_date <= ?
+        ORDER BY off_date DESC
+      `,
+      [...workerIds, startDate, endDate],
+    );
+
+    for (const off of offRows || []) {
+      const workerId = Number(off.worker_id);
+      const offDate = toDateOnly(off.off_date);
+      const key = `${workerId}|${offDate}`;
+      if (attendanceKeys.has(key)) continue;
+
+      const emp = employeeMap[workerId] || {};
+      data.push({
+        id: `off-${off.id}`,
+        off_day_id: Number(off.id),
+        is_off_day: true,
+        attendance_date: offDate,
+        employee_id: workerId,
+        employee_code: emp.employee_code || null,
+        full_name: emp.full_name || null,
+        username: emp.username || null,
+        cleanox_role: roleMap[workerId] ?? null,
+        check_in_at: null,
+        check_out_at: null,
+        check_in_photo: null,
+        photos: [],
+        check_out_photo: null,
+        reviewed_count: 0,
+        review_status: "belum",
+        status_label: "Libur",
+        off_note: off.note || null,
+        created_by_name: off.created_by_name || null,
+      });
+    }
+
+    data.sort((a, b) => {
+      const da = String(a.attendance_date || "");
+      const db = String(b.attendance_date || "");
+      if (da !== db) return db.localeCompare(da);
+      return String(a.full_name || "").localeCompare(String(b.full_name || ""));
     });
 
     const { summary, employeeSummary } = buildAttendanceAggregates(rows || [], employeeMap, roleMap);
@@ -610,8 +664,48 @@ export const listEmployeeAttendanceRecords = async (req, res) => {
         photos,
         reviewed_count: reviewedCount,
         review_status: reviewStatusFromCount(reviewedCount),
+        status_label: getRecordStatus(row),
+        is_off_day: false,
       };
     });
+
+    const attendanceKeys = new Set(
+      (rows || []).map((r) => toDateOnly(r.attendance_date)),
+    );
+
+    const [offRows] = await safeCleanoxQuery(
+      `
+        SELECT id, off_date, note, created_by_name, created_at
+        FROM tr_worker_off_days
+        WHERE worker_id = ?
+          AND off_date >= ?
+          AND off_date <= ?
+        ORDER BY off_date DESC
+      `,
+      [employee.employee_id, startDate, endDate],
+    );
+
+    for (const off of offRows || []) {
+      const offDate = toDateOnly(off.off_date);
+      if (attendanceKeys.has(offDate)) continue;
+
+      data.push({
+        id: `off-${off.id}`,
+        off_day_id: Number(off.id),
+        is_off_day: true,
+        attendance_date: offDate,
+        check_in_at: null,
+        check_out_at: null,
+        photos: [],
+        reviewed_count: 0,
+        review_status: "belum",
+        status_label: "Libur",
+        off_note: off.note || null,
+        created_by_name: off.created_by_name || null,
+      });
+    }
+
+    data.sort((a, b) => String(b.attendance_date || "").localeCompare(String(a.attendance_date || "")));
 
     return res.json({
       success: true,
