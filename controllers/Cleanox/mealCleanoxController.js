@@ -76,6 +76,46 @@ function resolveProcessedById(req) {
 	return null;
 }
 
+function todayDateStringWib() {
+	const now = new Date();
+	const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+	const jakarta = new Date(utc + 7 * 60 * 60000);
+	return jakarta.toISOString().slice(0, 10);
+}
+
+function amountForType(type) {
+	if (type === "half_day") return HALF_TOTAL;
+	if (type === "full_day") return FULL_TOTAL;
+	return null;
+}
+
+function isDuplicateKeyError(err) {
+	return Number(err?.errno) === 1062 || String(err?.code || "") === "ER_DUP_ENTRY";
+}
+
+async function assertCleanoxProduksiEmployee(workerId) {
+	const id = toPositiveInt(workerId);
+	if (!id) return null;
+
+	const roleMap = await getCleanoxProduksiRoleMap();
+	if (!roleMap.has(id)) return null;
+
+	const [rows] = await safeQuery(
+		`
+			SELECT employee_id, employee_code, full_name
+			FROM mst_employee
+			WHERE employee_id = ?
+				AND company_id = ?
+				AND is_deleted = 0
+				AND exit_date IS NULL
+			LIMIT 1
+		`,
+		[id, CLEANOX_COMPANY_ID]
+	);
+
+	return rows?.[0] || null;
+}
+
 function eachDateInclusive(startDate, endDate) {
 	const out = [];
 	const [sy, sm, sd] = startDate.split("-").map(Number);
@@ -413,6 +453,146 @@ export const getMealRekap = async (req, res) => {
 	} catch (err) {
 		console.error("[getMealRekap Cleanox] Error:", err);
 		return res.status(500).json({ message: "Gagal mengambil rekap makan siang Cleanox" });
+	}
+};
+
+export const createMeal = async (req, res) => {
+	try {
+		const workerId = toPositiveInt(req.body?.worker_id);
+		if (!workerId) {
+			return res.status(400).json({ message: "worker_id wajib diisi" });
+		}
+
+		const employee = await assertCleanoxProduksiEmployee(workerId);
+		if (!employee) {
+			return res.status(404).json({ message: "Karyawan Cleanox tidak ditemukan" });
+		}
+
+		const mealDate = toISODateString(req.body?.meal_date);
+		if (!mealDate) {
+			return res.status(400).json({ message: "meal_date wajib diisi (YYYY-MM-DD)" });
+		}
+
+		const today = todayDateStringWib();
+		if (mealDate > today) {
+			return res.status(400).json({ message: "Tanggal makan tidak boleh di masa depan" });
+		}
+
+		const type = String(req.body?.type || "").trim().toLowerCase();
+		if (!ALLOWED_TYPES.has(type)) {
+			return res.status(400).json({ message: "Tipe tidak valid. Gunakan: half_day, full_day" });
+		}
+
+		const notes = String(req.body?.notes || "").trim().slice(0, 1000) || null;
+		const amount = amountForType(type);
+
+		const [result] = await safeCleanoxQuery(
+			`
+				INSERT INTO tr_worker_meal
+					(worker_id, meal_date, type, amount, notes, status, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, 'menunggu_tf', NOW(), NOW())
+			`,
+			[workerId, mealDate, type, amount, notes]
+		);
+
+		const [rows] = await safeCleanoxQuery(`SELECT * FROM tr_worker_meal WHERE id = ? LIMIT 1`, [
+			result.insertId,
+		]);
+		const row = rows?.[0];
+		const employeeMap = await getEmployeeMap([row.worker_id]);
+		const emp = employeeMap.get(Number(row.worker_id)) || {};
+
+		return res.status(201).json({
+			message: "Pengajuan makan siang berhasil",
+			record: mapRecord(row, emp),
+		});
+	} catch (err) {
+		if (isDuplicateKeyError(err)) {
+			return res.status(409).json({ message: "Pengajuan makan siang untuk tanggal ini sudah ada" });
+		}
+		console.error("[createMeal Cleanox] Error:", err);
+		return res.status(500).json({ message: "Gagal mengajukan makan siang" });
+	}
+};
+
+export const updateMeal = async (req, res) => {
+	try {
+		const id = toPositiveInt(req.params.id);
+		if (!id) return res.status(400).json({ message: "ID tidak valid" });
+
+		const [existingRows] = await safeCleanoxQuery(`SELECT * FROM tr_worker_meal WHERE id = ? LIMIT 1`, [id]);
+		const existing = existingRows?.[0];
+		if (!existing) return res.status(404).json({ message: "Pengajuan tidak ditemukan" });
+		if (existing.status !== "menunggu_tf") {
+			return res.status(400).json({ message: "Hanya pengajuan menunggu TF yang bisa diubah" });
+		}
+
+		const today = todayDateStringWib();
+		const mealDate = toISODateString(req.body?.meal_date) || toDateOnly(existing.meal_date);
+		if (!mealDate) {
+			return res.status(400).json({ message: "Format tanggal tidak valid" });
+		}
+		if (mealDate > today) {
+			return res.status(400).json({ message: "Tanggal makan tidak boleh di masa depan" });
+		}
+
+		const type =
+			req.body?.type != null ? String(req.body.type).trim().toLowerCase() : existing.type;
+		if (!ALLOWED_TYPES.has(type)) {
+			return res.status(400).json({ message: "Tipe tidak valid. Gunakan: half_day, full_day" });
+		}
+
+		const notes =
+			req.body?.notes !== undefined
+				? String(req.body.notes || "").trim().slice(0, 1000) || null
+				: existing.notes;
+
+		const amount = amountForType(type);
+
+		await safeCleanoxQuery(
+			`
+				UPDATE tr_worker_meal
+				SET meal_date = ?, type = ?, amount = ?, notes = ?, updated_at = NOW()
+				WHERE id = ? AND status = 'menunggu_tf'
+			`,
+			[mealDate, type, amount, notes, id]
+		);
+
+		const [rows] = await safeCleanoxQuery(`SELECT * FROM tr_worker_meal WHERE id = ? LIMIT 1`, [id]);
+		const employeeMap = await getEmployeeMap([rows[0].worker_id]);
+		const emp = employeeMap.get(Number(rows[0].worker_id)) || {};
+
+		return res.json({
+			message: "Pengajuan diperbarui",
+			record: mapRecord(rows[0], emp),
+		});
+	} catch (err) {
+		if (isDuplicateKeyError(err)) {
+			return res.status(409).json({ message: "Pengajuan makan siang untuk tanggal ini sudah ada" });
+		}
+		console.error("[updateMeal Cleanox] Error:", err);
+		return res.status(500).json({ message: "Gagal memperbarui pengajuan" });
+	}
+};
+
+export const deleteMeal = async (req, res) => {
+	try {
+		const id = toPositiveInt(req.params.id);
+		if (!id) return res.status(400).json({ message: "ID tidak valid" });
+
+		const [result] = await safeCleanoxQuery(
+			`DELETE FROM tr_worker_meal WHERE id = ? AND status = 'menunggu_tf'`,
+			[id]
+		);
+
+		if (result.affectedRows === 0) {
+			return res.status(404).json({ message: "Pengajuan tidak ditemukan atau sudah selesai" });
+		}
+
+		return res.json({ message: "Pengajuan dihapus" });
+	} catch (err) {
+		console.error("[deleteMeal Cleanox] Error:", err);
+		return res.status(500).json({ message: "Gagal menghapus pengajuan" });
 	}
 };
 
