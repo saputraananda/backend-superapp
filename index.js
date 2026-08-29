@@ -99,6 +99,8 @@ import statusWorkRoutes from "./routes/MyWaschen/MasterData/StatusWorkRoutes.js"
 import materialRoutes from "./routes/MyWaschen/MasterData/MaterialRoutes.js";
 import methodLaundryRoutes from "./routes/MyWaschen/MasterData/MethodLaundryRoutes.js";
 import outletWaschenRoutes from "./routes/MyWaschen/MasterData/OutletRoutes.js";
+import historyWaschenRoutes from "./routes/MyWaschen/Transaction/HistoryRoutes.js";
+import printerSettingsRoutes from "./routes/MyWaschen/Settings/PrinterSettingsRoutes.js";
 import trainingRoutes from "./routes/trainingRoutes.js";
 import projectManagementRoutes from "./routes/ProjectManagement/projectManagementRoutes.js";
 import personalChatRoutes from "./routes/ProjectManagement/personalChatRoutes.js";
@@ -376,6 +378,8 @@ app.use("/waschen/work-statuses", statusWorkRoutes);
 app.use("/waschen/materials", materialRoutes);
 app.use("/waschen/method-laundries", methodLaundryRoutes);
 app.use("/waschen/outlets", outletWaschenRoutes);
+app.use("/waschen/transactions", historyWaschenRoutes);
+app.use("/waschen/printer-settings", printerSettingsRoutes);
 app.use("/training", trainingRoutes);
 app.use("/api/pm2", projectManagementRoutes);
 app.use("/api/pm2/chat", personalChatRoutes);
