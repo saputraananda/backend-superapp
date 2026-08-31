@@ -1,5 +1,56 @@
 import { safeMyWaschenQuery } from "../../../db/pool.js";
 
+async function fetchServiceInventory(serviceId) {
+  const [rows] = await safeMyWaschenQuery(
+    `SELECT si.id, si.service_id, si.item_id, si.qty_per_service, si.notes, si.is_active,
+            i.code AS item_code, i.name AS item_name, u.symbol AS item_unit
+     FROM mst_service_inventory si
+     JOIN mst_inventory_item i ON i.id = si.item_id
+     LEFT JOIN mst_unit u ON u.id = i.unit_id
+     WHERE si.service_id = ? AND si.is_active = 1
+     ORDER BY i.name ASC`,
+    [serviceId]
+  );
+  return rows;
+}
+
+function normalizeInventoryLines(rawLines) {
+  if (!Array.isArray(rawLines)) return [];
+  const seen = new Set();
+  const cleaned = [];
+  for (const line of rawLines) {
+    const itemId = Number(line.item_id);
+    const qty = Number(line.qty_per_service);
+    if (!Number.isFinite(itemId) || itemId <= 0) continue;
+    if (seen.has(itemId)) continue;
+    if (!Number.isFinite(qty) || qty <= 0) continue;
+    seen.add(itemId);
+    cleaned.push({
+      item_id: itemId,
+      qty_per_service: qty,
+      notes: line.notes?.trim() || null,
+    });
+  }
+  return cleaned;
+}
+
+async function syncServiceInventory(serviceId, rawLines) {
+  const lines = normalizeInventoryLines(rawLines);
+  await safeMyWaschenQuery("DELETE FROM mst_service_inventory WHERE service_id = ?", [serviceId]);
+  for (const line of lines) {
+    const [item] = await safeMyWaschenQuery(
+      "SELECT id FROM mst_inventory_item WHERE id = ? AND is_active = 1 LIMIT 1",
+      [line.item_id]
+    );
+    if (!item.length) continue;
+    await safeMyWaschenQuery(
+      `INSERT INTO mst_service_inventory (service_id, item_id, qty_per_service, notes, is_active)
+       VALUES (?, ?, ?, ?, 1)`,
+      [serviceId, line.item_id, line.qty_per_service, line.notes]
+    );
+  }
+}
+
 // ── Helper: Generate kode otomatis (WS-KG-### untuk Kiloan, WS-SAT-### untuk Satuan) ──
 export const generateNextServiceCode = async (categoryId) => {
   const prefix = Number(categoryId) === 1 ? "WS-KG-" : "WS-SAT-";
@@ -61,7 +112,9 @@ export const getServices = async (req, res) => {
 
     const [rows] = await safeMyWaschenQuery(
       `SELECT s.*, c.name AS category_name, c.code AS category_code,
-              u.name AS unit_name_full, u.symbol AS unit_symbol, u.code AS unit_code
+              u.name AS unit_name_full, u.symbol AS unit_symbol, u.code AS unit_code,
+              (SELECT COUNT(*) FROM mst_service_inventory si
+               WHERE si.service_id = s.id AND si.is_active = 1) AS inventory_item_count
        FROM mst_service s
        LEFT JOIN mst_service_category c ON s.category_id = c.id
        LEFT JOIN mst_unit u ON s.unit_id = u.id
@@ -93,7 +146,8 @@ export const getServiceById = async (req, res) => {
     if (!rows.length) {
       return res.status(404).json({ success: false, message: "Layanan tidak ditemukan" });
     }
-    res.json({ success: true, data: rows[0] });
+    const inventory_items = await fetchServiceInventory(id);
+    res.json({ success: true, data: { ...rows[0], inventory_items } });
   } catch (err) {
     console.error("getServiceById error:", err);
     res.status(500).json({ success: false, message: err.message });
@@ -118,7 +172,7 @@ export const getNextServiceCode = async (req, res) => {
 // ── 3. CREATE ──
 export const createService = async (req, res) => {
   try {
-    const { category_id, unit_id, code, name, unit, price, regular_duration_days, min_order_qty, description, is_cleanox, is_featured, is_active } = req.body;
+    const { category_id, unit_id, code, name, unit, price, regular_duration_days, min_order_qty, description, is_cleanox, is_featured, is_active, inventory_items } = req.body;
 
     if (!category_id || !name?.trim()) {
       return res.status(400).json({ success: false, message: "Kategori dan Nama Layanan wajib diisi" });
@@ -140,7 +194,7 @@ export const createService = async (req, res) => {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         Number(category_id),
-        unit_id ? Number(unit_id) : 1,
+        unit_id ? Number(unit_id) : 8,
         unit?.trim() || "Kg",
         formattedCode,
         name.trim(),
@@ -153,6 +207,8 @@ export const createService = async (req, res) => {
         is_active !== undefined ? Number(is_active) : 1
       ]
     );
+
+    await syncServiceInventory(result.insertId, inventory_items);
 
     res.status(201).json({
       success: true,
@@ -170,7 +226,7 @@ export const createService = async (req, res) => {
 export const updateService = async (req, res) => {
   try {
     const { id } = req.params;
-    const { category_id, unit_id, code, name, unit, price, regular_duration_days, min_order_qty, description, is_cleanox, is_featured, is_active } = req.body;
+    const { category_id, unit_id, code, name, unit, price, regular_duration_days, min_order_qty, description, is_cleanox, is_featured, is_active, inventory_items } = req.body;
 
     if (!name?.trim()) {
       return res.status(400).json({ success: false, message: "Nama Layanan wajib diisi" });
@@ -208,7 +264,7 @@ export const updateService = async (req, res) => {
        WHERE id = ?`,
       [
         category_id ? Number(category_id) : null,
-        unit_id ? Number(unit_id) : 1,
+        unit_id ? Number(unit_id) : 8,
         unit?.trim() || "Kg",
         formattedCode,
         name.trim(),
@@ -222,6 +278,8 @@ export const updateService = async (req, res) => {
         id
       ]
     );
+
+    await syncServiceInventory(id, inventory_items);
 
     res.json({ success: true, message: "Layanan berhasil diperbarui" });
   } catch (err) {
@@ -239,6 +297,7 @@ export const deleteService = async (req, res) => {
       return res.status(404).json({ success: false, message: "Layanan tidak ditemukan" });
     }
 
+    await safeMyWaschenQuery("DELETE FROM mst_service_inventory WHERE service_id = ?", [id]);
     await safeMyWaschenQuery("DELETE FROM mst_service WHERE id = ?", [id]);
     res.json({ success: true, message: "Layanan berhasil dihapus" });
   } catch (err) {
