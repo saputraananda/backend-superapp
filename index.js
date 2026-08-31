@@ -102,6 +102,7 @@ import methodLaundryRoutes from "./routes/MyWaschen/MasterData/MethodLaundryRout
 import outletWaschenRoutes from "./routes/MyWaschen/MasterData/OutletRoutes.js";
 import historyWaschenRoutes from "./routes/MyWaschen/Transaction/HistoryRoutes.js";
 import pettyCashRoutes from "./routes/MyWaschen/Transaction/PettyCashRoutes.js";
+import dailyReportRoutes from "./routes/MyWaschen/Transaction/DailyRoutes.js";
 import printerSettingsRoutes from "./routes/MyWaschen/Settings/PrinterSettingsRoutes.js";
 import inventoryWaschenRoutes from "./routes/MyWaschen/Inventory/InventoryRoutes.js";
 import dashboardInventoryRoutes from "./routes/MyWaschen/Inventory/DashboardInventoryRoutes.js";
@@ -385,6 +386,7 @@ app.use("/waschen/method-laundries", methodLaundryRoutes);
 app.use("/waschen/outlets", outletWaschenRoutes);
 app.use("/waschen/transactions", historyWaschenRoutes);
 app.use("/waschen/petty-cash", pettyCashRoutes);
+app.use("/waschen/daily-report", dailyReportRoutes);
 app.use("/waschen/printer-settings", printerSettingsRoutes);
 app.use("/waschen/inventory/dashboard", dashboardInventoryRoutes);
 app.use("/waschen/inventory", inventoryWaschenRoutes);
