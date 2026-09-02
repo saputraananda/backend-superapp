@@ -5,7 +5,7 @@ import {
   getAssignableEmployees,
   addWaschenEmployee,
   updateEmployeeRole,
-} from "../../../controllers/MyWaschen/General/employeeWaschenController.js";
+} from "../../../controllers/MyWaschen/HRIS/employeeWaschenController.js";
 
 const router = express.Router();
 

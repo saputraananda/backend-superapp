@@ -82,9 +82,9 @@ import kpiProduksiRoutes from "./routes/Cleanox/kpiProduksiRoutes.js";
 import masterServicesRoutes from "./routes/Cleanox/masterServicesRoutes.js";
 import masterCategoryRoutes from "./routes/Cleanox/masterCategoryRoutes.js";
 import targetCleanoxRoutes from "./routes/Cleanox/targetCleanoxRoutes.js";
-import employeeWaschenRoutes from "./routes/MyWaschen/General/employeeWaschenRoutes.js";
-import customerRoutes from "./routes/MyWaschen/General/CustomerRoutes.js";
-import dashboardWaschenRoutes from "./routes/MyWaschen/General/DashboardRoutes.js";
+import employeeWaschenRoutes from "./routes/MyWaschen/HRIS/employeeWaschenRoutes.js";
+import customerRoutes from "./routes/MyWaschen/Transaction/CustomerRoutes.js";
+import dashboardWaschenRoutes from "./routes/MyWaschen/Transaction/DashboardRoutes.js";
 import categoryServicesRoutes from "./routes/MyWaschen/MasterData/CategoryServicesRoutes.js";
 import servicesWaschenRoutes from "./routes/MyWaschen/MasterData/ServicesRoutes.js";
 import serviceSpeedRoutes from "./routes/MyWaschen/MasterData/ServiceSpeedRoutes.js";
@@ -105,6 +105,11 @@ import pettyCashRoutes from "./routes/MyWaschen/Transaction/PettyCashRoutes.js";
 import dailyReportRoutes from "./routes/MyWaschen/Transaction/DailyRoutes.js";
 import printerSettingsRoutes from "./routes/MyWaschen/Settings/PrinterSettingsRoutes.js";
 import inventoryWaschenRoutes from "./routes/MyWaschen/Inventory/InventoryRoutes.js";
+import attendanceWaschenRoutes from "./routes/MyWaschen/HRIS/AttendanceRoutes.js";
+import leaveWaschenRoutes from "./routes/MyWaschen/HRIS/LeaveRoutes.js";
+import kasbonWaschenRoutes from "./routes/MyWaschen/HRIS/KasbonRoutes.js";
+import dayOffWaschenRoutes from "./routes/MyWaschen/HRIS/DayOffRoutes.js";
+import dayOffPolicyRoutes from "./routes/MyWaschen/MasterData/DayOffPolicyRoutes.js";
 import dashboardInventoryRoutes from "./routes/MyWaschen/Inventory/DashboardInventoryRoutes.js";
 import trainingRoutes from "./routes/trainingRoutes.js";
 import projectManagementRoutes from "./routes/ProjectManagement/projectManagementRoutes.js";
@@ -270,7 +275,32 @@ app.use("/assets/training_evidence", express.static(path.join(ASSETS_BASE, "trai
 app.use("/assets/pm_evidence", express.static(path.join(ASSETS_BASE, "pm_evidence")));
 app.use("/storage/assets/payslip", express.static(path.join(ASSETS_BASE, "payslip")));
 
+// Waschen Mobile uploads (dev: folder lokal waschen-mobile)
+const WASCHEN_MOBILE_ATTENDANCE_DIR = process.env.WASCHEN_MOBILE_ATTENDANCE_DIR;
+const WASCHEN_MOBILE_LEAVE_DIR = process.env.WASCHEN_MOBILE_LEAVE_DIR;
+const WASCHEN_MOBILE_KASBON_DIR = process.env.WASCHEN_MOBILE_KASBON_DIR;
+if (WASCHEN_MOBILE_ATTENDANCE_DIR && fs.existsSync(WASCHEN_MOBILE_ATTENDANCE_DIR)) {
+  app.use("/uploads/assets/attendance", express.static(WASCHEN_MOBILE_ATTENDANCE_DIR));
+}
+if (WASCHEN_MOBILE_LEAVE_DIR && fs.existsSync(WASCHEN_MOBILE_LEAVE_DIR)) {
+  app.use("/uploads/assets/leave", express.static(WASCHEN_MOBILE_LEAVE_DIR));
+}
+if (WASCHEN_MOBILE_KASBON_DIR && fs.existsSync(WASCHEN_MOBILE_KASBON_DIR)) {
+  app.use("/uploads/assets/kasbon", express.static(WASCHEN_MOBILE_KASBON_DIR));
+}
 
+const PRODUKSI_QC_MOUNT = [
+  ["frontliner", process.env.WASCHEN_MOBILE_QC_FRONTLINER_DIR],
+  ["washing", process.env.WASCHEN_MOBILE_QC_WASHING_DIR],
+  ["ironing", process.env.WASCHEN_MOBILE_QC_IRONING_DIR],
+  ["packing", process.env.WASCHEN_MOBILE_QC_PACKING_DIR],
+  ["delivery", process.env.WASCHEN_MOBILE_QC_DELIVERY_DIR],
+];
+for (const [stage, dir] of PRODUKSI_QC_MOUNT) {
+  if (dir && fs.existsSync(dir)) {
+    app.use(`/uploads/assets/produksi/${stage}`, express.static(dir));
+  }
+}
 
 // =========================
 // Routes
@@ -390,6 +420,11 @@ app.use("/waschen/daily-report", dailyReportRoutes);
 app.use("/waschen/printer-settings", printerSettingsRoutes);
 app.use("/waschen/inventory/dashboard", dashboardInventoryRoutes);
 app.use("/waschen/inventory", inventoryWaschenRoutes);
+app.use("/waschen/hris/attendance", attendanceWaschenRoutes);
+app.use("/waschen/hris/leaves", leaveWaschenRoutes);
+app.use("/waschen/hris/kasbon", kasbonWaschenRoutes);
+app.use("/waschen/hris/day-offs", dayOffWaschenRoutes);
+app.use("/waschen/day-off-policies", dayOffPolicyRoutes);
 app.use("/training", trainingRoutes);
 app.use("/api/pm2", projectManagementRoutes);
 app.use("/api/pm2/chat", personalChatRoutes);

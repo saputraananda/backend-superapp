@@ -1,12 +1,5 @@
 import { safeMyWaschenQuery } from "../../../db/pool.js";
-
-function defaultDateRange() {
-  const now = new Date();
-  const from = new Date(now.getFullYear(), now.getMonth(), 1);
-  const to = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-  const fmt = (d) => d.toISOString().slice(0, 10);
-  return { dateFrom: fmt(from), dateTo: fmt(to) };
-}
+import { defaultCutoffDateRange } from "../cutoffHelpers.js";
 
 /** Filter nota berdasarkan tanggal order (operasional). */
 function buildOrderFilters({ outletId, dateFrom, dateTo, alias = "t" }) {
@@ -59,7 +52,7 @@ const REVENUE_AMOUNT = (alias = "t") =>
 
 export const getDashboard = async (req, res) => {
   try {
-    const defaults = defaultDateRange();
+    const defaults = defaultCutoffDateRange();
     const outletId = req.query.outletId ? Number(req.query.outletId) : null;
     const dateFrom = String(req.query.dateFrom || defaults.dateFrom).trim();
     const dateTo = String(req.query.dateTo || defaults.dateTo).trim();

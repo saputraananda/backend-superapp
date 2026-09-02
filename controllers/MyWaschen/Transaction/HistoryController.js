@@ -1,4 +1,5 @@
 import { safeMyWaschenQuery, safeQuery } from "../../../db/pool.js";
+import { buildProduksiPhotoUrl } from "../HRIS/hrisAssetHelpers.js";
 
 function resolvePaymentStatus(paidAmount, grandTotal) {
   const paid = Number(paidAmount) || 0;
@@ -97,6 +98,24 @@ function mapTransactionRow(row) {
     refundAmount: num(row.refund_amount),
     itemCount: num(row.item_count),
   };
+}
+
+const PROGRESS_STAGE_LABELS = {
+  frontliner: "Frontliner",
+  washing: "Pencucian",
+  ironing: "Penyetrikaan",
+  packing: "Pengemasan",
+  delivery: "Pengiriman",
+};
+
+async function fetchEmployeeNameMap(ids) {
+  const unique = [...new Set((ids || []).map(Number).filter((id) => id > 0))];
+  if (!unique.length) return {};
+  const [rows] = await safeQuery(
+    `SELECT employee_id, full_name FROM mst_employee WHERE employee_id IN (${unique.map(() => "?").join(",")})`,
+    unique
+  );
+  return Object.fromEntries(rows.map((r) => [r.employee_id, r.full_name]));
 }
 
 const TXN_SELECT = `
@@ -223,7 +242,7 @@ export const getTransactionById = async (req, res) => {
     }
     const row = rows[0];
 
-    const [[details], [logs], [statusLogs]] = await Promise.all([
+    const [[details], [logs], [statusLogs], [progressRows]] = await Promise.all([
       safeMyWaschenQuery(
         `SELECT td.*, s.code AS service_code,
                 COALESCE(ml.name, CASE WHEN td.laundry_method_id = 2 THEN 'Dry Clean' ELSE 'Wet Clean' END) AS laundry_method_name,
@@ -240,10 +259,73 @@ export const getTransactionById = async (req, res) => {
         [row.id]
       ),
       safeMyWaschenQuery(
-        `SELECT * FROM tr_transaction_status_log WHERE transaction_id = ? ORDER BY id DESC LIMIT 50`,
+        `SELECT * FROM tr_transaction_status_log WHERE transaction_id = ? ORDER BY created_at ASC, id ASC LIMIT 100`,
+        [row.id]
+      ),
+      safeMyWaschenQuery(
+        `SELECT * FROM tr_item_progress WHERE transaction_id = ? ORDER BY completed_at ASC, id ASC`,
         [row.id]
       ),
     ]);
+
+    const empMap = await fetchEmployeeNameMap([
+      ...statusLogs.map((l) => l.employee_id),
+      ...progressRows.map((p) => p.employee_id),
+      ...progressRows.map((p) => p.hold_resolved_by),
+    ]);
+
+    const progressIds = progressRows.map((p) => p.id);
+    const photoMap = {};
+    if (progressIds.length) {
+      const [photoRows] = await safeMyWaschenQuery(
+        `SELECT id, progress_id, photo_path, photo_type
+         FROM tr_item_progress_photo
+         WHERE progress_id IN (${progressIds.map(() => "?").join(",")})
+         ORDER BY id ASC`,
+        progressIds,
+      );
+      for (const ph of photoRows) {
+        if (!photoMap[ph.progress_id]) photoMap[ph.progress_id] = [];
+        photoMap[ph.progress_id].push({
+          id: ph.id,
+          photo_type: ph.photo_type,
+          photo_path: ph.photo_path,
+          photo_url: buildProduksiPhotoUrl(req, ph.photo_path),
+        });
+      }
+    }
+
+    const progressByDetail = {};
+    for (const p of progressRows) {
+      const detailId = p.transaction_detail_id;
+      if (!progressByDetail[detailId]) progressByDetail[detailId] = [];
+      progressByDetail[detailId].push({
+        id: p.id,
+        stage: p.stage,
+        stage_label: PROGRESS_STAGE_LABELS[p.stage] || p.stage,
+        employee_id: p.employee_id,
+        employee_name: p.employee_name || empMap[p.employee_id] || null,
+        role_used: p.role_used,
+        qc_status: p.qc_status,
+        qc_decision: p.qc_decision,
+        notes: p.notes,
+        status: p.status,
+        completed_at: p.completed_at,
+        hold_resolved_by_name: p.hold_resolved_by ? empMap[p.hold_resolved_by] || null : null,
+        hold_resolution_note: p.hold_resolution_note,
+        photos: photoMap[p.id] || [],
+      });
+    }
+
+    const enrichedLogs = statusLogs.map((l) => ({
+      ...l,
+      employee_name: empMap[l.employee_id] || null,
+    }));
+
+    const items = details.map((d) => ({
+      ...d,
+      workers: progressByDetail[d.id] || [],
+    }));
 
     let cashierName = null;
     if (row.cashier_employee_id) {
@@ -259,9 +341,9 @@ export const getTransactionById = async (req, res) => {
       success: true,
       data: {
         order,
-        items: details,
+        items,
         paymentLogs: logs,
-        statusLogs,
+        statusLogs: enrichedLogs,
         remaining: Math.max(0, order.grandTotal - order.paidAmount),
       },
     });

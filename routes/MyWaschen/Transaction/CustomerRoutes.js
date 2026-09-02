@@ -5,7 +5,7 @@ import {
   createCustomer,
   updateCustomer,
   deleteCustomer,
-} from "../../../controllers/MyWaschen/General/CustomerController.js";
+} from "../../../controllers/MyWaschen/Transaction/CustomerController.js";
 
 const router = express.Router();
 
