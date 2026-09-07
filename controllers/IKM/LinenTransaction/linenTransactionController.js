@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { safeIKMQuery, safeQuery } from "../../db/pool.js";
+import { safeIKMQuery, safeQuery } from "../../../db/pool.js";
 
 function toISODateString(v) {
   return /^\d{4}-\d{2}-\d{2}$/.test(v || "") ? v : null;
@@ -40,7 +40,7 @@ export const getHospitalRooms = async (req, res) => {
 
 export const getLinenTransactions = async (req, res) => {
   try {
-    const { hospital_id, kurang_kirim_only, startDate, endDate, search, page, limit } = req.query;
+    const { hospital_id, room_id, kurang_kirim_only, startDate, endDate, search, page, limit } = req.query;
 
     const pg = toPositiveInt(page) ?? 1;
     const lm = Math.min(toPositiveInt(limit) ?? 25, 100);
@@ -73,16 +73,21 @@ export const getLinenTransactions = async (req, res) => {
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
     // Count SQL
-    let countParams = [...params];
+    let countParams = [];
+    if (room_id) {
+      countParams.push(Number(room_id));
+    }
+    countParams = [...countParams, ...params];
 
     const countSql = `
       SELECT COUNT(*) AS total FROM (
         SELECT tr.id,
                COALESCE(SUM(d.qty_kotor), 0) AS total_kotor,
                COALESCE(SUM(d.qty_bersih), 0) AS total_bersih
-        FROM tr_komersil_linen_transaction tr
+        FROM tr_linen_transaction tr
         LEFT JOIN mst_hospital h ON h.id = tr.hospital_id
-        LEFT JOIN tr_komersil_linen_transaction_detail d ON d.transaction_id = tr.id
+        LEFT JOIN tr_linen_transaction_detail d ON d.transaction_id = tr.id
+        ${room_id ? 'INNER JOIN mst_hospital_linen_rooms hlr ON hlr.hospital_linen_id = d.hospital_linen_id AND hlr.room_id = ?' : ''}
         ${whereSql}
         GROUP BY tr.id
         ${kurang_kirim_only === 'true' || kurang_kirim_only === true ? 'HAVING total_kotor != total_bersih' : ''}
@@ -92,7 +97,11 @@ export const getLinenTransactions = async (req, res) => {
     const [[{ total }]] = await safeIKMQuery(countSql, countParams);
 
     // Fetch SQL
-    let selectParams = [...params];
+    let selectParams = [];
+    if (room_id) {
+      selectParams.push(Number(room_id));
+    }
+    selectParams = [...selectParams, ...params];
 
     const fetchSql = `
       SELECT tr.id, tr.form_number, tr.hospital_id, tr.user_pickup, tr.user_delivery, tr.pickup_date, tr.delivery_date, tr.status, tr.notes_pickup, tr.notes_delivery,
@@ -100,9 +109,10 @@ export const getLinenTransactions = async (req, res) => {
              COALESCE(SUM(d.qty_kotor), 0) AS total_kotor,
              COALESCE(SUM(d.qty_bersih), 0) AS total_bersih,
              (COALESCE(SUM(d.qty_kotor), 0) - COALESCE(SUM(d.qty_bersih), 0)) AS kurang_kirim
-      FROM tr_komersil_linen_transaction tr
+      FROM tr_linen_transaction tr
       LEFT JOIN mst_hospital h ON h.id = tr.hospital_id
-      LEFT JOIN tr_komersil_linen_transaction_detail d ON d.transaction_id = tr.id
+      LEFT JOIN tr_linen_transaction_detail d ON d.transaction_id = tr.id
+      ${room_id ? 'INNER JOIN mst_hospital_linen_rooms hlr ON hlr.hospital_linen_id = d.hospital_linen_id AND hlr.room_id = ?' : ''}
       ${whereSql}
       GROUP BY tr.id
       ${kurang_kirim_only === 'true' || kurang_kirim_only === true ? 'HAVING total_kotor != total_bersih' : ''}
@@ -152,6 +162,7 @@ export const getLinenTransactions = async (req, res) => {
 export const getLinenTransactionById = async (req, res) => {
   try {
     const { id } = req.params;
+    const roomId = req.query.room_id ? Number(req.query.room_id) : null;
 
     // Fetch Header
     const [headers] = await safeIKMQuery(
@@ -162,7 +173,7 @@ export const getLinenTransactionById = async (req, res) => {
               tr.signature_valet_delivery, tr.signature_hospital_delivery, tr.signature_assistant_delivery,
               tr.pickup_date, tr.delivery_date, tr.status, tr.notes_pickup, tr.notes_delivery,
               h.hospital_name
-       FROM tr_komersil_linen_transaction tr
+       FROM tr_linen_transaction tr
        LEFT JOIN mst_hospital h ON h.id = tr.hospital_id
        WHERE tr.id = ?`,
       [id]
@@ -190,24 +201,35 @@ export const getLinenTransactionById = async (req, res) => {
 
     // Fetch Details
     let detailSql = `
-      SELECT d.id, d.transaction_id, d.hospital_linen_id, d.item_name, d.category, d.qty_kotor, d.qty_bersih, d.length_cm, d.width_cm, d.area_m2, d.accessory_qty, d.notes,
+      SELECT d.id, d.transaction_id, d.hospital_linen_id, d.room_id, d.qty_kotor, d.qty_bersih, d.notes,
              hl.hospital_linen_name, hl.ownership_type,
              l.linen_name AS master_linen_name, sz.size_name, cl.color_name, mt.material_name
-      FROM tr_komersil_linen_transaction_detail d
+      FROM tr_linen_transaction_detail d
       LEFT JOIN mst_hospital_linen hl ON hl.id = d.hospital_linen_id
       LEFT JOIN mst_linen l ON l.id = hl.linen_id
       LEFT JOIN mst_size sz ON l.size_id = sz.id
       LEFT JOIN mst_color cl ON l.color_id = cl.id
       LEFT JOIN mst_material mt ON l.material_id = mt.id
-      WHERE d.transaction_id = ?
     `;
+    const params = [];
+    if (roomId) {
+      detailSql += `
+        WHERE d.transaction_id = ? AND d.room_id = ?
+      `;
+      params.push(id, roomId);
+    } else {
+      detailSql += `
+        WHERE d.transaction_id = ?
+      `;
+      params.push(id);
+    }
 
-    const [details] = await safeIKMQuery(detailSql, [id]);
+    const [details] = await safeIKMQuery(detailSql, params);
 
     // Fetch Audit Logs
     const [auditLogs] = await safeIKMQuery(
       `SELECT id, action, user_id, username, full_name, role, old_values, new_values, created_at
-       FROM tr_komersil_linen_transaction_audit
+       FROM tr_linen_transaction_audit
        WHERE transaction_id = ?
        ORDER BY id DESC`,
       [id]
@@ -262,11 +284,11 @@ export const getLinenTransactionById = async (req, res) => {
 
       const enrichedOldD = oldD.map(d => ({
         ...d,
-        linen_display_name: d.item_name || d.linen_display_name || linenNameMap.get(d.hospital_linen_id) || `Item #${d.hospital_linen_id || d.id}`
+        linen_display_name: d.linen_display_name || linenNameMap.get(d.hospital_linen_id) || `Item #${d.hospital_linen_id}`
       }));
       const enrichedNewD = newD.map(d => ({
         ...d,
-        linen_display_name: d.item_name || d.linen_display_name || linenNameMap.get(d.hospital_linen_id) || `Item #${d.hospital_linen_id || d.id}`
+        linen_display_name: d.linen_display_name || linenNameMap.get(d.hospital_linen_id) || `Item #${d.hospital_linen_id}`
       }));
 
       return {
@@ -280,11 +302,11 @@ export const getLinenTransactionById = async (req, res) => {
     const [deliveries] = await safeIKMQuery(
       `SELECT kd.id, kd.transaction_id, kd.surat_jalan_number, kd.delivery_date, kd.vehicle_number,
               kd.recipient_name, kd.hospital_staff, kd.valet_id, kd.signature_valet, kd.signature_hospital,
-              NULL AS notes, kd.created_at,
+              kd.notes, kd.created_at,
               tr.pickup_date AS original_pickup_date,
               tr.form_number AS original_form_number
-       FROM tr_komersil_kurang_kirim_delivery kd
-       LEFT JOIN tr_komersil_linen_transaction tr ON tr.id = kd.transaction_id
+       FROM tr_kurang_kirim_delivery kd
+       LEFT JOIN tr_linen_transaction tr ON tr.id = kd.transaction_id
        WHERE kd.transaction_id = ?
        ORDER BY kd.delivery_date DESC, kd.id DESC`,
       [id]
@@ -308,10 +330,14 @@ export const getLinenTransactionById = async (req, res) => {
       const deliveryIds = deliveries.map(d => d.id);
       const phDeliveries = deliveryIds.map(() => "?").join(",");
       const [allDeliveryDetails] = await safeIKMQuery(
-        `SELECT kdd.id, kdd.delivery_id, kdd.komersil_detail_id, kdd.qty_delivered, kdd.length_cm, kdd.width_cm, kdd.area_m2, kdd.notes,
-                td.item_name, td.category
-         FROM tr_komersil_kurang_kirim_delivery_detail kdd
-         LEFT JOIN tr_komersil_linen_transaction_detail td ON td.id = kdd.komersil_detail_id
+        `SELECT kdd.id, kdd.delivery_id, kdd.hospital_linen_id, kdd.qty_delivered, kdd.grammage, kdd.total_weight, kdd.notes,
+                hl.hospital_linen_name, l.linen_name, sz.size_name, cl.color_name, mt.material_name
+         FROM tr_kurang_kirim_delivery_detail kdd
+         LEFT JOIN mst_hospital_linen hl ON hl.id = kdd.hospital_linen_id
+         LEFT JOIN mst_linen l ON l.id = hl.linen_id
+         LEFT JOIN mst_size sz ON l.size_id = sz.id
+         LEFT JOIN mst_color cl ON l.color_id = cl.id
+         LEFT JOIN mst_material mt ON l.material_id = mt.id
          WHERE kdd.delivery_id IN (${phDeliveries})
          ORDER BY kdd.id ASC`,
         deliveryIds
@@ -340,7 +366,7 @@ export const getLinenTransactionById = async (req, res) => {
           const parts = [d.master_linen_name, d.size_name, d.color_name, d.material_name].filter(Boolean);
           return {
             ...d,
-            linen_display_name: d.item_name || d.hospital_linen_name || parts.join(" ")
+            linen_display_name: d.hospital_linen_name || parts.join(" ")
           };
         }),
         auditLogs: enrichedLogs,
@@ -382,7 +408,7 @@ async function writeAuditLog(transactionId, action, req, oldValues = null, newVa
     }
 
     await safeIKMQuery(
-      `INSERT INTO tr_komersil_linen_transaction_audit 
+      `INSERT INTO tr_linen_transaction_audit 
        (transaction_id, action, user_id, username, full_name, role, old_values, new_values) 
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
@@ -403,7 +429,7 @@ async function writeAuditLog(transactionId, action, req, oldValues = null, newVa
 
 async function getTransactionSnapshot(transactionId) {
   const [headers] = await safeIKMQuery(
-    "SELECT * FROM tr_komersil_linen_transaction WHERE id = ?",
+    "SELECT * FROM tr_linen_transaction WHERE id = ?",
     [transactionId]
   );
   if (!headers.length) return null;
@@ -411,7 +437,7 @@ async function getTransactionSnapshot(transactionId) {
   const [details] = await safeIKMQuery(
     `SELECT d.*, hl.hospital_linen_name,
             l.linen_name AS master_linen_name, sz.size_name, cl.color_name, mt.material_name
-     FROM tr_komersil_linen_transaction_detail d
+     FROM tr_linen_transaction_detail d
      LEFT JOIN mst_hospital_linen hl ON hl.id = d.hospital_linen_id
      LEFT JOIN mst_linen l ON l.id = hl.linen_id
      LEFT JOIN mst_size sz ON l.size_id = sz.id
@@ -425,7 +451,7 @@ async function getTransactionSnapshot(transactionId) {
     header: headers[0],
     details: details.map(d => {
       const parts = [d.master_linen_name, d.size_name, d.color_name, d.material_name].filter(Boolean);
-      return { ...d, linen_display_name: d.item_name || d.hospital_linen_name || parts.join(" ") };
+      return { ...d, linen_display_name: d.hospital_linen_name || parts.join(" ") };
     })
   };
 }
@@ -442,7 +468,7 @@ export const getEmployees = async (req, res) => {
   }
 };
 
-export const getHospitalKomersilLinens = async (req, res) => {
+export const getHospitalLinens = async (req, res) => {
   try {
     const hospitalId = Number(req.params.hospitalId);
     if (!hospitalId) {
@@ -450,13 +476,16 @@ export const getHospitalKomersilLinens = async (req, res) => {
     }
     const [rows] = await safeIKMQuery(
       `SELECT hl.id AS hospital_linen_id, hl.hospital_linen_name, hl.ownership_type,
-              l.linen_name AS master_linen_name, sz.size_name, cl.color_name, mt.material_name
+              l.linen_name AS master_linen_name, sz.size_name, cl.color_name, mt.material_name,
+              GROUP_CONCAT(hlr.room_id) AS room_ids
        FROM mst_hospital_linen hl
        LEFT JOIN mst_linen l ON l.id = hl.linen_id
        LEFT JOIN mst_size sz ON l.size_id = sz.id
        LEFT JOIN mst_color cl ON l.color_id = cl.id
        LEFT JOIN mst_material mt ON l.material_id = mt.id
-       WHERE hl.hospital_id = ? AND hl.is_active = 1 AND l.category_id IN (32, 33)
+       LEFT JOIN mst_hospital_linen_rooms hlr ON hlr.hospital_linen_id = hl.id
+       WHERE hl.hospital_id = ? AND hl.is_active = 1
+       GROUP BY hl.id, hl.hospital_linen_name, hl.ownership_type, l.linen_name, sz.size_name, cl.color_name, mt.material_name
        ORDER BY hl.hospital_linen_name ASC, l.linen_name ASC`,
       [hospitalId]
     );
@@ -481,6 +510,10 @@ export const createLinenTransaction = async (req, res) => {
       hospital_id,
       user_pickup,
       user_delivery,
+      hospital_staff_pickup,
+      hospital_staff_delivery,
+      hospital_assistant_pickup,
+      hospital_assistant_delivery,
       pickup_date,
       delivery_date,
       notes_pickup,
@@ -493,7 +526,7 @@ export const createLinenTransaction = async (req, res) => {
       return res.status(400).json({ success: false, message: "Parameter wajib tidak lengkap" });
     }
 
-    // Generate form number: {hospitalCode}-CUST-{yyyymmdd}-{seq}
+    // Generate form number: {hospitalCode}-{yyyymmdd}-{0001} (sequential per hospital+day)
     const d = new Date(pickup_date);
     const yyyy = d.getFullYear();
     const mm = String(d.getMonth() + 1).padStart(2, '0');
@@ -501,7 +534,7 @@ export const createLinenTransaction = async (req, res) => {
     const yyyymmdd = `${yyyy}${mm}${dd}`;
 
     const [countResult] = await safeIKMQuery(
-      `SELECT COUNT(*) as cnt FROM tr_komersil_linen_transaction
+      `SELECT COUNT(*) as cnt FROM tr_linen_transaction
        WHERE hospital_id = ? AND DATE(pickup_date) = DATE(?)`,
       [Number(hospital_id), pickup_date]
     );
@@ -513,18 +546,22 @@ export const createLinenTransaction = async (req, res) => {
       [Number(hospital_id)]
     );
     const hospitalCode = hospitalRows?.[0]?.hospital_id || hospital_id;
-    const form_number = `${hospitalCode}-CUST-${yyyymmdd}-${String(nextSeq).padStart(3, '0')}`;
+    const form_number = `${hospitalCode}-${yyyymmdd}-${String(nextSeq).padStart(3, '0')}`;
 
     // Insert Header
     const [result] = await safeIKMQuery(
-      `INSERT INTO tr_komersil_linen_transaction 
-       (form_number, hospital_id, user_pickup, user_delivery, pickup_date, delivery_date, status, notes_pickup, notes_delivery) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tr_linen_transaction 
+       (form_number, hospital_id, user_pickup, user_delivery, hospital_staff_pickup, hospital_staff_delivery, hospital_assistant_pickup, hospital_assistant_delivery, pickup_date, delivery_date, status, notes_pickup, notes_delivery) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         form_number,
         Number(hospital_id),
         Number(user_pickup),
         user_delivery ? Number(user_delivery) : null,
+        hospital_staff_pickup || null,
+        hospital_staff_delivery || null,
+        hospital_assistant_pickup || null,
+        hospital_assistant_delivery || null,
         pickup_date,
         delivery_date || null,
         status || "PROSES",
@@ -540,24 +577,20 @@ export const createLinenTransaction = async (req, res) => {
       const detailValues = [];
       const queryParams = [];
       details.forEach(d => {
-        detailValues.push("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        detailValues.push("(?, ?, ?, ?, ?, ?)");
         queryParams.push(
           transactionId,
-          d.hospital_linen_id ? Number(d.hospital_linen_id) : null,
-          d.item_name || 'Linen Komersil',
-          d.category || 'LAINNYA',
+          Number(d.hospital_linen_id),
+          d.room_id ? Number(d.room_id) : null,
           Number(d.qty_kotor || 0),
           d.qty_bersih !== undefined && d.qty_bersih !== null ? Number(d.qty_bersih) : null,
-          d.length_cm !== undefined && d.length_cm !== null ? parseFloat(d.length_cm) : null,
-          d.width_cm !== undefined && d.width_cm !== null ? parseFloat(d.width_cm) : null,
-          d.area_m2 !== undefined && d.area_m2 !== null ? parseFloat(d.area_m2) : null,
-          Number(d.accessory_qty || 0)
+          d.notes || null
         );
       });
 
       await safeIKMQuery(
-        `INSERT INTO tr_komersil_linen_transaction_detail 
-         (transaction_id, hospital_linen_id, item_name, category, qty_kotor, qty_bersih, length_cm, width_cm, area_m2, accessory_qty) 
+        `INSERT INTO tr_linen_transaction_detail 
+         (transaction_id, hospital_linen_id, room_id, qty_kotor, qty_bersih, notes) 
          VALUES ${detailValues.join(", ")}`,
         queryParams
       );
@@ -567,7 +600,7 @@ export const createLinenTransaction = async (req, res) => {
     const snapshot = await getTransactionSnapshot(transactionId);
     await writeAuditLog(transactionId, "PICKUP_KOTOR", req, null, snapshot);
 
-    res.json({ success: true, message: "Transaksi komersil berhasil dibuat", transactionId });
+    res.json({ success: true, message: "Transaksi berhasil dibuat", transactionId });
 
   } catch (err) {
     if (err.code === "ER_DUP_ENTRY") {
@@ -608,7 +641,7 @@ export const updateLinenTransaction = async (req, res) => {
 
     // Update Header
     await safeIKMQuery(
-      `UPDATE tr_komersil_linen_transaction 
+      `UPDATE tr_linen_transaction 
        SET form_number = ?, 
            user_pickup = ?, 
            user_delivery = ?,
@@ -641,7 +674,7 @@ export const updateLinenTransaction = async (req, res) => {
 
     // Delete old details
     await safeIKMQuery(
-      "DELETE FROM tr_komersil_linen_transaction_detail WHERE transaction_id = ?",
+      "DELETE FROM tr_linen_transaction_detail WHERE transaction_id = ?",
       [id]
     );
 
@@ -650,24 +683,20 @@ export const updateLinenTransaction = async (req, res) => {
       const detailValues = [];
       const queryParams = [];
       details.forEach(d => {
-        detailValues.push("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        detailValues.push("(?, ?, ?, ?, ?, ?)");
         queryParams.push(
           id,
-          d.hospital_linen_id ? Number(d.hospital_linen_id) : null,
-          d.item_name || 'Linen Komersil',
-          d.category || 'LAINNYA',
+          Number(d.hospital_linen_id),
+          d.room_id ? Number(d.room_id) : null,
           Number(d.qty_kotor || 0),
           d.qty_bersih !== undefined && d.qty_bersih !== null ? Number(d.qty_bersih) : null,
-          d.length_cm !== undefined && d.length_cm !== null ? parseFloat(d.length_cm) : null,
-          d.width_cm !== undefined && d.width_cm !== null ? parseFloat(d.width_cm) : null,
-          d.area_m2 !== undefined && d.area_m2 !== null ? parseFloat(d.area_m2) : null,
-          Number(d.accessory_qty || 0)
+          d.notes || null
         );
       });
 
       await safeIKMQuery(
-        `INSERT INTO tr_komersil_linen_transaction_detail 
-         (transaction_id, hospital_linen_id, item_name, category, qty_kotor, qty_bersih, length_cm, width_cm, area_m2, accessory_qty) 
+        `INSERT INTO tr_linen_transaction_detail 
+         (transaction_id, hospital_linen_id, room_id, qty_kotor, qty_bersih, notes) 
          VALUES ${detailValues.join(", ")}`,
         queryParams
       );
@@ -677,7 +706,7 @@ export const updateLinenTransaction = async (req, res) => {
     const newSnapshot = await getTransactionSnapshot(id);
     await writeAuditLog(id, "ADMIN", req, oldSnapshot, newSnapshot);
 
-    res.json({ success: true, message: "Transaksi komersil berhasil diperbarui" });
+    res.json({ success: true, message: "Transaksi berhasil diperbarui" });
 
   } catch (err) {
     if (err.code === "ER_DUP_ENTRY") {
@@ -693,7 +722,7 @@ export const deleteLinenTransaction = async (req, res) => {
 
     // Delete header (cascades automatically delete details and audit logs)
     const [result] = await safeIKMQuery(
-      "DELETE FROM tr_komersil_linen_transaction WHERE id = ?",
+      "DELETE FROM tr_linen_transaction WHERE id = ?",
       [id]
     );
 
@@ -701,7 +730,7 @@ export const deleteLinenTransaction = async (req, res) => {
       return res.status(404).json({ success: false, message: "Transaksi tidak ditemukan" });
     }
 
-    res.json({ success: true, message: "Transaksi komersil berhasil dihapus" });
+    res.json({ success: true, message: "Transaksi berhasil dihapus" });
 
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -753,7 +782,7 @@ export const getRekapCuciLinen = async (req, res) => {
       LEFT JOIN mst_size sz ON l.size_id = sz.id
       LEFT JOIN mst_color cl ON l.color_id = cl.id
       LEFT JOIN mst_material mt ON l.material_id = mt.id
-      WHERE hl.is_active = 1 AND l.category_id IN (32, 33) AND hl.hospital_id IN (${ph})
+      WHERE hl.is_active = 1 AND hl.hospital_id IN (${ph})
     `;
     let linenParams = [...hospitalIds];
 
@@ -770,17 +799,14 @@ export const getRekapCuciLinen = async (req, res) => {
         tr.hospital_id,
         DATE_FORMAT(tr.pickup_date, '%Y-%m-%d') as tx_date,
         d.hospital_linen_id,
-        d.length_cm,
-        d.width_cm,
-        d.area_m2,
         SUM(d.qty_kotor) as total_qty_kotor,
         SUM(d.qty_bersih) as total_qty_bersih
-       FROM tr_komersil_linen_transaction tr
-       JOIN tr_komersil_linen_transaction_detail d ON d.transaction_id = tr.id
+       FROM tr_linen_transaction tr
+       JOIN tr_linen_transaction_detail d ON d.transaction_id = tr.id
        WHERE tr.hospital_id IN (${ph})
          AND tr.pickup_date >= ? 
          AND tr.pickup_date <= ?
-       GROUP BY tr.hospital_id, DATE_FORMAT(tr.pickup_date, '%Y-%m-%d'), d.hospital_linen_id, d.length_cm, d.width_cm, d.area_m2`,
+       GROUP BY tr.hospital_id, DATE_FORMAT(tr.pickup_date, '%Y-%m-%d'), d.hospital_linen_id`,
       [...hospitalIds, startDate + " 00:00:00", endDate + " 23:59:59"]
     );
 

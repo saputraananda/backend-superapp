@@ -1,5 +1,5 @@
 import express from "express";
-import { requireAuth } from "../../middleware/auth.js";
+import { requireAuth } from "../../../middleware/auth.js";
 import {
   getLinenTransactions,
   getLinenTransactionById,
@@ -12,7 +12,7 @@ import {
   deleteLinenTransaction,
   proxySignature,
   getRekapCuciLinen,
-} from "../../controllers/IKM/linenTransactionController.js";
+} from "../../../controllers/IKM/LinenTransaction/linenTransactionController.js";
 
 const router = express.Router();
 
