@@ -484,7 +484,7 @@ export const getHospitalLinens = async (req, res) => {
        LEFT JOIN mst_color cl ON l.color_id = cl.id
        LEFT JOIN mst_material mt ON l.material_id = mt.id
        LEFT JOIN mst_hospital_linen_rooms hlr ON hlr.hospital_linen_id = hl.id
-       WHERE hl.hospital_id = ? AND hl.is_active = 1
+       WHERE hl.hospital_id = ? AND hl.is_active = 1 AND COALESCE(hl.is_commercial, 0) = 0
        GROUP BY hl.id, hl.hospital_linen_name, hl.ownership_type, l.linen_name, sz.size_name, cl.color_name, mt.material_name
        ORDER BY hl.hospital_linen_name ASC, l.linen_name ASC`,
       [hospitalId]
@@ -782,7 +782,7 @@ export const getRekapCuciLinen = async (req, res) => {
       LEFT JOIN mst_size sz ON l.size_id = sz.id
       LEFT JOIN mst_color cl ON l.color_id = cl.id
       LEFT JOIN mst_material mt ON l.material_id = mt.id
-      WHERE hl.is_active = 1 AND hl.hospital_id IN (${ph})
+      WHERE hl.is_active = 1 AND COALESCE(hl.is_commercial, 0) = 0 AND hl.hospital_id IN (${ph})
     `;
     let linenParams = [...hospitalIds];
 

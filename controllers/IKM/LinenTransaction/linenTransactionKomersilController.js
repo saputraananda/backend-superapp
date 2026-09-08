@@ -450,13 +450,13 @@ export const getHospitalKomersilLinens = async (req, res) => {
     }
     const [rows] = await safeIKMQuery(
       `SELECT hl.id AS hospital_linen_id, hl.hospital_linen_name, hl.ownership_type,
-              l.linen_name AS master_linen_name, sz.size_name, cl.color_name, mt.material_name
+              l.linen_name AS master_linen_name, l.category_id, sz.size_name, cl.color_name, mt.material_name
        FROM mst_hospital_linen hl
        LEFT JOIN mst_linen l ON l.id = hl.linen_id
        LEFT JOIN mst_size sz ON l.size_id = sz.id
        LEFT JOIN mst_color cl ON l.color_id = cl.id
        LEFT JOIN mst_material mt ON l.material_id = mt.id
-       WHERE hl.hospital_id = ? AND hl.is_active = 1 AND l.category_id IN (32, 33)
+       WHERE hl.hospital_id = ? AND hl.is_active = 1 AND hl.is_commercial = 1
        ORDER BY hl.hospital_linen_name ASC, l.linen_name ASC`,
       [hospitalId]
     );
@@ -753,7 +753,7 @@ export const getRekapCuciLinen = async (req, res) => {
       LEFT JOIN mst_size sz ON l.size_id = sz.id
       LEFT JOIN mst_color cl ON l.color_id = cl.id
       LEFT JOIN mst_material mt ON l.material_id = mt.id
-      WHERE hl.is_active = 1 AND l.category_id IN (32, 33) AND hl.hospital_id IN (${ph})
+      WHERE hl.is_active = 1 AND hl.is_commercial = 1 AND hl.hospital_id IN (${ph})
     `;
     let linenParams = [...hospitalIds];
 

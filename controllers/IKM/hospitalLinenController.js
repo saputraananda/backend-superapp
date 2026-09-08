@@ -1,4 +1,5 @@
 import { safeIKMQuery } from "../../db/pool.js";
+import { notifyLinenMonitoring } from "../../utils/notifyLinenMonitoring.js";
 
 // ── Reusable helpers ──
 const hospitalNotFound = (hospitalId) => `Data linen RS tidak ditemukan`;
@@ -12,6 +13,7 @@ export const getByHospital = async (req, res) => {
               hl.ownership_type, hl.unit, hl.grammage,
               hl.washing_price_type, hl.washing_price, hl.rental_price,
               hl.par_stock, hl.min_stock, hl.stock_in_ikm, hl.stock_in_rs, hl.current_stock, hl.is_active,
+              hl.is_commercial,
               hl.created_at, hl.updated_at,
               l.linen_code,
               l.linen_name AS master_linen_name,
@@ -112,7 +114,7 @@ export const create = async (req, res) => {
   const {
     linen_id, hospital_linen_name, ownership_type, unit, grammage,
     washing_price_type, washing_price, rental_price, par_stock, min_stock,
-    stock_in_ikm, stock_in_rs, is_active, room_stocks, ikm_room_stocks,
+    stock_in_ikm, stock_in_rs, is_active, is_commercial, room_stocks, ikm_room_stocks,
   } = req.body;
 
   if (!linen_id) return res.status(400).json({ message: "Linen wajib dipilih" });
@@ -132,8 +134,8 @@ export const create = async (req, res) => {
       `INSERT INTO mst_hospital_linen
        (hospital_id, linen_id, hospital_linen_name, ownership_type, unit, grammage,
         washing_price_type, washing_price, rental_price, par_stock, min_stock,
-        stock_in_ikm, stock_in_rs, current_stock, is_active)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        stock_in_ikm, stock_in_rs, current_stock, is_active, is_commercial)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         hospitalId, linen_id,
         hospital_linen_name?.trim() || null,
@@ -149,6 +151,7 @@ export const create = async (req, res) => {
         totalRsStock,
         currentStock,
         is_active !== undefined ? (is_active ? 1 : 0) : 1,
+        is_commercial ? 1 : 0,
       ]
     );
 
@@ -177,6 +180,7 @@ export const create = async (req, res) => {
     }
 
     res.status(201).json({ message: "Linen RS berhasil ditambahkan", id: result.insertId });
+    notifyLinenMonitoring(hospitalId, "HOSPITAL_LINEN_MASTER", "Linen RS ditambahkan");
   } catch (err) {
     console.error("create:", err);
     res.status(500).json({ message: err.message });
@@ -189,7 +193,7 @@ export const update = async (req, res) => {
   const {
     linen_id, hospital_linen_name, ownership_type, unit, grammage,
     washing_price_type, washing_price, rental_price, par_stock, min_stock,
-    stock_in_ikm, stock_in_rs, is_active, room_stocks, ikm_room_stocks,
+    stock_in_ikm, stock_in_rs, is_active, is_commercial, room_stocks, ikm_room_stocks,
   } = req.body;
 
   try {
@@ -215,7 +219,7 @@ export const update = async (req, res) => {
         linen_id = ?, hospital_linen_name = ?, ownership_type = ?, unit = ?,
         grammage = ?, washing_price_type = ?, washing_price = ?, rental_price = ?,
         par_stock = ?, min_stock = ?, stock_in_ikm = ?, stock_in_rs = ?,
-        current_stock = ?, is_active = ?, updated_at = NOW()
+        current_stock = ?, is_active = ?, is_commercial = ?, updated_at = NOW()
        WHERE id = ?`,
       [
         linen_id ?? exist[0].linen_id,
@@ -232,6 +236,7 @@ export const update = async (req, res) => {
         totalRsStock,
         currentStock,
         is_active !== undefined ? (is_active ? 1 : 0) : 1,
+        is_commercial ? 1 : 0,
         id,
       ]
     );
@@ -263,6 +268,7 @@ export const update = async (req, res) => {
     }
 
     res.json({ message: "Linen RS berhasil diperbarui" });
+    notifyLinenMonitoring(hospitalId, "HOSPITAL_LINEN_MASTER", "Linen RS diperbarui");
   } catch (err) {
     console.error("update:", err);
     res.status(500).json({ message: err.message });
@@ -278,6 +284,7 @@ export const remove = async (req, res) => {
       [id, hospitalId]
     );
     res.json({ message: "Linen RS berhasil dihapus" });
+    notifyLinenMonitoring(hospitalId, "HOSPITAL_LINEN_MASTER", "Linen RS dihapus");
   } catch (err) {
     console.error("remove:", err);
     res.status(500).json({ message: err.message });
