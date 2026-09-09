@@ -433,8 +433,12 @@ async function getTransactionSnapshot(transactionId) {
 // ── CRUD Endpoints ───────────────────────────────────────────────────────────
 export const getEmployees = async (req, res) => {
   try {
+    // company_id = 2 (IKM) diurutkan di atas, tapi nama di luar company tetap di-return
     const [rows] = await safeQuery(
-      "SELECT employee_id, full_name FROM mst_employee WHERE company_id = 2 AND exit_date IS NULL ORDER BY full_name ASC"
+      `SELECT employee_id, full_name, company_id
+       FROM mst_employee
+       WHERE exit_date IS NULL
+       ORDER BY CASE WHEN company_id = 2 THEN 0 ELSE 1 END, full_name ASC`
     );
     res.json({ success: true, data: rows });
   } catch (err) {

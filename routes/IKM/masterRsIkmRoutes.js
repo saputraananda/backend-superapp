@@ -8,11 +8,13 @@ import {
   createRoom,
   updateRoom,
   deleteRoom,
+  getHospitalKgPriceLogs,
 } from "../../controllers/IKM/masterRsIkmController.js";
 
 const router = express.Router();
 
 router.get("/hospitals", requireAuth, getHospitals);
+router.get("/hospitals/:id/kg-price-logs", requireAuth, getHospitalKgPriceLogs);
 router.post("/hospitals", requireAuth, createHospital);
 router.put("/hospitals/:id", requireAuth, updateHospital);
 router.delete("/hospitals/:id", requireAuth, deleteHospital);

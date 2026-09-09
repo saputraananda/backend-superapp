@@ -12,6 +12,7 @@ import {
   deleteLinenTransaction,
   proxySignature,
   getRekapCuciLinen,
+  getRekapKgLinen,
 } from "../../../controllers/IKM/LinenTransaction/linenTransactionController.js";
 
 const router = express.Router();
@@ -24,6 +25,7 @@ router.use(requireAuth);
 
 router.get("/", getLinenTransactions);
 router.get("/rekap/cuci", getRekapCuciLinen);
+router.get("/rekap/kg", getRekapKgLinen);
 router.get("/hospitals", getHospitals);
 router.get("/hospitals/:hospitalId/rooms", getHospitalRooms);
 router.get("/hospitals/:hospitalId/linens", getHospitalLinens);
