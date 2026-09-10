@@ -174,6 +174,19 @@ export const getColors = async (req, res) => {
   }
 };
 
+// ── GET units ──
+export const getUnits = async (req, res) => {
+  try {
+    const [rows] = await safeIKMQuery(
+      `SELECT id, code, name FROM mst_unit WHERE is_active = 1 ORDER BY name ASC`
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error("getUnits:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
 // ── GET materials ──
 export const getMaterials = async (req, res) => {
   try {

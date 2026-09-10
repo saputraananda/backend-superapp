@@ -61,14 +61,15 @@ async function resolveActor(req) {
   return { userId, username, fullName };
 }
 
-async function insertPriceLog(hospitalId, oldPrice, newPrice, actor) {
+async function insertPriceLog(hospitalId, oldPrice, newPrice, actor, priceType = "REGULER") {
   const changePercent = calcChangePercent(oldPrice, newPrice);
   await safeIKMQuery(
     `INSERT INTO tr_hospital_kg_price_log
-       (hospital_id, old_price, new_price, change_percent, user_id, username, full_name)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+       (hospital_id, price_type, old_price, new_price, change_percent, user_id, username, full_name)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       hospitalId,
+      priceType,
       oldPrice,
       newPrice,
       changePercent,
@@ -85,7 +86,7 @@ export const getHospitals = async (req, res) => {
     const [rows] = await safeIKMQuery(
       `SELECT id, hospital_name, hospital_id, company_name, address,
               latitude, longitude, username, password, username_unit, password_unit, password_to_valet,
-              billing_by_kg, allow_express, price_per_kg, created_at, updated_at
+              billing_by_kg, allow_express, price_per_kg, express_price_per_kg, created_at, updated_at
        FROM mst_hospital
        ORDER BY hospital_name ASC`
     );
@@ -117,7 +118,7 @@ export const getHospitalKgPriceLogs = async (req, res) => {
   try {
     const { id } = req.params;
     const [rows] = await safeIKMQuery(
-      `SELECT id, hospital_id, old_price, new_price, change_percent,
+      `SELECT id, hospital_id, price_type, old_price, new_price, change_percent,
               user_id, username, full_name, created_at
        FROM tr_hospital_kg_price_log
        WHERE hospital_id = ?
@@ -149,15 +150,20 @@ export const createHospital = async (req, res) => {
     billing_by_kg,
     allow_express,
     price_per_kg,
+    express_price_per_kg,
     rooms,
   } = req.body;
 
   if (!hospital_name?.trim())
     return res.status(400).json({ message: "Nama rumah sakit wajib diisi" });
 
-  const pricePerKg = billing_by_kg ? parsePrice(price_per_kg) : parsePrice(price_per_kg);
+  const pricePerKg = parsePrice(price_per_kg);
   if (billing_by_kg && (pricePerKg == null || pricePerKg < 0)) {
     return res.status(400).json({ message: "Harga per kilogram wajib diisi jika billing kilogram aktif" });
+  }
+  const expressPricePerKg = parsePrice(express_price_per_kg);
+  if (expressPricePerKg != null && expressPricePerKg < 0) {
+    return res.status(400).json({ message: "Harga express per kilogram tidak boleh negatif" });
   }
 
   try {
@@ -181,8 +187,8 @@ export const createHospital = async (req, res) => {
       `INSERT INTO mst_hospital
          (hospital_name, hospital_id, company_name, address, latitude, longitude,
           username, password, username_unit, password_unit, password_to_valet,
-          billing_by_kg, allow_express, price_per_kg)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          billing_by_kg, allow_express, price_per_kg, express_price_per_kg)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         hospital_name.trim(),
         hospital_id?.trim() || null,
@@ -198,12 +204,14 @@ export const createHospital = async (req, res) => {
         billing_by_kg ? 1 : 0,
         allow_express ? 1 : 0,
         pricePerKg,
+        expressPricePerKg,
       ]
     );
 
-    if (pricePerKg != null) {
+    if (pricePerKg != null || expressPricePerKg != null) {
       const actor = await resolveActor(req);
-      await insertPriceLog(result.insertId, null, pricePerKg, actor);
+      if (pricePerKg != null) await insertPriceLog(result.insertId, null, pricePerKg, actor, "REGULER");
+      if (expressPricePerKg != null) await insertPriceLog(result.insertId, null, expressPricePerKg, actor, "EXPRESS");
     }
 
     if (Array.isArray(rooms) && rooms.length > 0) {
@@ -253,6 +261,7 @@ export const updateHospital = async (req, res) => {
     billing_by_kg,
     allow_express,
     price_per_kg,
+    express_price_per_kg,
     rooms,
   } = req.body;
 
@@ -263,16 +272,22 @@ export const updateHospital = async (req, res) => {
   if (billing_by_kg && (pricePerKg == null || pricePerKg < 0)) {
     return res.status(400).json({ message: "Harga per kilogram wajib diisi jika billing kilogram aktif" });
   }
+  const expressPricePerKg = parsePrice(express_price_per_kg);
+  if (expressPricePerKg != null && expressPricePerKg < 0) {
+    return res.status(400).json({ message: "Harga express per kilogram tidak boleh negatif" });
+  }
 
   try {
     const [exist] = await safeIKMQuery(
-      `SELECT id, price_per_kg FROM mst_hospital WHERE id = ?`,
+      `SELECT id, price_per_kg, express_price_per_kg FROM mst_hospital WHERE id = ?`,
       [id]
     );
     if (exist.length === 0)
       return res.status(404).json({ message: "Rumah sakit tidak ditemukan" });
 
     const oldPrice = exist[0].price_per_kg != null ? Number(exist[0].price_per_kg) : null;
+    const oldExpressPrice =
+      exist[0].express_price_per_kg != null ? Number(exist[0].express_price_per_kg) : null;
 
     const [dupName] = await safeIKMQuery(
       `SELECT id FROM mst_hospital WHERE hospital_name = ? AND id != ?`,
@@ -294,7 +309,7 @@ export const updateHospital = async (req, res) => {
       `UPDATE mst_hospital
        SET hospital_name=?, hospital_id=?, company_name=?, address=?,
            latitude=?, longitude=?, username=?, password=?, username_unit=?, password_unit=?, password_to_valet=?,
-           billing_by_kg=?, allow_express=?, price_per_kg=?, updated_at=NOW()
+           billing_by_kg=?, allow_express=?, price_per_kg=?, express_price_per_kg=?, updated_at=NOW()
        WHERE id=?`,
       [
         hospital_name.trim(),
@@ -311,13 +326,17 @@ export const updateHospital = async (req, res) => {
         billing_by_kg ? 1 : 0,
         allow_express ? 1 : 0,
         pricePerKg,
+        expressPricePerKg,
         id,
       ]
     );
 
-    if (!pricesEqual(oldPrice, pricePerKg)) {
+    const regulerChanged = !pricesEqual(oldPrice, pricePerKg);
+    const expressChanged = !pricesEqual(oldExpressPrice, expressPricePerKg);
+    if (regulerChanged || expressChanged) {
       const actor = await resolveActor(req);
-      await insertPriceLog(id, oldPrice, pricePerKg, actor);
+      if (regulerChanged) await insertPriceLog(id, oldPrice, pricePerKg, actor, "REGULER");
+      if (expressChanged) await insertPriceLog(id, oldExpressPrice, expressPricePerKg, actor, "EXPRESS");
     }
 
     if (Array.isArray(rooms)) {

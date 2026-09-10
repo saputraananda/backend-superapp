@@ -53,6 +53,7 @@ const colors = crud("mst_color", "sort_order");
 const materials = crud("mst_material", "material_name");
 const categories = crud("mst_linen_category", "sort_order");
 const vendors = crud("mst_vendor_ikm", "nama_vendor");
+const units = crud("mst_unit", "name");
 
 export const getSizesMD = sizes.getAll;
 export const createSize = sizes.create;
@@ -78,3 +79,28 @@ export const getVendorsMD = vendors.getAll;
 export const createVendor = vendors.create;
 export const updateVendor = vendors.update;
 export const deleteVendor = vendors.remove;
+
+export const getUnitsMD = units.getAll;
+export const createUnit = units.create;
+export const updateUnit = units.update;
+
+// Satuan dipakai sebagai FK oleh mst_hospital_linen: tolak hapus jika masih terpakai
+export const deleteUnit = async (req, res) => {
+  const { id } = req.params;
+  try {
+    const [used] = await safeIKMQuery(
+      "SELECT COUNT(*) AS total FROM mst_hospital_linen WHERE unit_id = ?",
+      [id]
+    );
+    if (used[0].total > 0) {
+      return res.status(409).json({
+        message: `Satuan masih dipakai ${used[0].total} linen RS. Nonaktifkan saja, jangan dihapus.`,
+      });
+    }
+    await safeIKMQuery("DELETE FROM mst_unit WHERE id = ?", [id]);
+    res.json({ message: "Berhasil dihapus" });
+  } catch (err) {
+    console.error("deleteUnit:", err);
+    res.status(500).json({ message: err.message });
+  }
+};

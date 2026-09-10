@@ -109,6 +109,7 @@ import inventoryWaschenRoutes from "./routes/MyWaschen/Inventory/InventoryRoutes
 import attendanceWaschenRoutes from "./routes/MyWaschen/HRIS/AttendanceRoutes.js";
 import leaveWaschenRoutes from "./routes/MyWaschen/HRIS/LeaveRoutes.js";
 import kasbonWaschenRoutes from "./routes/MyWaschen/HRIS/KasbonRoutes.js";
+import overtimeWaschenRoutes from "./routes/MyWaschen/HRIS/OvertimeRoutes.js";
 import dayOffWaschenRoutes from "./routes/MyWaschen/HRIS/DayOffRoutes.js";
 import dayOffPolicyRoutes from "./routes/MyWaschen/MasterData/DayOffPolicyRoutes.js";
 import dashboardInventoryRoutes from "./routes/MyWaschen/Inventory/DashboardInventoryRoutes.js";
@@ -425,6 +426,7 @@ app.use("/waschen/inventory", inventoryWaschenRoutes);
 app.use("/waschen/hris/attendance", attendanceWaschenRoutes);
 app.use("/waschen/hris/leaves", leaveWaschenRoutes);
 app.use("/waschen/hris/kasbon", kasbonWaschenRoutes);
+app.use("/waschen/hris/overtime", overtimeWaschenRoutes);
 app.use("/waschen/hris/day-offs", dayOffWaschenRoutes);
 app.use("/waschen/day-off-policies", dayOffPolicyRoutes);
 app.use("/training", trainingRoutes);

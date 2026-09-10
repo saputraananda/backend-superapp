@@ -4,21 +4,37 @@ import { notifyLinenMonitoring } from "../../utils/notifyLinenMonitoring.js";
 // ── Reusable helpers ──
 const hospitalNotFound = (hospitalId) => `Data linen RS tidak ditemukan`;
 
+const DEFAULT_UNIT_ID = 2; // PCS
+
+// unit_id = sumber kebenaran; kolom `unit` (varchar) tetap disinkronkan
+// karena Linen Monitoring System masih membacanya sebagai string.
+const resolveUnit = async (unitId) => {
+  const id = Number(unitId) > 0 ? Number(unitId) : DEFAULT_UNIT_ID;
+  const [rows] = await safeIKMQuery(
+    "SELECT id, code FROM mst_unit WHERE id = ? AND is_active = 1 LIMIT 1",
+    [id]
+  );
+  if (!rows.length) return { unit_id: DEFAULT_UNIT_ID, unit: "PCS" };
+  return { unit_id: rows[0].id, unit: rows[0].code || "PCS" };
+};
+
 // ── GET all hospital_linen for a given hospital ──
 export const getByHospital = async (req, res) => {
   const { hospitalId } = req.params;
   try {
     const [rows] = await safeIKMQuery(
       `SELECT hl.id, hl.hospital_id, hl.linen_id, hl.hospital_linen_name,
-              hl.ownership_type, hl.unit, hl.grammage,
+              hl.ownership_type, hl.unit, hl.unit_id, hl.grammage,
               hl.washing_price_type, hl.washing_price, hl.rental_price,
               hl.par_stock, hl.min_stock, hl.stock_in_ikm, hl.stock_in_rs, hl.current_stock, hl.is_active,
               hl.is_commercial,
               hl.created_at, hl.updated_at,
               l.linen_code,
               l.linen_name AS master_linen_name,
-              sz.size_name, cl.color_name, mt.material_name
+              sz.size_name, cl.color_name, mt.material_name,
+              un.code AS unit_code, un.name AS unit_name
        FROM mst_hospital_linen hl
+       LEFT JOIN mst_unit un ON un.id = hl.unit_id
        LEFT JOIN mst_linen l ON l.id = hl.linen_id
        LEFT JOIN mst_size sz ON l.size_id = sz.id
        LEFT JOIN mst_color cl ON l.color_id = cl.id
@@ -112,12 +128,14 @@ export const getAllLinen = async (req, res) => {
 export const create = async (req, res) => {
   const { hospitalId } = req.params;
   const {
-    linen_id, hospital_linen_name, ownership_type, unit, grammage,
+    linen_id, hospital_linen_name, ownership_type, unit_id, grammage,
     washing_price_type, washing_price, rental_price, par_stock, min_stock,
     stock_in_ikm, stock_in_rs, is_active, is_commercial, room_stocks, ikm_room_stocks,
   } = req.body;
 
   if (!linen_id) return res.status(400).json({ message: "Linen wajib dipilih" });
+
+  const unitRef = await resolveUnit(unit_id);
 
   const totalIkmStock = Array.isArray(ikm_room_stocks) && ikm_room_stocks.length > 0
     ? ikm_room_stocks.reduce((sum, r) => sum + (Number(r.stock_in_ikm) || 0), 0)
@@ -132,15 +150,16 @@ export const create = async (req, res) => {
   try {
     const [result] = await safeIKMQuery(
       `INSERT INTO mst_hospital_linen
-       (hospital_id, linen_id, hospital_linen_name, ownership_type, unit, grammage,
+       (hospital_id, linen_id, hospital_linen_name, ownership_type, unit_id, unit, grammage,
         washing_price_type, washing_price, rental_price, par_stock, min_stock,
         stock_in_ikm, stock_in_rs, current_stock, is_active, is_commercial)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         hospitalId, linen_id,
         hospital_linen_name?.trim() || null,
         ownership_type || "MILIK_RS",
-        unit || "PCS",
+        unitRef.unit_id,
+        unitRef.unit,
         grammage || null,
         washing_price_type || "PCS",
         washing_price ?? 0,
@@ -191,12 +210,13 @@ export const create = async (req, res) => {
 export const update = async (req, res) => {
   const { hospitalId, id } = req.params;
   const {
-    linen_id, hospital_linen_name, ownership_type, unit, grammage,
+    linen_id, hospital_linen_name, ownership_type, unit_id, grammage,
     washing_price_type, washing_price, rental_price, par_stock, min_stock,
     stock_in_ikm, stock_in_rs, is_active, is_commercial, room_stocks, ikm_room_stocks,
   } = req.body;
 
   try {
+    const unitRef = await resolveUnit(unit_id);
     const [exist] = await safeIKMQuery(
       `SELECT id FROM mst_hospital_linen WHERE id = ? AND hospital_id = ?`,
       [id, hospitalId]
@@ -216,7 +236,7 @@ export const update = async (req, res) => {
 
     await safeIKMQuery(
       `UPDATE mst_hospital_linen SET
-        linen_id = ?, hospital_linen_name = ?, ownership_type = ?, unit = ?,
+        linen_id = ?, hospital_linen_name = ?, ownership_type = ?, unit_id = ?, unit = ?,
         grammage = ?, washing_price_type = ?, washing_price = ?, rental_price = ?,
         par_stock = ?, min_stock = ?, stock_in_ikm = ?, stock_in_rs = ?,
         current_stock = ?, is_active = ?, is_commercial = ?, updated_at = NOW()
@@ -225,7 +245,8 @@ export const update = async (req, res) => {
         linen_id ?? exist[0].linen_id,
         hospital_linen_name?.trim() || null,
         ownership_type || "MILIK_RS",
-        unit || "PCS",
+        unitRef.unit_id,
+        unitRef.unit,
         grammage || null,
         washing_price_type || "PCS",
         washing_price ?? 0,

@@ -184,7 +184,8 @@ export const getLinenTransactionById = async (req, res) => {
               tr.signature_valet_delivery, tr.signature_hospital_delivery, tr.signature_assistant_delivery,
               tr.pickup_date, tr.delivery_date, tr.status, tr.notes_pickup, tr.notes_delivery,
               tr.total_kg_valet, tr.is_express, tr.total_kg_admin,
-              h.hospital_name, h.billing_by_kg, h.allow_express
+              h.hospital_name, h.billing_by_kg, h.allow_express,
+              h.price_per_kg, h.express_price_per_kg
        FROM tr_linen_transaction tr
        LEFT JOIN mst_hospital h ON h.id = tr.hospital_id
        WHERE tr.id = ?`,
@@ -869,7 +870,7 @@ export const getRekapKgLinen = async (req, res) => {
     }
 
     const [hospitals] = await safeIKMQuery(
-      `SELECT id, hospital_name, billing_by_kg, price_per_kg FROM mst_hospital WHERE id = ?`,
+      `SELECT id, hospital_name, billing_by_kg, price_per_kg, express_price_per_kg FROM mst_hospital WHERE id = ?`,
       [Number(hospital_id)]
     );
     if (!hospitals.length) {
