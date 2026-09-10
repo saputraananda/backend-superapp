@@ -6,6 +6,7 @@ import {
   resolveMstRoleEmployeeIds,
   appendEmployeeIdInClause,
 } from "./hrisHelpers.js";
+import { notifyWaschenRealtime } from "../../../utils/notifyWaschenRealtime.js";
 
 /**
  * =============================================================================
@@ -239,6 +240,12 @@ export const approveOvertime = async (req, res) => {
       [note, req.user?.employee_id || null, reviewerName, id],
     );
     await reconcileOnApprove(id);
+    await notifyWaschenRealtime({
+      domain: "overtime",
+      outletId: ot.outlet_id,
+      employeeId: ot.employee_id,
+      action: "approve",
+    });
     return res.json({ success: true, message: "Lembur disetujui" });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
@@ -275,6 +282,12 @@ export const rejectOvertime = async (req, res) => {
       [note, req.user?.employee_id || null, reviewerName, id],
     );
     await reconcileOnReject(id);
+    await notifyWaschenRealtime({
+      domain: "overtime",
+      outletId: ot.outlet_id,
+      employeeId: ot.employee_id,
+      action: "reject",
+    });
     return res.json({ success: true, message: "Lembur ditolak" });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });

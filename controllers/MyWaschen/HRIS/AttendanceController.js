@@ -4,7 +4,7 @@ import { defaultCutoffDateRange } from "../cutoffHelpers.js";
 
 import { getEmployeeNameMap, toISODate, resolveMstRoleEmployeeIds, appendEmployeeIdInClause, toMySQLDatetime, resolveEmployeeUserId, resolveEmployeeOutletId, validateOutletId } from "./hrisHelpers.js";
 
-import { buildAttendancePhotoUrl } from "./hrisAssetHelpers.js";
+import { buildAttendancePhotoUrl, getWaschenMobileAttendanceDir } from "./hrisAssetHelpers.js";
 
 import fs from "fs";
 import path from "path";
@@ -48,7 +48,7 @@ function attendanceStatusLabel(row) {
 
 
 function tryDeleteAttendancePhoto(photoName) {
-  const dir = process.env.WASCHEN_MOBILE_ATTENDANCE_DIR;
+  const dir = getWaschenMobileAttendanceDir();
   if (!dir || !photoName) return;
   try {
     const fp = path.join(dir, photoName);

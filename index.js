@@ -116,6 +116,12 @@ import dashboardInventoryRoutes from "./routes/MyWaschen/Inventory/DashboardInve
 import trainingRoutes from "./routes/trainingRoutes.js";
 import projectManagementRoutes from "./routes/ProjectManagement/projectManagementRoutes.js";
 import personalChatRoutes from "./routes/ProjectManagement/personalChatRoutes.js";
+import {
+  getWaschenMobileAttendanceDir,
+  getWaschenMobileLeaveDir,
+  getWaschenMobileKasbonDir,
+  getWaschenMobileQcDir,
+} from "./controllers/MyWaschen/HRIS/hrisAssetHelpers.js";
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -277,10 +283,12 @@ app.use("/assets/training_evidence", express.static(path.join(ASSETS_BASE, "trai
 app.use("/assets/pm_evidence", express.static(path.join(ASSETS_BASE, "pm_evidence")));
 app.use("/storage/assets/payslip", express.static(path.join(ASSETS_BASE, "payslip")));
 
-// Waschen Mobile uploads (dev: folder lokal waschen-mobile)
-const WASCHEN_MOBILE_ATTENDANCE_DIR = process.env.WASCHEN_MOBILE_ATTENDANCE_DIR;
-const WASCHEN_MOBILE_LEAVE_DIR = process.env.WASCHEN_MOBILE_LEAVE_DIR;
-const WASCHEN_MOBILE_KASBON_DIR = process.env.WASCHEN_MOBILE_KASBON_DIR;
+// Waschen Mobile uploads — satu env WASCHEN_MOBILE_PUBLIC_BASE_URL
+// Dev (path lokal): C:\...\waschen-mobile → mount uploads/assets/*
+// Prod (HTTP URL): https://app.mywaschen.com → tidak mount lokal
+const WASCHEN_MOBILE_ATTENDANCE_DIR = getWaschenMobileAttendanceDir();
+const WASCHEN_MOBILE_LEAVE_DIR = getWaschenMobileLeaveDir();
+const WASCHEN_MOBILE_KASBON_DIR = getWaschenMobileKasbonDir();
 if (WASCHEN_MOBILE_ATTENDANCE_DIR && fs.existsSync(WASCHEN_MOBILE_ATTENDANCE_DIR)) {
   app.use("/uploads/assets/attendance", express.static(WASCHEN_MOBILE_ATTENDANCE_DIR));
 }
@@ -291,14 +299,9 @@ if (WASCHEN_MOBILE_KASBON_DIR && fs.existsSync(WASCHEN_MOBILE_KASBON_DIR)) {
   app.use("/uploads/assets/kasbon", express.static(WASCHEN_MOBILE_KASBON_DIR));
 }
 
-const PRODUKSI_QC_MOUNT = [
-  ["frontliner", process.env.WASCHEN_MOBILE_QC_FRONTLINER_DIR],
-  ["washing", process.env.WASCHEN_MOBILE_QC_WASHING_DIR],
-  ["ironing", process.env.WASCHEN_MOBILE_QC_IRONING_DIR],
-  ["packing", process.env.WASCHEN_MOBILE_QC_PACKING_DIR],
-  ["delivery", process.env.WASCHEN_MOBILE_QC_DELIVERY_DIR],
-];
-for (const [stage, dir] of PRODUKSI_QC_MOUNT) {
+const PRODUKSI_QC_STAGES = ["frontliner", "washing", "ironing", "packing", "delivery"];
+for (const stage of PRODUKSI_QC_STAGES) {
+  const dir = getWaschenMobileQcDir(stage);
   if (dir && fs.existsSync(dir)) {
     app.use(`/uploads/assets/produksi/${stage}`, express.static(dir));
   }

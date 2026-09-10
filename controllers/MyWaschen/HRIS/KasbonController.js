@@ -6,6 +6,8 @@ import { getActor, toISODate, resolveMstRoleEmployeeIds, appendEmployeeIdInClaus
 
 import { buildKasbonProofUrl } from "./hrisAssetHelpers.js";
 
+import { notifyWaschenRealtime } from "../../../utils/notifyWaschenRealtime.js";
+
 
 
 export const getKasbonList = async (req, res) => {
@@ -264,6 +266,9 @@ export const processKasbon = async (req, res) => {
 
     );
 
+    const [row] = await safeMyWaschenQuery(`SELECT employee_id FROM tr_kasbon WHERE id = ? LIMIT 1`, [id]);
+    await notifyWaschenRealtime({ domain: "kasbon", employeeId: row?.[0]?.employee_id, action: "process" });
+
     return res.json({ success: true, message: "Pengajuan diproses" });
 
   } catch (err) {
@@ -310,6 +315,9 @@ export const approveKasbon = async (req, res) => {
 
     }
 
+    const [row] = await safeMyWaschenQuery(`SELECT employee_id FROM tr_kasbon WHERE id = ? LIMIT 1`, [id]);
+    await notifyWaschenRealtime({ domain: "kasbon", employeeId: row?.[0]?.employee_id, action: "approve" });
+
     return res.json({ success: true, message: "Kasbon disetujui" });
 
   } catch (err) {
@@ -337,6 +345,9 @@ export const rejectKasbon = async (req, res) => {
       [note || "Ditolak admin", id],
 
     );
+
+    const [row] = await safeMyWaschenQuery(`SELECT employee_id FROM tr_kasbon WHERE id = ? LIMIT 1`, [id]);
+    await notifyWaschenRealtime({ domain: "kasbon", employeeId: row?.[0]?.employee_id, action: "reject" });
 
     return res.json({ success: true, message: "Kasbon ditolak" });
 

@@ -6,6 +6,8 @@ import { getEmployeeNameMap, toISODate, resolveMstRoleEmployeeIds, appendEmploye
 
 import { buildLeaveDocUrl } from "./hrisAssetHelpers.js";
 
+import { notifyWaschenRealtime } from "../../../utils/notifyWaschenRealtime.js";
+
 
 
 export const getLeaveList = async (req, res) => {
@@ -182,6 +184,8 @@ export const approveLeave = async (req, res) => {
 
     const id = Number(req.params.id);
 
+    const [before] = await safeMyWaschenQuery(`SELECT employee_id FROM tr_leave WHERE leave_id = ? LIMIT 1`, [id]);
+
     await safeMyWaschenQuery(
 
       `UPDATE tr_leave SET status = 'disetujui', rejection_note = NULL, updated_at = NOW() WHERE leave_id = ?`,
@@ -189,6 +193,12 @@ export const approveLeave = async (req, res) => {
       [id],
 
     );
+
+    await notifyWaschenRealtime({
+      domain: "leave",
+      employeeId: before?.[0]?.employee_id,
+      action: "approve",
+    });
 
     return res.json({ success: true, message: "Perizinan disetujui" });
 
@@ -210,6 +220,8 @@ export const rejectLeave = async (req, res) => {
 
     const note = String(req.body.rejection_note || req.body.note || "").trim();
 
+    const [before] = await safeMyWaschenQuery(`SELECT employee_id FROM tr_leave WHERE leave_id = ? LIMIT 1`, [id]);
+
     await safeMyWaschenQuery(
 
       `UPDATE tr_leave SET status = 'ditolak', rejection_note = ?, updated_at = NOW() WHERE leave_id = ?`,
@@ -217,6 +229,12 @@ export const rejectLeave = async (req, res) => {
       [note || "Ditolak admin", id],
 
     );
+
+    await notifyWaschenRealtime({
+      domain: "leave",
+      employeeId: before?.[0]?.employee_id,
+      action: "reject",
+    });
 
     return res.json({ success: true, message: "Perizinan ditolak" });
 
