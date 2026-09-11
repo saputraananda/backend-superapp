@@ -12,19 +12,28 @@ import { notifyWaschenRealtime } from "../../../utils/notifyWaschenRealtime.js";
  * =============================================================================
  * MEMORY — LEMBUR Alsa HRIS (pantau + ACC/reject + detail pengerjaan)
  * =============================================================================
+ * - Karyawan Start/Close di mobile → status 'berlangsung' lalu 'pengajuan'
+ * - ACC/reject hanya untuk 'pengajuan' (bukan saat masih berlangsung)
  * - Filter style sama Perizinan/Kasbon (cutoff 26–25, outlet, role, status, search)
- * - ACC/reject di sini setara leader mobile; promote/demote flag di tr_item_progress
- * - Detail: item/nota yang dikerjakan di jendela lembur (qty PCS/KG, stage, flag)
+ * - Detail: item/nota di jendela start_at–end_at
  * =============================================================================
  */
 
 const toTime = (v) => (v ? String(v).slice(0, 8) : null);
+const toDateTime = (v) => {
+  if (!v) return null;
+  if (v instanceof Date) return v.toISOString();
+  return String(v).replace("T", " ").slice(0, 19);
+};
 
 const mapOt = (r, empMap) => ({
   ...r,
   overtime_date: toISODate(r.overtime_date),
   start_time: toTime(r.start_time),
   end_time: toTime(r.end_time),
+  start_at: toDateTime(r.start_at),
+  end_at: toDateTime(r.end_at),
+  is_active: r.status === "berlangsung",
   employee_name: empMap.get(Number(r.employee_id))?.full_name || r.employee_name || `#${r.employee_id}`,
   employee_code: empMap.get(Number(r.employee_id))?.employee_code || null,
 });
@@ -63,7 +72,7 @@ export const getOvertimeList = async (req, res) => {
       return res.json({
         success: true,
         data: [],
-        summary: { total: 0, pengajuan: 0, disetujui: 0, ditolak: 0, dibatalkan: 0 },
+        summary: { total: 0, berlangsung: 0, pengajuan: 0, disetujui: 0, ditolak: 0, dibatalkan: 0 },
       });
     }
 
@@ -112,6 +121,7 @@ export const getOvertimeList = async (req, res) => {
 
     const summary = {
       total: items.length,
+      berlangsung: items.filter((r) => r.status === "berlangsung").length,
       pengajuan: items.filter((r) => r.status === "pengajuan").length,
       disetujui: items.filter((r) => r.status === "disetujui").length,
       ditolak: items.filter((r) => r.status === "ditolak").length,
@@ -223,6 +233,12 @@ export const approveOvertime = async (req, res) => {
     const [rows] = await safeMyWaschenQuery(`SELECT * FROM tr_overtime WHERE id = ? LIMIT 1`, [id]);
     const ot = rows?.[0];
     if (!ot) return res.status(404).json({ success: false, message: "Pengajuan tidak ditemukan" });
+    if (ot.status === "berlangsung") {
+      return res.status(403).json({
+        success: false,
+        message: "Sesi masih berlangsung — karyawan harus close lembur dulu",
+      });
+    }
     if (ot.status !== "pengajuan") {
       return res.status(403).json({ success: false, message: "Hanya status pengajuan yang dapat disetujui" });
     }
@@ -265,6 +281,12 @@ export const rejectOvertime = async (req, res) => {
     const [rows] = await safeMyWaschenQuery(`SELECT * FROM tr_overtime WHERE id = ? LIMIT 1`, [id]);
     const ot = rows?.[0];
     if (!ot) return res.status(404).json({ success: false, message: "Pengajuan tidak ditemukan" });
+    if (ot.status === "berlangsung") {
+      return res.status(403).json({
+        success: false,
+        message: "Sesi masih berlangsung — karyawan harus close lembur dulu",
+      });
+    }
     if (ot.status !== "pengajuan") {
       return res.status(403).json({ success: false, message: "Hanya status pengajuan yang dapat ditolak" });
     }
