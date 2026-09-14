@@ -108,6 +108,32 @@ const PROGRESS_STAGE_LABELS = {
   delivery: "Pengiriman",
 };
 
+/** Tahap dikerjakan → badge status (bukan status tujuan berikutnya). */
+const STAGE_WORK_STATUS = {
+  frontliner: "Antrean",
+  washing: "Pencucian",
+  ironing: "Penyetrikaan",
+  packing: "Pengemasan",
+  delivery: "Siap Diantar",
+};
+
+function resolveStatusLogDisplay(log) {
+  const tagged = String(log.notes || "").match(/^\[(\w+)\]/);
+  const stage = tagged?.[1]?.toLowerCase() || null;
+  if (stage && STAGE_WORK_STATUS[stage]) {
+    return {
+      stage,
+      display_status: STAGE_WORK_STATUS[stage],
+      stage_label: PROGRESS_STAGE_LABELS[stage] || stage,
+    };
+  }
+  return {
+    stage: null,
+    display_status: log.status,
+    stage_label: null,
+  };
+}
+
 async function fetchEmployeeNameMap(ids) {
   const unique = [...new Set((ids || []).map(Number).filter((id) => id > 0))];
   if (!unique.length) return {};
@@ -317,10 +343,16 @@ export const getTransactionById = async (req, res) => {
       });
     }
 
-    const enrichedLogs = statusLogs.map((l) => ({
-      ...l,
-      employee_name: empMap[l.employee_id] || null,
-    }));
+    const enrichedLogs = statusLogs.map((l) => {
+      const display = resolveStatusLogDisplay(l);
+      return {
+        ...l,
+        employee_name: empMap[l.employee_id] || null,
+        stage: display.stage,
+        stage_label: display.stage_label,
+        display_status: display.display_status,
+      };
+    });
 
     const items = details.map((d) => ({
       ...d,
