@@ -5,6 +5,12 @@ function num(v, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function parseIsPettyCash(value, fallback = 1) {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (value === false || value === "false" || value === "0" || value === 0) return 0;
+  return 1;
+}
+
 async function assertEmployee(employeeId) {
   const id = Number(employeeId);
   if (!Number.isFinite(id) || id <= 0) {
@@ -39,6 +45,7 @@ function mapPettyCashRow(row, empMap = {}) {
     cashierName: row.cashier_employee_id ? empMap[row.cashier_employee_id] || null : null,
     type: row.type,
     category: row.category,
+    isPettyCash: parseIsPettyCash(row.is_petty_cash, 1) === 1,
     amount: num(row.amount),
     balanceBefore: num(row.balance_before),
     balanceAfter: num(row.balance_after),
@@ -80,10 +87,65 @@ async function attachEmployeeNames(rows) {
   return rows.map((r) => mapPettyCashRow(r, empMap));
 }
 
+function toDateInput(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** Periode cutoff aktif: 26 (bulan sebelumnya) s/d 25 (bulan cutoff). */
+function currentCutoffRange(now = new Date()) {
+  const day = now.getDate();
+  let year = now.getFullYear();
+  let month = now.getMonth() + 1;
+  if (day >= 26) {
+    if (month === 12) {
+      year += 1;
+      month = 1;
+    } else {
+      month += 1;
+    }
+  }
+  const fromDate = new Date(year, month - 2, 26);
+  const toDate = new Date(year, month - 1, 25);
+  return { dateFrom: toDateInput(fromDate), dateTo: toDateInput(toDate) };
+}
+
+async function getOutletPettyBalance(outletId) {
+  const [shiftRows] = await safeMyWaschenQuery(
+    `SELECT id, initial_petty_cash
+     FROM tr_cashier_shift
+     WHERE outlet_id = ? AND status = 'Open'
+     ORDER BY id DESC LIMIT 1`,
+    [outletId]
+  );
+  const hasOpenShift = shiftRows.length > 0;
+  const initialPettyCash = hasOpenShift ? num(shiftRows[0].initial_petty_cash) : 0;
+
+  const [moves] = await safeMyWaschenQuery(
+    `SELECT
+       COALESCE(SUM(CASE WHEN type = 'Masuk' THEN amount ELSE 0 END), 0) AS masuk,
+       COALESCE(SUM(CASE WHEN type = 'Keluar' THEN amount ELSE 0 END), 0) AS keluar
+     FROM tr_petty_cash
+     WHERE outlet_id = ? AND status = 'Disetujui' AND COALESCE(is_petty_cash, 1) = 1`,
+    [outletId]
+  );
+
+  const masuk = num(moves[0]?.masuk);
+  const keluar = num(moves[0]?.keluar);
+  return {
+    currentBalance: initialPettyCash + masuk - keluar,
+    initialPettyCash,
+    hasOpenShift,
+  };
+}
+
 /** GET /waschen/petty-cash/summary */
 export const getPettyCashSummary = async (req, res) => {
   try {
     const outletId = req.query.outletId ? Number(req.query.outletId) : null;
+    const dateFrom = String(req.query.dateFrom || "").slice(0, 10);
+    const dateTo = String(req.query.dateTo || "").slice(0, 10);
+    const cutoff = dateFrom && dateTo ? { dateFrom, dateTo } : currentCutoffRange();
+
     const where = [];
     const params = [];
     if (outletId) {
@@ -103,6 +165,32 @@ export const getPettyCashSummary = async (req, res) => {
       params
     );
 
+    const cutoffWhere = ["status = 'Disetujui'", "DATE(transaction_date) BETWEEN ? AND ?"];
+    const cutoffParams = [cutoff.dateFrom, cutoff.dateTo];
+    if (outletId) {
+      cutoffWhere.push("outlet_id = ?");
+      cutoffParams.push(outletId);
+    }
+
+    const [cutoffRows] = await safeMyWaschenQuery(
+      `SELECT
+         COALESCE(SUM(CASE WHEN type = 'Keluar' AND COALESCE(is_petty_cash, 1) = 1 THEN amount ELSE 0 END), 0) AS cutoff_out,
+         COALESCE(SUM(CASE WHEN type = 'Masuk' AND COALESCE(is_petty_cash, 1) = 1 THEN amount ELSE 0 END), 0) AS cutoff_in,
+         COALESCE(SUM(CASE WHEN type = 'Keluar' AND COALESCE(is_petty_cash, 1) = 0 THEN amount ELSE 0 END), 0) AS cutoff_central_out
+       FROM tr_petty_cash
+       WHERE ${cutoffWhere.join(" AND ")}`,
+      cutoffParams
+    );
+
+    let balance = {
+      currentBalance: null,
+      initialPettyCash: null,
+      hasOpenShift: false,
+    };
+    if (outletId) {
+      balance = await getOutletPettyBalance(outletId);
+    }
+
     res.json({
       success: true,
       data: {
@@ -111,6 +199,14 @@ export const getPettyCashSummary = async (req, res) => {
         approvedCount: num(rows[0]?.approved_count),
         rejectedCount: num(rows[0]?.rejected_count),
         pendingAmount: num(rows[0]?.pending_amount),
+        currentBalance: balance.currentBalance,
+        initialPettyCash: balance.initialPettyCash,
+        hasOpenShift: balance.hasOpenShift,
+        cutoffFrom: cutoff.dateFrom,
+        cutoffTo: cutoff.dateTo,
+        cutoffOut: num(cutoffRows[0]?.cutoff_out),
+        cutoffIn: num(cutoffRows[0]?.cutoff_in),
+        cutoffCentralOut: num(cutoffRows[0]?.cutoff_central_out),
       },
     });
   } catch (err) {
@@ -215,6 +311,10 @@ export const updatePettyCash = async (req, res) => {
         ? String(req.body.description || "").trim() || null
         : row.description;
     const outletId = req.body?.outletId !== undefined ? Number(req.body.outletId) : Number(row.outlet_id);
+    const isPettyCash = parseIsPettyCash(
+      req.body?.isPettyCash !== undefined ? req.body.isPettyCash : row.is_petty_cash,
+      1
+    );
 
     if (!["Masuk", "Keluar"].includes(type)) {
       return res.status(400).json({ success: false, message: "type harus Masuk atau Keluar" });
@@ -239,11 +339,12 @@ export const updatePettyCash = async (req, res) => {
        SET outlet_id = ?,
            type = ?,
            category = ?,
+           is_petty_cash = ?,
            amount = ?,
            description = ?,
            updated_at = NOW()
        WHERE id = ?`,
-      [outletId, type, category, amount, description, id]
+      [outletId, type, category, isPettyCash, amount, description, id]
     );
 
     res.json({ success: true, message: "Pengajuan petty cash diperbarui" });
