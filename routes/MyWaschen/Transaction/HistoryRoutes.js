@@ -7,6 +7,7 @@ import {
   requestDeleteTransaction,
   approveDeleteTransaction,
   approveRefundTransaction,
+  updateFulfillment,
   updateItemWorkStatus,
 } from "../../../controllers/MyWaschen/Transaction/HistoryController.js";
 
@@ -19,6 +20,8 @@ router.patch("/:id/payment", updateTransactionPayment);
 router.patch("/:id/request-delete", requestDeleteTransaction);
 router.patch("/:id/approve-delete", approveDeleteTransaction);
 router.patch("/:id/approve-refund", approveRefundTransaction);
+router.patch("/:id/fulfillment", updateFulfillment);
+router.put("/:id/fulfillment", updateFulfillment);
 router.patch("/:id/items/:itemId/status", updateItemWorkStatus);
 
 export default router;

@@ -299,6 +299,7 @@ if (WASCHEN_MOBILE_KASBON_DIR && fs.existsSync(WASCHEN_MOBILE_KASBON_DIR)) {
   app.use("/uploads/assets/kasbon", express.static(WASCHEN_MOBILE_KASBON_DIR));
 }
 
+// QC produksi (serah terima memakai folder "delivery")
 const PRODUKSI_QC_STAGES = ["frontliner", "washing", "ironing", "packing", "delivery"];
 for (const stage of PRODUKSI_QC_STAGES) {
   const dir = getWaschenMobileQcDir(stage);

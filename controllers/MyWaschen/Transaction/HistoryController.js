@@ -66,6 +66,9 @@ function mapTransactionRow(row) {
     branch: row.outlet_full_name || row.outlet_name,
     cashierEmployeeId: row.cashier_employee_id,
     cashierName: row.cashier_name,
+    settledByEmployeeId: row.settled_by_employee_id || null,
+    settledByName: row.settled_by_name || null,
+    settledAt: row.settled_at || null,
     orderCategory: row.order_category,
     grandTotal: num(row.grand_total),
     paidAmount: num(row.paid_amount),
@@ -77,6 +80,8 @@ function mapTransactionRow(row) {
     paidAt: row.paid_at,
     workStatus: num(row.work_status, 10),
     isDelivery: Boolean(row.is_delivery),
+    deliveryAddress: row.delivery_address || null,
+    deliveryNotes: row.delivery_notes || null,
     orderDate: row.order_date,
     createdAt: row.created_at || row.order_date,
     estimatedFinishedAt: row.estimated_finished_at || null,
@@ -106,6 +111,7 @@ const PROGRESS_STAGE_LABELS = {
   ironing: "Penyetrikaan",
   packing: "Pengemasan",
   delivery: "Pengiriman",
+  handover: "Serah Terima",
 };
 
 /** Tahap dikerjakan → badge status (bukan status tujuan berikutnya). */
@@ -114,12 +120,35 @@ const STAGE_WORK_STATUS = {
   washing: "Pencucian",
   ironing: "Penyetrikaan",
   packing: "Pengemasan",
-  delivery: "Siap Diantar",
+  delivery: "Sedang Diantar",
+  handover: "Selesai",
 };
 
 function resolveStatusLogDisplay(log) {
   const tagged = String(log.notes || "").match(/^\[(\w+)\]/);
   const stage = tagged?.[1]?.toLowerCase() || null;
+  // Prefer status aktual di log (mis. Sedang Diantar / Selesai) jika sudah diisi eksplisit
+  const rawStatus = String(log.status || "").trim();
+  if (
+    rawStatus === "Sedang Diantar" ||
+    rawStatus === "Siap Diantar" ||
+    rawStatus === "Pengemasan" ||
+    rawStatus === "Selesai"
+  ) {
+    if (stage === "delivery" && rawStatus === "Siap Diantar") {
+      // legacy log delivery QC lama — tampilkan Sedang Diantar
+      return {
+        stage,
+        display_status: "Sedang Diantar",
+        stage_label: PROGRESS_STAGE_LABELS[stage] || stage,
+      };
+    }
+    return {
+      stage,
+      display_status: rawStatus,
+      stage_label: stage ? PROGRESS_STAGE_LABELS[stage] || stage : null,
+    };
+  }
   if (stage && STAGE_WORK_STATUS[stage]) {
     return {
       stage,
@@ -233,8 +262,14 @@ export const getTransactions = async (req, res) => {
       params
     );
 
-    // cashier names from main DB (best-effort)
-    const cashierIds = [...new Set(rows.map((r) => r.cashier_employee_id).filter(Boolean))];
+    // cashier / settler names from main DB (best-effort)
+    const cashierIds = [
+      ...new Set(
+        rows
+          .flatMap((r) => [r.cashier_employee_id, r.settled_by_employee_id])
+          .filter(Boolean)
+      ),
+    ];
     let cashierMap = {};
     if (cashierIds.length) {
       const [emps] = await safeQuery(
@@ -245,7 +280,11 @@ export const getTransactions = async (req, res) => {
     }
 
     const data = rows.map((r) =>
-      mapTransactionRow({ ...r, cashier_name: cashierMap[r.cashier_employee_id] || null })
+      mapTransactionRow({
+        ...r,
+        cashier_name: cashierMap[r.cashier_employee_id] || null,
+        settled_by_name: cashierMap[r.settled_by_employee_id] || null,
+      })
     );
 
     res.json({ success: true, data, meta: { count: data.length } });
@@ -298,6 +337,9 @@ export const getTransactionById = async (req, res) => {
       ...statusLogs.map((l) => l.employee_id),
       ...progressRows.map((p) => p.employee_id),
       ...progressRows.map((p) => p.hold_resolved_by),
+      ...logs.map((l) => l.cashier_employee_id),
+      row.cashier_employee_id,
+      row.settled_by_employee_id,
     ]);
 
     const progressIds = progressRows.map((p) => p.id);
@@ -360,21 +402,30 @@ export const getTransactionById = async (req, res) => {
     }));
 
     let cashierName = null;
+    let settledByName = null;
     if (row.cashier_employee_id) {
-      const [emps] = await safeQuery(
-        "SELECT full_name FROM mst_employee WHERE employee_id = ? LIMIT 1",
-        [row.cashier_employee_id]
-      );
-      cashierName = emps[0]?.full_name || null;
+      cashierName = empMap[row.cashier_employee_id] || null;
+    }
+    if (row.settled_by_employee_id) {
+      settledByName = empMap[row.settled_by_employee_id] || null;
     }
 
-    const order = mapTransactionRow({ ...row, cashier_name: cashierName });
+    const paymentLogs = logs.map((l) => ({
+      ...l,
+      cashier_name: empMap[l.cashier_employee_id] || null,
+    }));
+
+    const order = mapTransactionRow({
+      ...row,
+      cashier_name: cashierName,
+      settled_by_name: settledByName,
+    });
     res.json({
       success: true,
       data: {
         order,
         items,
-        paymentLogs: logs,
+        paymentLogs,
         statusLogs: enrichedLogs,
         remaining: Math.max(0, order.grandTotal - order.paidAmount),
       },
@@ -468,6 +519,8 @@ export const updateTransactionPayment = async (req, res) => {
     }
 
     const method = targetStatus === "Outstanding" ? "-" : paymentMethod || order.payment_method || "Tunai";
+    const settlerId = cashierEmployeeId || order.cashier_employee_id || null;
+    const shouldStampSettler = targetStatus !== "Outstanding" && newPaid > 0;
 
     await safeMyWaschenQuery(
       `UPDATE tr_transaction SET
@@ -480,6 +533,8 @@ export const updateTransactionPayment = async (req, res) => {
            WHEN ? <> 'Outstanding' AND (paid_at IS NULL OR ? = 'Lunas') THEN NOW()
            ELSE paid_at
          END,
+         settled_by_employee_id = CASE WHEN ? THEN ? ELSE settled_by_employee_id END,
+         settled_at = CASE WHEN ? THEN NOW() ELSE settled_at END,
          is_refund_requested = CASE WHEN ? > 0 THEN 1 ELSE is_refund_requested END,
          refund_approval_status = CASE WHEN ? > 0 THEN 0 ELSE refund_approval_status END,
          refund_requested_at = CASE WHEN ? > 0 THEN NOW() ELSE refund_requested_at END,
@@ -495,6 +550,9 @@ export const updateTransactionPayment = async (req, res) => {
         paymentProofUrl || null,
         targetStatus,
         targetStatus,
+        shouldStampSettler ? 1 : 0,
+        settlerId,
+        shouldStampSettler ? 1 : 0,
         refundAmountToSave,
         refundAmountToSave,
         refundAmountToSave,
@@ -689,6 +747,201 @@ export const approveRefundTransaction = async (req, res) => {
   }
 };
 
+/**
+ * PATCH /waschen/transactions/:id/fulfillment
+ * Ubah Ambil di Outlet ↔ Delivery (full nota / per item).
+ * Body: { isDelivery, itemIds?, deliveryAddress?, deliveryNotes?, employeeId?, notes? }
+ */
+export const updateFulfillment = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      isDelivery,
+      itemIds,
+      deliveryAddress,
+      deliveryNotes,
+      employeeId,
+      notes,
+    } = req.body || {};
+
+    if (typeof isDelivery !== "boolean" && isDelivery !== 0 && isDelivery !== 1) {
+      return res.status(400).json({
+        success: false,
+        message: "isDelivery wajib diisi (true/false)",
+      });
+    }
+
+    const toDelivery = isDelivery === true || isDelivery === 1;
+    const fulfillmentType = toDelivery ? "Delivery_Kurir" : "Ambil_Di_Outlet";
+
+    let employee = null;
+    if (employeeId != null && employeeId !== "") {
+      employee = await assertWaschenEmployee(employeeId);
+    }
+
+    const [orderRows] = await safeMyWaschenQuery(
+      `SELECT t.*,
+              COALESCE(
+                NULLIF(TRIM(t.delivery_address), ''),
+                NULLIF(TRIM(c.address), ''),
+                '-'
+              ) AS customer_address_fallback
+       FROM tr_transaction t
+       LEFT JOIN mst_customer c ON c.id = t.customer_id
+       WHERE t.id = ? OR t.order_no = ?
+       LIMIT 1`,
+      [id, id]
+    );
+    if (!orderRows.length) {
+      return res.status(404).json({ success: false, message: "Nota tidak ditemukan" });
+    }
+    const order = orderRows[0];
+
+    const [allItems] = await safeMyWaschenQuery(
+      `SELECT id, item_work_status, fulfillment_type
+       FROM tr_transaction_detail
+       WHERE transaction_id = ?
+         AND COALESCE(item_work_status, '') != 'Dibatalkan'`,
+      [order.id]
+    );
+    if (!allItems.length) {
+      return res.status(422).json({ success: false, message: "Nota tidak punya item aktif" });
+    }
+
+    const selectedIds =
+      Array.isArray(itemIds) && itemIds.length > 0
+        ? itemIds.map((x) => Number(x)).filter((x) => Number.isFinite(x) && x > 0)
+        : allItems.map((it) => it.id);
+
+    const targetItems = allItems.filter((it) => selectedIds.includes(it.id));
+    if (!targetItems.length) {
+      return res.status(422).json({ success: false, message: "Item yang dipilih tidak valid" });
+    }
+
+    const targetIdList = targetItems.map((it) => it.id);
+    const placeholders = targetIdList.map(() => "?").join(",");
+
+    if (toDelivery) {
+      await safeMyWaschenQuery(
+        `UPDATE tr_transaction_detail
+         SET fulfillment_type = ?,
+             item_work_status = CASE
+               WHEN item_work_status = 'Siap Diambil' THEN 'Siap Diantar'
+               ELSE item_work_status
+             END
+         WHERE transaction_id = ?
+           AND id IN (${placeholders})`,
+        [fulfillmentType, order.id, ...targetIdList]
+      );
+    } else {
+      await safeMyWaschenQuery(
+        `UPDATE tr_transaction_detail
+         SET fulfillment_type = ?,
+             item_work_status = CASE
+               WHEN item_work_status = 'Siap Diantar' THEN 'Siap Diambil'
+               ELSE item_work_status
+             END
+         WHERE transaction_id = ?
+           AND id IN (${placeholders})`,
+        [fulfillmentType, order.id, ...targetIdList]
+      );
+    }
+
+    const [afterItems] = await safeMyWaschenQuery(
+      `SELECT id, fulfillment_type, item_work_status
+       FROM tr_transaction_detail
+       WHERE transaction_id = ?
+         AND COALESCE(item_work_status, '') != 'Dibatalkan'`,
+      [order.id]
+    );
+    const hasDeliveryItem = afterItems.some((it) => it.fulfillment_type === "Delivery_Kurir");
+    const headerIsDelivery = hasDeliveryItem ? 1 : 0;
+
+    let nextAddress = order.delivery_address;
+    let nextNotes = order.delivery_notes;
+    if (headerIsDelivery) {
+      const addr = String(deliveryAddress || "").trim();
+      nextAddress = addr || order.delivery_address || order.customer_address_fallback || null;
+      if (deliveryNotes !== undefined) nextNotes = String(deliveryNotes || "").trim() || null;
+    } else if (!hasDeliveryItem) {
+      if (deliveryAddress === "" || deliveryAddress === null) nextAddress = null;
+      if (deliveryNotes === "" || deliveryNotes === null) nextNotes = null;
+    }
+
+    await safeMyWaschenQuery(
+      `UPDATE tr_transaction
+       SET is_delivery = ?,
+           delivery_address = ?,
+           delivery_notes = ?,
+           updated_at = NOW()
+       WHERE id = ?`,
+      [headerIsDelivery, nextAddress, nextNotes, order.id]
+    );
+
+    const [avgRows] = await safeMyWaschenQuery(
+      `SELECT AVG(COALESCE(ws.percentage, 10)) AS avg_pct
+       FROM tr_transaction_detail td
+       LEFT JOIN mst_work_status ws ON ws.name = td.item_work_status OR ws.label = td.item_work_status
+       WHERE td.transaction_id = ?`,
+      [order.id]
+    );
+    const avgPct = Math.round(num(avgRows[0]?.avg_pct, 10) * 100) / 100;
+    await safeMyWaschenQuery("UPDATE tr_transaction SET work_status = ?, updated_at = NOW() WHERE id = ?", [
+      avgPct,
+      order.id,
+    ]);
+
+    const scopeLabel =
+      selectedIds.length === allItems.length ? "seluruh item" : `${targetItems.length} item`;
+    const logNote =
+      notes ||
+      (toDelivery
+        ? `Pengambilan diubah ke Delivery (${scopeLabel})`
+        : `Pengambilan diubah ke Ambil di Outlet (${scopeLabel})`);
+
+    await safeMyWaschenQuery(
+      `INSERT INTO tr_transaction_status_log (transaction_id, status, employee_id, notes)
+       VALUES (?, ?, ?, ?)`,
+      [
+        order.id,
+        toDelivery ? "Siap Diantar" : "Siap Diambil",
+        employee?.employee_id || null,
+        logNote,
+      ]
+    );
+
+    return res.json({
+      success: true,
+      message: toDelivery
+        ? `Nota ${order.order_no} berhasil diubah ke Delivery (${scopeLabel})`
+        : `Nota ${order.order_no} berhasil diubah ke Ambil di Outlet (${scopeLabel})`,
+      data: {
+        orderId: order.id,
+        orderNo: order.order_no,
+        isDelivery: headerIsDelivery,
+        fulfillmentType,
+        deliveryAddress: nextAddress,
+        deliveryNotes: nextNotes,
+        updatedItemIds: targetIdList,
+        workStatus: avgPct,
+        items: afterItems,
+      },
+    });
+  } catch (err) {
+    console.error("updateFulfillment error:", err);
+    if (/Unknown column.*fulfillment_type/i.test(err.message || "")) {
+      return res.status(500).json({
+        success: false,
+        message: "Kolom fulfillment_type belum ada di database. Jalankan migrasi schema terlebih dahulu.",
+      });
+    }
+    return res.status(err.status || 500).json({
+      success: false,
+      message: err.message || "Gagal mengubah metode pengambilan",
+    });
+  }
+};
+
 /** PATCH /waschen/transactions/:id/items/:itemId/status — update status item */
 export const updateItemWorkStatus = async (req, res) => {
   try {
@@ -704,6 +957,7 @@ export const updateItemWorkStatus = async (req, res) => {
       "Pengemasan",
       "Siap Diambil",
       "Siap Diantar",
+      "Sedang Diantar",
       "Selesai",
       "Dibatalkan",
     ];
@@ -732,7 +986,7 @@ export const updateItemWorkStatus = async (req, res) => {
       await safeMyWaschenQuery(
         `UPDATE tr_transaction_detail SET
            item_work_status = ?,
-           item_completed_at = CASE WHEN ? IN ('Selesai', 'Siap Diambil', 'Siap Diantar') THEN NOW() ELSE NULL END
+           item_completed_at = CASE WHEN ? IN ('Selesai', 'Siap Diambil', 'Siap Diantar', 'Sedang Diantar') THEN NOW() ELSE NULL END
          WHERE id = ?`,
         [status, status, itemId]
       );
@@ -766,6 +1020,25 @@ export const updateItemWorkStatus = async (req, res) => {
       avgPct,
       txnId,
     ]);
+
+    // Semua item aktif Selesai → isi picked_up_at
+    const [activeItems] = await safeMyWaschenQuery(
+      `SELECT item_work_status FROM tr_transaction_detail
+       WHERE transaction_id = ?
+         AND COALESCE(item_work_status, '') != 'Dibatalkan'`,
+      [txnId]
+    );
+    if (
+      activeItems.length > 0 &&
+      activeItems.every((it) => it.item_work_status === "Selesai")
+    ) {
+      await safeMyWaschenQuery(
+        `UPDATE tr_transaction
+         SET picked_up_at = COALESCE(picked_up_at, NOW())
+         WHERE id = ?`,
+        [txnId]
+      );
+    }
 
     res.json({
       success: true,

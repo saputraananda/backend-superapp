@@ -88,7 +88,11 @@ export function buildKasbonProofUrl(req, proofPath) {
   return `${base}${normalized}`;
 }
 
-/** Foto QC produksi — path DB: /uploads/assets/produksi/{stage}/file.jpg */
+/**
+ * Foto QC / serah terima.
+ * Path DB: /uploads/assets/produksi/{stage}/file.jpg
+ * Serah terima memakai folder "delivery".
+ */
 export function buildProduksiPhotoUrl(req, photoPath) {
   if (!photoPath) return null;
   const base = getWaschenMobilePublicBase(req);
