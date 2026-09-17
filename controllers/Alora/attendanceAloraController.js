@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { safeAloraMobileQuery, safeQuery } from "../../db/pool.js";
+import { resolveFinalStatus } from "../../utils/attendanceStatusResolver.js";
 
 const ALLOWED_STATUS_LABELS = new Set([
 	"Belum check-in",
@@ -42,10 +43,26 @@ function toDateInput(date) {
 	return `${year}-${month}-${day}`;
 }
 
+function toDateOnlyJakarta(value) {
+	if (value == null || value === "") return null;
+	if (typeof value === "string") {
+		const s = value.trim();
+		if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+	}
+	const d = value instanceof Date ? value : new Date(value);
+	if (Number.isNaN(d.getTime())) return null;
+	return new Intl.DateTimeFormat("en-CA", {
+		timeZone: "Asia/Jakarta",
+		year: "numeric",
+		month: "2-digit",
+		day: "2-digit",
+	}).format(d);
+}
+
 function toDateOnly(value) {
 	if (!value) return null;
-	if (value instanceof Date) return toDateInput(value);
-	return String(value).slice(0, 10);
+	if (value instanceof Date) return toDateOnlyJakarta(value);
+	return toDateOnlyJakarta(value) || String(value).slice(0, 10);
 }
 
 function getDefaultCutoffRange(now = new Date()) {
@@ -201,6 +218,257 @@ async function getMatchedEmployeeIdsBySearch(search) {
 		.filter((id) => Number.isInteger(id) && id > 0);
 }
 
+async function fetchLemburHoursByDay(employeeIds, startDate, endDate) {
+	const ids = [...new Set((employeeIds || []).map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))];
+	const map = new Map();
+	if (ids.length === 0) return map;
+	const placeholders = ids.map(() => "?").join(",");
+	const [rows] = await safeAloraMobileQuery(
+		`SELECT employee_id, work_date, SUM(duration_hours) AS lembur_hours
+		 FROM tr_worker_lembur_ro
+		 WHERE request_type = 'lembur' AND status = 'disetujui'
+		   AND work_date >= ? AND work_date <= ?
+		   AND employee_id IN (${placeholders})
+		 GROUP BY employee_id, work_date`,
+		[startDate, endDate, ...ids]
+	);
+	for (const row of rows || []) {
+		const empId = Number(row.employee_id);
+		const workDate = toDateOnly(row.work_date);
+		if (!empId || !workDate) continue;
+		map.set(`${empId}|${workDate}`, Number(row.lembur_hours) || 0);
+	}
+	return map;
+}
+
+async function fetchLemburTotalsByEmployee(employeeIds, startDate, endDate) {
+	const ids = [...new Set((employeeIds || []).map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))];
+	const map = new Map();
+	if (ids.length === 0) return map;
+	const placeholders = ids.map(() => "?").join(",");
+	const [rows] = await safeAloraMobileQuery(
+		`SELECT employee_id,
+		        SUM(duration_hours) AS total_lembur_hours,
+		        COUNT(*) AS lembur_count
+		 FROM tr_worker_lembur_ro
+		 WHERE request_type = 'lembur' AND status = 'disetujui'
+		   AND work_date >= ? AND work_date <= ?
+		   AND employee_id IN (${placeholders})
+		 GROUP BY employee_id`,
+		[startDate, endDate, ...ids]
+	);
+	for (const row of rows || []) {
+		map.set(Number(row.employee_id), {
+			total_lembur_hours: Number(row.total_lembur_hours) || 0,
+			lembur_count: Number(row.lembur_count) || 0,
+		});
+	}
+	return map;
+}
+
+async function fetchReplaceOffBalances(employeeIds) {
+	const ids = [...new Set((employeeIds || []).map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))];
+	const map = new Map();
+	if (ids.length === 0) return map;
+	const placeholders = ids.map(() => "?").join(",");
+	const [rows] = await safeAloraMobileQuery(
+		`SELECT l.employee_id, l.balance_after
+		 FROM tr_replace_off_ledger l
+		 INNER JOIN (
+		   SELECT employee_id, MAX(id) AS max_id
+		   FROM tr_replace_off_ledger
+		   WHERE employee_id IN (${placeholders})
+		   GROUP BY employee_id
+		 ) t ON l.id = t.max_id`,
+		ids
+	);
+	for (const row of rows || []) {
+		map.set(Number(row.employee_id), row.balance_after != null ? Number(row.balance_after) : 0);
+	}
+	return map;
+}
+
+async function fetchOvertimeBalances(employeeIds) {
+	const ids = [...new Set((employeeIds || []).map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))];
+	const map = new Map();
+	if (ids.length === 0) return map;
+	const placeholders = ids.map(() => "?").join(",");
+	const [rows] = await safeAloraMobileQuery(
+		`SELECT l.employee_id, l.balance_after
+		 FROM tr_overtime_ledger l
+		 INNER JOIN (
+		   SELECT employee_id, MAX(id) AS max_id
+		   FROM tr_overtime_ledger
+		   WHERE employee_id IN (${placeholders})
+		   GROUP BY employee_id
+		 ) t ON l.id = t.max_id`,
+		ids
+	);
+	for (const row of rows || []) {
+		map.set(Number(row.employee_id), row.balance_after != null ? Number(row.balance_after) : 0);
+	}
+	return map;
+}
+
+async function fetchRoEarnedByEmployee(employeeIds, startDate, endDate) {
+	const ids = [...new Set((employeeIds || []).map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))];
+	const map = new Map();
+	const where = [
+		"l.mutation_type = 'earned'",
+		`(
+			(l.attendance_id IS NOT NULL AND a.attendance_date >= ? AND a.attendance_date <= ?)
+			OR (l.attendance_id IS NULL AND DATE(l.created_at) >= ? AND DATE(l.created_at) <= ?)
+		)`,
+	];
+	const params = [startDate, endDate, startDate, endDate];
+	if (ids.length > 0) {
+		where.push(`l.employee_id IN (${ids.map(() => "?").join(",")})`);
+		params.push(...ids);
+	}
+	const [rows] = await safeAloraMobileQuery(
+		`SELECT l.employee_id, SUM(l.hours) AS total_ro_earned_hours
+		 FROM tr_replace_off_ledger l
+		 LEFT JOIN tr_worker_attendance a ON a.id = l.attendance_id
+		 WHERE ${where.join(" AND ")}
+		 GROUP BY l.employee_id`,
+		params
+	);
+	for (const row of rows || []) {
+		const empId = Number(row.employee_id);
+		if (!empId) continue;
+		map.set(empId, Number(row.total_ro_earned_hours) || 0);
+	}
+	return map;
+}
+
+async function fetchIzinFundingTotalsByEmployee(employeeIds, startDate, endDate) {
+	const ids = [...new Set((employeeIds || []).map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))];
+	const map = new Map();
+	const where = [
+		"status = 'disetujui'",
+		"leave_type = 'izin'",
+		"start_date <= ?",
+		"end_date >= ?",
+	];
+	const params = [endDate, startDate];
+	if (ids.length > 0) {
+		where.push(`employee_id IN (${ids.map(() => "?").join(",")})`);
+		params.push(...ids);
+	}
+	const [rows] = await safeAloraMobileQuery(
+		`SELECT employee_id,
+		        COALESCE(SUM(funding_ro_hours), 0) AS izin_ro_hours,
+		        COALESCE(SUM(funding_overtime_hours), 0) AS izin_overtime_hours,
+		        COALESCE(SUM(funding_unpaid_hours), 0) AS izin_unpaid_hours
+		 FROM tr_worker_leaves
+		 WHERE ${where.join(" AND ")}
+		 GROUP BY employee_id`,
+		params
+	);
+	for (const row of rows || []) {
+		const empId = Number(row.employee_id);
+		if (!empId) continue;
+		map.set(empId, {
+			izin_ro_hours: Number(row.izin_ro_hours) || 0,
+			izin_overtime_hours: Number(row.izin_overtime_hours) || 0,
+			izin_unpaid_hours: Number(row.izin_unpaid_hours) || 0,
+		});
+	}
+	return map;
+}
+
+function buildLemburSummaryRow({ empId, profile, lemburTot, roEarned, izinFunding, roBalance, overtimeBalance }) {
+	return {
+		employee_id: empId,
+		employee_code: profile.employee_code || null,
+		employee_name: profile.employee_name || `ID ${empId}`,
+		jabatan: profile.jabatan || "-",
+		total_lembur_hours: Number(lemburTot?.total_lembur_hours) || 0,
+		lembur_count: Number(lemburTot?.lembur_count) || 0,
+		total_ro_earned_hours: Number(roEarned) || 0,
+		izin_ro_hours: Number(izinFunding?.izin_ro_hours) || 0,
+		izin_overtime_hours: Number(izinFunding?.izin_overtime_hours) || 0,
+		izin_unpaid_hours: Number(izinFunding?.izin_unpaid_hours) || 0,
+		replace_off_hours: Number(roBalance) || 0,
+		overtime_balance_hours: Number(overtimeBalance) || 0,
+	};
+}
+
+function formatLeaveTimeHHmm(value) {
+	if (value == null || value === "") return null;
+	if (typeof value === "string") {
+		const m = value.trim().match(/^(\d{1,2}):(\d{2})/);
+		if (m) return `${String(m[1]).padStart(2, "0")}:${m[2]}`;
+	}
+	const d = value instanceof Date ? value : new Date(value);
+	if (Number.isNaN(d.getTime())) return null;
+	const parts = new Intl.DateTimeFormat("en-GB", {
+		timeZone: "Asia/Jakarta",
+		hour: "2-digit",
+		minute: "2-digit",
+		hour12: false,
+	}).formatToParts(d);
+	const hour = parts.find((p) => p.type === "hour")?.value || "00";
+	const minute = parts.find((p) => p.type === "minute")?.value || "00";
+	return `${hour}:${minute}`;
+}
+
+function formatLeaveFundingSummary(row) {
+	if (String(row.leave_type || "").toLowerCase() !== "izin") return "-";
+	const parts = [];
+	const ro = Number(row.funding_ro_hours || 0);
+	const ot = Number(row.funding_overtime_hours || 0);
+	const unpaid = Number(row.funding_unpaid_hours || 0);
+	if (ro > 0) parts.push(`RO ${ro}j`);
+	if (ot > 0) parts.push(`Lembur ${ot}j`);
+	if (unpaid > 0) parts.push(`Unpaid ${unpaid}j`);
+	return parts.length > 0 ? parts.join(" + ") : "-";
+}
+
+async function fetchApprovedLeavesForExport({ startDate, endDate, employeeIds = [] }) {
+	const where = ["status = 'disetujui'", "start_date <= ?", "end_date >= ?"];
+	const params = [endDate, startDate];
+	const ids = [...new Set((employeeIds || []).map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))];
+	if (ids.length > 0) {
+		where.push(`employee_id IN (${ids.map(() => "?").join(",")})`);
+		params.push(...ids);
+	}
+	const [rows] = await safeAloraMobileQuery(
+		`SELECT id, employee_id, leave_type, duration_type, start_date, end_date, reason,
+		        start_time, end_time,
+		        funding_ro_hours, funding_overtime_hours, funding_unpaid_hours,
+		        doctor_note_path, doctor_note_file
+		 FROM tr_worker_leaves
+		 WHERE ${where.join(" AND ")}
+		 ORDER BY start_date ASC, id ASC
+		 LIMIT 5000`,
+		params
+	);
+	return rows || [];
+}
+
+async function fetchLemburRowsForExport({ startDate, endDate, employeeIds = [] }) {
+	const where = ["request_type = 'lembur'", "status = 'disetujui'", "work_date >= ?", "work_date <= ?"];
+	const params = [startDate, endDate];
+	const ids = [...new Set((employeeIds || []).map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))];
+	if (ids.length > 0) {
+		where.push(`employee_id IN (${ids.map(() => "?").join(",")})`);
+		params.push(...ids);
+	}
+	const [rows] = await safeAloraMobileQuery(
+		`SELECT employee_id,
+		        SUM(duration_hours) AS total_lembur_hours,
+		        COUNT(*) AS lembur_count
+		 FROM tr_worker_lembur_ro
+		 WHERE ${where.join(" AND ")}
+		 GROUP BY employee_id
+		 ORDER BY total_lembur_hours DESC
+		 LIMIT 5000`,
+		params
+	);
+	return rows || [];
+}
+
 function buildWhereClause({ startDate, endDate, employeeId, employeeIds, matchedEmployeeIds, search, onlyIncomplete, statusFilter }) {
 	const where = ["attendance_date BETWEEN ? AND ?"];
 	const params = [startDate, endDate];
@@ -267,6 +535,7 @@ export const getAttendanceReport = async (req, res) => {
 		const limit = Math.min(Math.max(toPositiveInt(req.query.limit) || 50, 1), 100000);
 		const offset = (page - 1) * limit;
 		const onlyIncomplete = toBoolean(req.query.onlyIncomplete);
+		const includeExport = toBoolean(req.query.includeExport);
 		const statusFilter = String(req.query.status || "").trim();
 		if (statusFilter && !ALLOWED_STATUS_LABELS.has(statusFilter)) {
 			return res.status(400).json({
@@ -309,6 +578,19 @@ export const getAttendanceReport = async (req, res) => {
 					clock_out_longitude,
 					clock_in_location_name,
 					clock_out_location_name,
+					late_category,
+					late_reason,
+					late_minutes,
+					late_status,
+					clock_in_inside_radius,
+					clock_out_inside_radius,
+					attendance_mode,
+					mode_request_id,
+					punch_location_context_in,
+					punch_location_context_out,
+					mode_reason,
+					duration_hours,
+					approval_status,
 					created_at,
 					updated_at
 				FROM tr_worker_attendance
@@ -407,15 +689,66 @@ export const getAttendanceReport = async (req, res) => {
 
 		const employeeMap = await getEmployeeMap(allEmployeeIds);
 
+		const pageEmployeeIds = [
+			...new Set((rows || []).map((r) => Number(r.employee_id)).filter((id) => Number.isInteger(id) && id > 0)),
+		];
+		let leaveRows = [];
+		let sessionRows = [];
+		let lemburByDay = new Map();
+		if (pageEmployeeIds.length > 0) {
+			const placeholders = pageEmployeeIds.map(() => "?").join(",");
+			const [leaves] = await safeAloraMobileQuery(
+				`SELECT employee_id, leave_type, start_date, end_date, status, doctor_note_path
+				 FROM tr_worker_leaves
+				 WHERE employee_id IN (${placeholders}) AND status = 'disetujui'
+				   AND start_date <= ? AND end_date >= ?`,
+				[...pageEmployeeIds, endDate, startDate]
+			);
+			const [sessions] = await safeAloraMobileQuery(
+				`SELECT employee_id, session_type, work_date, status
+				 FROM tr_attendance_sessions
+				 WHERE employee_id IN (${placeholders}) AND work_date >= ? AND work_date <= ?`,
+				[...pageEmployeeIds, startDate, endDate]
+			);
+			leaveRows = leaves || [];
+			sessionRows = sessions || [];
+			lemburByDay = await fetchLemburHoursByDay(pageEmployeeIds, startDate, endDate);
+		}
+
+		const summaryEmployeeIds = [
+			...new Set((employeeSummaryRows || []).map((r) => Number(r.employee_id)).filter((id) => Number.isInteger(id) && id > 0)),
+		];
+		const lemburTotalsMap = await fetchLemburTotalsByEmployee(summaryEmployeeIds, startDate, endDate);
+		const roBalanceMap = await fetchReplaceOffBalances(summaryEmployeeIds);
+		const overtimeBalanceMap = await fetchOvertimeBalances(summaryEmployeeIds);
+		const roEarnedMap = await fetchRoEarnedByEmployee(summaryEmployeeIds, startDate, endDate);
+		const izinFundingMap = await fetchIzinFundingTotalsByEmployee(summaryEmployeeIds, startDate, endDate);
+
 		const records = (rows || []).map((row) => {
 			const profile = employeeMap.get(Number(row.employee_id)) || {};
+			const workDate = toDateOnly(row.attendance_date);
+			const empId = Number(row.employee_id);
+			const empLeaves = leaveRows.filter((l) => Number(l.employee_id) === empId);
+			const empSessions = sessionRows.filter((s) => Number(s.employee_id) === empId);
+			const finalStatus = resolveFinalStatus({
+				date: workDate,
+				attendance: row,
+				leaves: empLeaves,
+				sessions: empSessions,
+			});
+			const mode = row.attendance_mode || "regular";
+			const ctxIn = row.punch_location_context_in || "remote";
+			let modeLabel = "Harian";
+			if (mode === "wfa") modeLabel = "WFA";
+			else if (mode === "wod") modeLabel = ctxIn === "office" ? "WOD Office" : "WOD Remote";
+			const lemburHours = lemburByDay.get(`${empId}|${workDate}`) || 0;
 			return {
 				attendance_id: Number(row.id),
-				employee_id: Number(row.employee_id),
+				employee_id: empId,
 				employee_code: profile.employee_code || null,
 				employee_name: profile.employee_name || `ID ${row.employee_id}`,
 				jabatan: profile.jabatan || "-",
-				work_date: toDateOnly(row.attendance_date),
+				work_date: workDate,
 				check_in_time: row.clock_in || null,
 				check_out_time: row.clock_out || null,
 				check_in_photo_url: buildAttendancePhotoUrl(row.foto_masuk_path),
@@ -427,19 +760,63 @@ export const getAttendanceReport = async (req, res) => {
 				clock_in_location_name: row.clock_in_location_name || null,
 				clock_out_location_name: row.clock_out_location_name || null,
 				status_label: getRecordStatus(row),
+				late_category: row.late_category || null,
+				late_category_label:
+					row.late_category === "planned"
+						? "Terlambat Terencana"
+						: row.late_category === "unexpected"
+							? "Tidak Terencana"
+							: (
+								(row.late_minutes != null && Number(row.late_minutes) > 0)
+								|| Boolean(String(row.late_reason || "").trim())
+							)
+								? "Terlambat"
+								: null,
+				late_reason: row.late_reason || null,
+				late_minutes: row.late_minutes != null ? Number(row.late_minutes) : null,
+				late_status: row.late_status || null,
+				final_status: finalStatus.status_label,
+				final_status_code: finalStatus.primary_status,
+				late_flag: finalStatus.late_flag,
+				approval_pending: finalStatus.approval_pending || false,
+				attendance_mode: mode,
+				mode_label: modeLabel,
+				mode_request_id: row.mode_request_id != null ? Number(row.mode_request_id) : null,
+				location_context: ctxIn === "office" ? "Office" : "Remote",
+				duration_hours: row.duration_hours != null ? Number(row.duration_hours) : null,
+				lembur_hours: lemburHours,
+				approval_status: row.approval_status || null,
+				mode_reason: row.mode_reason || null,
+				clock_in_inside_radius: row.clock_in_inside_radius != null ? Boolean(row.clock_in_inside_radius) : null,
+				clock_out_inside_radius: row.clock_out_inside_radius != null ? Boolean(row.clock_out_inside_radius) : null,
 			};
 		});
 
 		const employeeSummary = (employeeSummaryRows || []).map((row) => {
 			const profile = employeeMap.get(Number(row.employee_id)) || {};
+			const empId = Number(row.employee_id);
+			const lemburTot = lemburTotalsMap.get(empId) || { total_lembur_hours: 0, lembur_count: 0 };
+			const izinFunding = izinFundingMap.get(empId) || {
+				izin_ro_hours: 0,
+				izin_overtime_hours: 0,
+				izin_unpaid_hours: 0,
+			};
 			return {
-				employee_id: Number(row.employee_id),
+				employee_id: empId,
 				employee_name: profile.employee_name || `ID ${row.employee_id}`,
 				employee_code: profile.employee_code || null,
 				jabatan: profile.jabatan || "-",
 				record_count: Number(row.record_count || 0),
 				complete_count: Number(row.complete_count || 0),
 				incomplete_count: Number(row.incomplete_count || 0),
+				total_lembur_hours: lemburTot.total_lembur_hours,
+				lembur_count: lemburTot.lembur_count,
+				total_ro_earned_hours: roEarnedMap.has(empId) ? roEarnedMap.get(empId) : 0,
+				izin_ro_hours: izinFunding.izin_ro_hours,
+				izin_overtime_hours: izinFunding.izin_overtime_hours,
+				izin_unpaid_hours: izinFunding.izin_unpaid_hours,
+				replace_off_hours: roBalanceMap.has(empId) ? roBalanceMap.get(empId) : 0,
+				overtime_balance_hours: overtimeBalanceMap.has(empId) ? overtimeBalanceMap.get(empId) : 0,
 			};
 		});
 
@@ -457,6 +834,134 @@ export const getAttendanceReport = async (req, res) => {
 
 		const summary = summaryRows?.[0] || {};
 
+		let lemburSummary = [];
+		let leavesIzinCuti = [];
+		let leavesSakit = [];
+
+		if (includeExport) {
+			const exportEmpFilter = employeeId
+				? [employeeId]
+				: employeeIds.length > 0
+					? employeeIds
+					: matchedEmployeeIds.length > 0 && search
+						? matchedEmployeeIds
+						: [];
+
+			const lemburAggRows = await fetchLemburRowsForExport({
+				startDate,
+				endDate,
+				employeeIds: exportEmpFilter,
+			});
+			const lemburTotByEmp = new Map(
+				lemburAggRows.map((r) => [
+					Number(r.employee_id),
+					{
+						total_lembur_hours: Number(r.total_lembur_hours) || 0,
+						lembur_count: Number(r.lembur_count) || 0,
+					},
+				])
+			);
+
+			const leaveRowsExport = await fetchApprovedLeavesForExport({
+				startDate,
+				endDate,
+				employeeIds: exportEmpFilter,
+			});
+
+			const exportRoEarnedMap = await fetchRoEarnedByEmployee(exportEmpFilter, startDate, endDate);
+			const exportIzinFundingMap = await fetchIzinFundingTotalsByEmployee(exportEmpFilter, startDate, endDate);
+
+			const unionEmpIds = [
+				...new Set([
+					...lemburTotByEmp.keys(),
+					...exportRoEarnedMap.keys(),
+					...exportIzinFundingMap.keys(),
+					...summaryEmployeeIds,
+				]),
+			].filter((id) => Number.isInteger(id) && id > 0);
+
+			const filteredUnionEmpIds = unionEmpIds.filter((empId) => {
+				const lemburTot = lemburTotByEmp.get(empId);
+				const roEarned = Number(exportRoEarnedMap.get(empId) || 0);
+				const izin = exportIzinFundingMap.get(empId) || {
+					izin_ro_hours: 0,
+					izin_overtime_hours: 0,
+					izin_unpaid_hours: 0,
+				};
+				const hasLembur = (Number(lemburTot?.total_lembur_hours) || 0) > 0 || (Number(lemburTot?.lembur_count) || 0) > 0;
+				const hasFunding =
+					roEarned > 0
+					|| Number(izin.izin_ro_hours) > 0
+					|| Number(izin.izin_overtime_hours) > 0
+					|| Number(izin.izin_unpaid_hours) > 0;
+				return hasLembur || hasFunding;
+			});
+
+			const exportEmpMap = await getEmployeeMap([
+				...new Set([
+					...filteredUnionEmpIds,
+					...leaveRowsExport.map((r) => Number(r.employee_id)).filter((id) => Number.isInteger(id) && id > 0),
+				]),
+			]);
+			const exportRoMap = await fetchReplaceOffBalances(filteredUnionEmpIds);
+			const exportOtMap = await fetchOvertimeBalances(filteredUnionEmpIds);
+
+			lemburSummary = filteredUnionEmpIds
+				.map((empId) => {
+					const profile = exportEmpMap.get(empId) || employeeMap.get(empId) || {};
+					return buildLemburSummaryRow({
+						empId,
+						profile,
+						lemburTot: lemburTotByEmp.get(empId),
+						roEarned: exportRoEarnedMap.get(empId) || 0,
+						izinFunding: exportIzinFundingMap.get(empId),
+						roBalance: exportRoMap.has(empId) ? exportRoMap.get(empId) : 0,
+						overtimeBalance: exportOtMap.has(empId) ? exportOtMap.get(empId) : 0,
+					});
+				})
+				.sort((a, b) => {
+					const diff = Number(b.total_lembur_hours) - Number(a.total_lembur_hours);
+					if (diff !== 0) return diff;
+					return String(a.employee_name || "").localeCompare(String(b.employee_name || ""), "id");
+				});
+
+			for (const row of leaveRowsExport) {
+				const empId = Number(row.employee_id);
+				const profile = exportEmpMap.get(empId) || employeeMap.get(empId) || {};
+				const leaveType = String(row.leave_type || "").toLowerCase();
+				const base = {
+					id: Number(row.id),
+					employee_id: empId,
+					employee_code: profile.employee_code || null,
+					employee_name: profile.employee_name || `ID ${empId}`,
+					jabatan: profile.jabatan || "-",
+					leave_type: leaveType,
+					duration_type: row.duration_type || null,
+					start_date: toDateOnly(row.start_date),
+					end_date: toDateOnly(row.end_date),
+					start_time: formatLeaveTimeHHmm(row.start_time),
+					end_time: formatLeaveTimeHHmm(row.end_time),
+					reason: row.reason || null,
+					funding_summary: formatLeaveFundingSummary(row),
+					funding_ro_hours: Number(row.funding_ro_hours) || 0,
+					funding_overtime_hours: Number(row.funding_overtime_hours) || 0,
+					funding_unpaid_hours: Number(row.funding_unpaid_hours) || 0,
+				};
+				if (leaveType === "izin" || leaveType === "cuti") {
+					leavesIzinCuti.push(base);
+				} else if (leaveType === "sakit") {
+					const hasNote = Boolean(
+						(row.doctor_note_path && String(row.doctor_note_path).trim())
+						|| (row.doctor_note_file && String(row.doctor_note_file).trim())
+					);
+					leavesSakit.push({
+						...base,
+						sakit_type: hasNote ? "SKD" : "Non-SKD",
+					});
+				}
+			}
+		}
+
 		return res.json({
 			success: true,
 			filters: {
@@ -467,6 +972,7 @@ export const getAttendanceReport = async (req, res) => {
 				search: search || null,
 				onlyIncomplete,
 				status: statusFilter || null,
+				includeExport,
 			},
 			pagination: {
 				total,
@@ -484,6 +990,9 @@ export const getAttendanceReport = async (req, res) => {
 			},
 			employeeOptions,
 			employeeSummary,
+			lemburSummary,
+			leavesIzinCuti,
+			leavesSakit,
 			records,
 			period: { startDate, endDate },
 		});

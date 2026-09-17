@@ -1,8 +1,4 @@
-import path from "path";
 import { safeAloraMobileQuery, safeQuery } from "../../db/pool.js";
-import { deductAnnualLeaveForApprovedLeave } from "../../utils/annualLeaveService.js";
-import { applyLeaveFundingOnApprove } from "../../utils/leaveFundingService.js";
-import { isRoOnlyIzin } from "../../utils/leaveApprovalRules.js";
 
 const HRD_POSITION_IDS = [1, 8, 17, 18, 19];
 const ALLOWED_STATUSES = new Set([
@@ -12,7 +8,7 @@ const ALLOWED_STATUSES = new Set([
 	"Rejected_HRD",
 	"disetujui",
 ]);
-const ALLOWED_LEAVE_TYPES = new Set(["izin", "sakit", "cuti"]);
+const ALLOWED_REQUEST_TYPES = new Set(["lembur", "replace_off"]);
 
 function toISODateString(value) {
 	return /^\d{4}-\d{2}-\d{2}$/.test(value || "") ? value : null;
@@ -71,15 +67,6 @@ async function getEmployeeDetails(employeeId) {
 	return rows[0] || null;
 }
 
-function buildLeavePhotoUrl(fileName) {
-	if (!fileName) return null;
-	if (/^https?:\/\//i.test(fileName)) return fileName;
-	const base = (process.env.ALORA_MOBILE_LEAVE_BASE_URL || "").replace(/\/+$/, "");
-	const name = path.basename(fileName);
-	if (!base) return null;
-	return `${base}/${name}`;
-}
-
 async function getEmployeeMap(employeeIds) {
 	const uniqueIds = [...new Set(employeeIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))];
 	if (uniqueIds.length === 0) return new Map();
@@ -117,7 +104,22 @@ async function getEmployeeMap(employeeIds) {
 	return map;
 }
 
-export const getLeaves = async (req, res) => {
+function formatTimeFromDate(value) {
+	if (!value) return null;
+	const d = new Date(value);
+	if (Number.isNaN(d.getTime())) return null;
+	const parts = new Intl.DateTimeFormat("en-GB", {
+		timeZone: "Asia/Jakarta",
+		hour: "2-digit",
+		minute: "2-digit",
+		hour12: false,
+	}).formatToParts(d);
+	const hour = parts.find((p) => p.type === "hour")?.value || "00";
+	const minute = parts.find((p) => p.type === "minute")?.value || "00";
+	return `${hour}:${minute}`;
+}
+
+export const getLemburRoList = async (req, res) => {
 	try {
 		if (!req.session?.employeeId) {
 			return res.status(400).json({ message: "Sesi karyawan tidak valid" });
@@ -134,9 +136,10 @@ export const getLeaves = async (req, res) => {
 			});
 		}
 
-		const leaveTypeFilter = String(req.query.leaveType || "").toLowerCase();
-		if (leaveTypeFilter && !ALLOWED_LEAVE_TYPES.has(leaveTypeFilter)) {
-			return res.status(400).json({ message: "Tipe cuti tidak valid. Gunakan: izin, sakit, cuti" });
+		// Modul form hanya tampilkan lembur (bukan replace_off historis)
+		const requestTypeFilterRaw = String(req.query.requestType || "").toLowerCase();
+		if (requestTypeFilterRaw && requestTypeFilterRaw !== "lembur" && !ALLOWED_REQUEST_TYPES.has(requestTypeFilterRaw)) {
+			return res.status(400).json({ message: "Jenis tidak valid. Gunakan: lembur" });
 		}
 
 		const page = Math.max(1, toPositiveInt(req.query.page) || 1);
@@ -144,16 +147,12 @@ export const getLeaves = async (req, res) => {
 		const offset = (page - 1) * limit;
 		const search = String(req.query.search || "").trim().slice(0, 100);
 
-		const where = ["l.start_date <= ?", "l.end_date >= ?"];
-		const params = [endDate, startDate];
+		const where = ["l.work_date >= ?", "l.work_date <= ?", "l.request_type = ?"];
+		const params = [startDate, endDate, "lembur"];
 
 		if (statusFilter) {
 			where.push("l.status = ?");
 			params.push(statusFilter);
-		}
-		if (leaveTypeFilter) {
-			where.push("l.leave_type = ?");
-			params.push(leaveTypeFilter);
 		}
 		if (search) {
 			where.push("CAST(l.employee_id AS CHAR) LIKE ?");
@@ -163,7 +162,7 @@ export const getLeaves = async (req, res) => {
 		const whereSql = where.join(" AND ");
 
 		const [countRows] = await safeAloraMobileQuery(
-			`SELECT COUNT(*) AS total FROM tr_worker_leaves l WHERE ${whereSql}`,
+			`SELECT COUNT(*) AS total FROM tr_worker_lembur_ro l WHERE ${whereSql}`,
 			params
 		);
 		const total = Number(countRows?.[0]?.total || 0);
@@ -174,20 +173,15 @@ export const getLeaves = async (req, res) => {
 				SELECT
 					l.id,
 					l.employee_id,
-					l.leave_type,
-					l.duration_type,
-					l.start_date,
-					l.end_date,
-					l.start_time,
-					l.end_time,
-					l.leave_duration_hours,
-					l.funding_ro_hours,
-					l.funding_overtime_hours,
-					l.funding_unpaid_hours,
-					l.funding_sources,
-					l.reason,
-					l.doctor_note_file,
-					l.doctor_note_path,
+					l.request_type,
+					l.work_date,
+					l.start_at,
+					l.end_at,
+					l.duration_hours,
+					l.description,
+					l.todo_items,
+					l.compensation_type,
+					l.replacement_date,
 					l.status,
 					l.department_id,
 					l.supervisor_id,
@@ -202,7 +196,7 @@ export const getLeaves = async (req, res) => {
 					l.approved_at,
 					l.created_at,
 					l.updated_at
-				FROM tr_worker_leaves l
+				FROM tr_worker_lembur_ro l
 				WHERE ${whereSql}
 				ORDER BY l.created_at DESC
 				LIMIT ? OFFSET ?
@@ -221,19 +215,33 @@ export const getLeaves = async (req, res) => {
 			const empInfo = employeeMap.get(Number(row.employee_id)) || {};
 			const spvInfo = employeeMap.get(Number(row.supervisor_id)) || {};
 			const hrdInfo = employeeMap.get(Number(row.hrd_id)) || {};
+			let todoItems = row.todo_items;
+			if (typeof todoItems === "string") {
+				try {
+					todoItems = JSON.parse(todoItems);
+				} catch {
+					todoItems = null;
+				}
+			}
+			if (!Array.isArray(todoItems)) todoItems = null;
 			return {
 				...row,
+				work_date: toDateInput(row.work_date),
+				replacement_date: row.replacement_date ? toDateInput(row.replacement_date) : null,
+				start_time: formatTimeFromDate(row.start_at),
+				end_time: formatTimeFromDate(row.end_at),
+				duration_hours: row.duration_hours != null ? Number(row.duration_hours) : null,
+				todo_items: todoItems,
 				employee_name: empInfo.employee_name || `ID ${row.employee_id}`,
 				jabatan: empInfo.jabatan || "-",
 				department_name: empInfo.department_name || "-",
 				supervisor_name: spvInfo.employee_name || null,
 				hrd_name: hrdInfo.employee_name || row.approved_by_name || null,
-				doctor_note_url: buildLeavePhotoUrl(row.doctor_note_file || row.doctor_note_path),
 			};
 		});
 
 		const [summaryRows] = await safeAloraMobileQuery(
-			`SELECT status, COUNT(*) AS cnt FROM tr_worker_leaves GROUP BY status`,
+			`SELECT status, COUNT(*) AS cnt FROM tr_worker_lembur_ro GROUP BY status`,
 			[]
 		);
 		const statusCounts = {
@@ -254,8 +262,8 @@ export const getLeaves = async (req, res) => {
 			period: { startDate, endDate },
 		});
 	} catch (err) {
-		console.error("[alora getLeaves] Error:", err);
-		return res.status(500).json({ message: "Gagal mengambil data perizinan Alora" });
+		console.error("[alora getLemburRoList] Error:", err);
+		return res.status(500).json({ message: "Gagal mengambil data lembur & RO Alora" });
 	}
 };
 
@@ -272,51 +280,33 @@ export const approveSupervisor = async (req, res) => {
 			return res.status(403).json({ message: "Hanya supervisor yang dapat memberikan persetujuan" });
 		}
 
-		const [rows] = await safeAloraMobileQuery(`SELECT * FROM tr_worker_leaves WHERE id = ?`, [id]);
-		const leave = rows[0];
-		if (!leave) return res.status(404).json({ message: "Pengajuan tidak ditemukan" });
-		if (leave.status !== "Pending_Supervisor") {
+		const [rows] = await safeAloraMobileQuery(`SELECT * FROM tr_worker_lembur_ro WHERE id = ?`, [id]);
+		const item = rows[0];
+		if (!item) return res.status(404).json({ message: "Pengajuan tidak ditemukan" });
+		if (item.status !== "Pending_Supervisor") {
 			return res.status(400).json({ message: "Status pengajuan tidak valid untuk persetujuan supervisor" });
 		}
-		if (Number(currentEmp.department_id) !== Number(leave.department_id)) {
+		if (Number(currentEmp.department_id) !== Number(item.department_id)) {
 			return res.status(403).json({ message: "Anda hanya dapat menyetujui pengajuan dari departemen Anda sendiri" });
 		}
 
-		if (isRoOnlyIzin(leave)) {
-			await safeAloraMobileQuery(
-				`UPDATE tr_worker_leaves SET
-					status = 'disetujui',
-					supervisor_id = ?,
-					supervisor_approved_at = NOW(),
-					supervisor_rejection_reason = NULL,
-					approved_by = ?,
-					approved_by_name = ?,
-					approved_at = NOW(),
-					updated_at = NOW()
-				 WHERE id = ?`,
-				[currentEmpId, currentEmpId, currentEmp.full_name || null, id]
-			);
-			await applyLeaveFundingOnApprove(leave);
-			return res.json({ message: "Izin RO berhasil disetujui." });
-		}
-
 		await safeAloraMobileQuery(
-			`UPDATE tr_worker_leaves SET
-				status = 'Pending_HRD',
+			`UPDATE tr_worker_lembur_ro SET
+				status = 'disetujui',
 				supervisor_id = ?,
 				supervisor_approved_at = NOW(),
 				supervisor_rejection_reason = NULL,
+				approved_by = ?,
+				approved_by_name = ?,
+				approved_at = NOW(),
 				updated_at = NOW()
 			 WHERE id = ?`,
-			[currentEmpId, id]
+			[currentEmpId, currentEmpId, currentEmp.full_name || null, id]
 		);
 
-		return res.json({ message: "Persetujuan supervisor berhasil. Status diteruskan ke HRD." });
+		return res.json({ message: "Pengajuan lembur/RO berhasil disetujui." });
 	} catch (err) {
-		console.error("[alora approveSupervisor] Error:", err);
-		if (err.statusCode) {
-			return res.status(err.statusCode).json({ message: err.message });
-		}
+		console.error("[alora lemburRo approveSupervisor] Error:", err);
 		return res.status(500).json({ message: "Gagal melakukan approval supervisor" });
 	}
 };
@@ -337,18 +327,18 @@ export const rejectSupervisor = async (req, res) => {
 			return res.status(403).json({ message: "Hanya supervisor yang dapat menolak pengajuan" });
 		}
 
-		const [rows] = await safeAloraMobileQuery(`SELECT * FROM tr_worker_leaves WHERE id = ?`, [id]);
-		const leave = rows[0];
-		if (!leave) return res.status(404).json({ message: "Pengajuan tidak ditemukan" });
-		if (leave.status !== "Pending_Supervisor") {
+		const [rows] = await safeAloraMobileQuery(`SELECT * FROM tr_worker_lembur_ro WHERE id = ?`, [id]);
+		const item = rows[0];
+		if (!item) return res.status(404).json({ message: "Pengajuan tidak ditemukan" });
+		if (item.status !== "Pending_Supervisor") {
 			return res.status(400).json({ message: "Status pengajuan tidak valid untuk ditolak oleh supervisor" });
 		}
-		if (Number(currentEmp.department_id) !== Number(leave.department_id)) {
+		if (Number(currentEmp.department_id) !== Number(item.department_id)) {
 			return res.status(403).json({ message: "Anda hanya dapat menolak pengajuan dari departemen Anda sendiri" });
 		}
 
 		await safeAloraMobileQuery(
-			`UPDATE tr_worker_leaves SET
+			`UPDATE tr_worker_lembur_ro SET
 				status = 'Rejected_Supervisor',
 				supervisor_id = ?,
 				supervisor_rejection_reason = ?,
@@ -361,7 +351,7 @@ export const rejectSupervisor = async (req, res) => {
 
 		return res.json({ message: "Pengajuan berhasil ditolak oleh supervisor" });
 	} catch (err) {
-		console.error("[alora rejectSupervisor] Error:", err);
+		console.error("[alora lemburRo rejectSupervisor] Error:", err);
 		return res.status(500).json({ message: "Gagal melakukan penolakan supervisor" });
 	}
 };
@@ -379,15 +369,15 @@ export const approveHRD = async (req, res) => {
 			return res.status(403).json({ message: "Hanya HRD yang dapat melakukan tindakan ini" });
 		}
 
-		const [rows] = await safeAloraMobileQuery(`SELECT * FROM tr_worker_leaves WHERE id = ?`, [id]);
-		const leave = rows[0];
-		if (!leave) return res.status(404).json({ message: "Pengajuan tidak ditemukan" });
-		if (leave.status !== "Pending_HRD") {
+		const [rows] = await safeAloraMobileQuery(`SELECT * FROM tr_worker_lembur_ro WHERE id = ?`, [id]);
+		const item = rows[0];
+		if (!item) return res.status(404).json({ message: "Pengajuan tidak ditemukan" });
+		if (item.status !== "Pending_HRD") {
 			return res.status(400).json({ message: "Status pengajuan tidak valid untuk persetujuan HRD" });
 		}
 
 		await safeAloraMobileQuery(
-			`UPDATE tr_worker_leaves SET
+			`UPDATE tr_worker_lembur_ro SET
 				status = 'disetujui',
 				hrd_id = ?,
 				hrd_approved_at = NOW(),
@@ -401,19 +391,9 @@ export const approveHRD = async (req, res) => {
 			[currentEmpId, currentEmpId, currentEmp.full_name || null, id]
 		);
 
-		if (leave.leave_type === "cuti") {
-			await deductAnnualLeaveForApprovedLeave(leave);
-		}
-		if (leave.leave_type === "izin") {
-			await applyLeaveFundingOnApprove(leave);
-		}
-
 		return res.json({ message: "Pengajuan berhasil disetujui HRD" });
 	} catch (err) {
-		console.error("[alora approveHRD] Error:", err);
-		if (err.statusCode) {
-			return res.status(err.statusCode).json({ message: err.message });
-		}
+		console.error("[alora lemburRo approveHRD] Error:", err);
 		return res.status(500).json({ message: "Gagal melakukan approval HRD" });
 	}
 };
@@ -434,15 +414,15 @@ export const rejectHRD = async (req, res) => {
 			return res.status(403).json({ message: "Hanya HRD yang dapat menolak pengajuan" });
 		}
 
-		const [rows] = await safeAloraMobileQuery(`SELECT * FROM tr_worker_leaves WHERE id = ?`, [id]);
-		const leave = rows[0];
-		if (!leave) return res.status(404).json({ message: "Pengajuan tidak ditemukan" });
-		if (leave.status !== "Pending_HRD") {
+		const [rows] = await safeAloraMobileQuery(`SELECT * FROM tr_worker_lembur_ro WHERE id = ?`, [id]);
+		const item = rows[0];
+		if (!item) return res.status(404).json({ message: "Pengajuan tidak ditemukan" });
+		if (item.status !== "Pending_HRD") {
 			return res.status(400).json({ message: "Status pengajuan tidak valid untuk ditolak oleh HRD" });
 		}
 
 		await safeAloraMobileQuery(
-			`UPDATE tr_worker_leaves SET
+			`UPDATE tr_worker_lembur_ro SET
 				status = 'Rejected_HRD',
 				hrd_id = ?,
 				hrd_rejection_reason = ?,
@@ -458,7 +438,7 @@ export const rejectHRD = async (req, res) => {
 
 		return res.json({ message: "Pengajuan berhasil ditolak oleh HRD" });
 	} catch (err) {
-		console.error("[alora rejectHRD] Error:", err);
+		console.error("[alora lemburRo rejectHRD] Error:", err);
 		return res.status(500).json({ message: "Gagal melakukan penolakan HRD" });
 	}
 };

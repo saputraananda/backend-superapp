@@ -72,7 +72,11 @@ import absensiKaryawanCleanoxRoutes from "./routes/Cleanox/absensiKaryawanCleano
 import leavesCleanoxRoutes from "./routes/Cleanox/leavesCleanoxRoutes.js";
 import workerOffDaysCleanoxRoutes from "./routes/Cleanox/workerOffDaysCleanoxRoutes.js";
 import leavesAloraRoutes from "./routes/Alora/leavesAloraRoutes.js";
+import lemburRoAloraRoutes from "./routes/Alora/lemburRoAloraRoutes.js";
+import attendanceSessionAloraRoutes from "./routes/Alora/attendanceSessionAloraRoutes.js";
+import plannedLateAloraRoutes from "./routes/Alora/plannedLateAloraRoutes.js";
 import attendanceAloraRoutes from "./routes/Alora/attendanceAloraRoutes.js";
+import annualLeaveAloraRoutes from "./routes/Alora/annualLeaveAloraRoutes.js";
 import bugarAloraRoutes from "./routes/Alora/bugarAloraRoutes.js";
 import kasbonCleanoxRoutes from "./routes/Cleanox/kasbonCleanoxRoutes.js";
 import overtimeCleanoxRoutes from "./routes/Cleanox/overtimeCleanoxRoutes.js";
@@ -82,6 +86,9 @@ import kpiProduksiRoutes from "./routes/Cleanox/kpiProduksiRoutes.js";
 import masterServicesRoutes from "./routes/Cleanox/masterServicesRoutes.js";
 import masterCategoryRoutes from "./routes/Cleanox/masterCategoryRoutes.js";
 import targetCleanoxRoutes from "./routes/Cleanox/targetCleanoxRoutes.js";
+import riwayatTransaksiCleanoxRoutes from "./routes/Cleanox/riwayatTransaksiCleanoxRoutes.js";
+import pendapatanCleanoxRoutes from "./routes/Cleanox/pendapatanCleanoxRoutes.js";
+import piutangDashboardCleanoxRoutes from "./routes/Cleanox/piutangDashboardCleanoxRoutes.js";
 import employeeWaschenRoutes from "./routes/MyWaschen/employeeWaschenRoutes.js";
 import categoryServicesRoutes from "./routes/MyWaschen/MasterData/CategoryServicesRoutes.js";
 import servicesWaschenRoutes from "./routes/MyWaschen/MasterData/ServicesRoutes.js";
@@ -260,7 +267,9 @@ app.use("/assets/training_evidence", express.static(path.join(ASSETS_BASE, "trai
 app.use("/assets/pm_evidence", express.static(path.join(ASSETS_BASE, "pm_evidence")));
 app.use("/storage/assets/payslip", express.static(path.join(ASSETS_BASE, "payslip")));
 
-
+const ALORA_BOD_DIR =
+	process.env.ALORA_MOBILE_ATTENDANCE_DIR || path.join(__dirname, "uploads", "alora-bod");
+app.use("/alora/attendance-sessions/bod", express.static(ALORA_BOD_DIR));
 
 // =========================
 // Routes
@@ -317,7 +326,11 @@ app.use("/ikm/absensi", absensiIKMRoutes);
 app.use("/ikm/employees", employeeIKMRoutes);
 app.use("/ikm/leaves", leavesIKMRoutes);
 app.use("/alora/leaves", leavesAloraRoutes);
+app.use("/alora/lembur-ro", lemburRoAloraRoutes);
+app.use("/alora/attendance-sessions", attendanceSessionAloraRoutes);
+app.use("/alora/planned-late", plannedLateAloraRoutes);
 app.use("/alora/attendance", attendanceAloraRoutes);
+app.use("/alora/annual-leave", annualLeaveAloraRoutes);
 app.use("/alora/bugar", bugarAloraRoutes);
 app.use("/ikm/master-absensi", masterAbsensiRoutes);
 app.use("/ikm/master-rs", masterRsIkmRoutes);
@@ -356,6 +369,9 @@ app.use("/kpi", kpiProduksiRoutes);
 app.use("/master-services", masterServicesRoutes);
 app.use("/master-categories", masterCategoryRoutes);
 app.use("/target-cleanox", targetCleanoxRoutes);
+app.use("/cleanox/riwayat-transaksi", riwayatTransaksiCleanoxRoutes);
+app.use("/cleanox/pendapatan", pendapatanCleanoxRoutes);
+app.use("/cleanox/piutang-dashboard", piutangDashboardCleanoxRoutes);
 app.use("/waschen/employees", employeeWaschenRoutes);
 app.use("/waschen/category-services", categoryServicesRoutes);
 app.use("/waschen/services", servicesWaschenRoutes);
