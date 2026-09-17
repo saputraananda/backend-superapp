@@ -73,7 +73,11 @@ import absensiKaryawanCleanoxRoutes from "./routes/Cleanox/absensiKaryawanCleano
 import leavesCleanoxRoutes from "./routes/Cleanox/leavesCleanoxRoutes.js";
 import workerOffDaysCleanoxRoutes from "./routes/Cleanox/workerOffDaysCleanoxRoutes.js";
 import leavesAloraRoutes from "./routes/Alora/leavesAloraRoutes.js";
+import lemburRoAloraRoutes from "./routes/Alora/lemburRoAloraRoutes.js";
+import attendanceSessionAloraRoutes from "./routes/Alora/attendanceSessionAloraRoutes.js";
+import plannedLateAloraRoutes from "./routes/Alora/plannedLateAloraRoutes.js";
 import attendanceAloraRoutes from "./routes/Alora/attendanceAloraRoutes.js";
+import annualLeaveAloraRoutes from "./routes/Alora/annualLeaveAloraRoutes.js";
 import bugarAloraRoutes from "./routes/Alora/bugarAloraRoutes.js";
 import kasbonCleanoxRoutes from "./routes/Cleanox/kasbonCleanoxRoutes.js";
 import overtimeCleanoxRoutes from "./routes/Cleanox/overtimeCleanoxRoutes.js";
@@ -83,6 +87,9 @@ import kpiProduksiRoutes from "./routes/Cleanox/kpiProduksiRoutes.js";
 import masterServicesRoutes from "./routes/Cleanox/masterServicesRoutes.js";
 import masterCategoryRoutes from "./routes/Cleanox/masterCategoryRoutes.js";
 import targetCleanoxRoutes from "./routes/Cleanox/targetCleanoxRoutes.js";
+import riwayatTransaksiCleanoxRoutes from "./routes/Cleanox/riwayatTransaksiCleanoxRoutes.js";
+import pendapatanCleanoxRoutes from "./routes/Cleanox/pendapatanCleanoxRoutes.js";
+import piutangDashboardCleanoxRoutes from "./routes/Cleanox/piutangDashboardCleanoxRoutes.js";
 import employeeWaschenRoutes from "./routes/MyWaschen/HRIS/employeeWaschenRoutes.js";
 import customerRoutes from "./routes/MyWaschen/Transaction/CustomerRoutes.js";
 import dashboardWaschenRoutes from "./routes/MyWaschen/Transaction/DashboardRoutes.js";
@@ -299,6 +306,10 @@ if (WASCHEN_MOBILE_KASBON_DIR && fs.existsSync(WASCHEN_MOBILE_KASBON_DIR)) {
   app.use("/uploads/assets/kasbon", express.static(WASCHEN_MOBILE_KASBON_DIR));
 }
 
+const ALORA_BOD_DIR =
+  process.env.ALORA_MOBILE_ATTENDANCE_DIR || path.join(__dirname, "uploads", "alora-bod");
+app.use("/alora/attendance-sessions/bod", express.static(ALORA_BOD_DIR));
+
 // QC produksi (serah terima memakai folder "delivery")
 const PRODUKSI_QC_STAGES = ["frontliner", "washing", "ironing", "packing", "delivery"];
 for (const stage of PRODUKSI_QC_STAGES) {
@@ -364,7 +375,11 @@ app.use("/ikm/absensi", absensiIKMRoutes);
 app.use("/ikm/employees", employeeIKMRoutes);
 app.use("/ikm/leaves", leavesIKMRoutes);
 app.use("/alora/leaves", leavesAloraRoutes);
+app.use("/alora/lembur-ro", lemburRoAloraRoutes);
+app.use("/alora/attendance-sessions", attendanceSessionAloraRoutes);
+app.use("/alora/planned-late", plannedLateAloraRoutes);
 app.use("/alora/attendance", attendanceAloraRoutes);
+app.use("/alora/annual-leave", annualLeaveAloraRoutes);
 app.use("/alora/bugar", bugarAloraRoutes);
 app.use("/ikm/master-absensi", masterAbsensiRoutes);
 app.use("/ikm/master-rs", masterRsIkmRoutes);
@@ -403,6 +418,9 @@ app.use("/kpi", kpiProduksiRoutes);
 app.use("/master-services", masterServicesRoutes);
 app.use("/master-categories", masterCategoryRoutes);
 app.use("/target-cleanox", targetCleanoxRoutes);
+app.use("/cleanox/riwayat-transaksi", riwayatTransaksiCleanoxRoutes);
+app.use("/cleanox/pendapatan", pendapatanCleanoxRoutes);
+app.use("/cleanox/piutang-dashboard", piutangDashboardCleanoxRoutes);
 app.use("/waschen/employees", employeeWaschenRoutes);
 app.use("/waschen/dashboard", dashboardWaschenRoutes);
 app.use("/waschen/customers", customerRoutes);
