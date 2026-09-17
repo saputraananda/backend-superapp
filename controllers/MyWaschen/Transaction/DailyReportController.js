@@ -97,10 +97,12 @@ async function loadVerifiedTransactions(shiftId) {
 export async function getDailyReportList(req, res) {
   try {
     const outletId = req.query.outletId ? Number(req.query.outletId) : null;
-    const date = (req.query.date || new Date().toISOString().slice(0, 10)).slice(0, 10);
+    const today = new Date().toISOString().slice(0, 10);
+    const dateFrom = String(req.query.dateFrom || req.query.date || today).slice(0, 10);
+    const dateTo = String(req.query.dateTo || req.query.date || dateFrom).slice(0, 10);
 
-    const params = [date];
-    let sql = `${SHIFT_SELECT} WHERE DATE(s.opened_at) = ?`;
+    const params = [dateFrom, dateTo];
+    let sql = `${SHIFT_SELECT} WHERE DATE(s.opened_at) >= ? AND DATE(s.opened_at) <= ?`;
     if (outletId) {
       sql += " AND s.outlet_id = ?";
       params.push(outletId);
@@ -125,7 +127,7 @@ export async function getDailyReportList(req, res) {
     return res.json({
       success: true,
       data,
-      meta: { outletId, date, total: data.length },
+      meta: { outletId, dateFrom, dateTo, total: data.length },
     });
   } catch (err) {
     console.error("getDailyReportList:", err);

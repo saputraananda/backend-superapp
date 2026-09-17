@@ -3,6 +3,7 @@ import { safeMyWaschenQuery } from "../../../db/pool.js";
 const SORT_COLUMNS = [
   "id", "customer_code", "name", "phone", "email", "city",
   "total_orders", "total_spent", "deposit_balance", "monthly_spending", "created_at",
+  "last_transaction_at",
 ];
 
 const CUSTOMER_SELECT = `
@@ -15,7 +16,13 @@ const CUSTOMER_SELECT = `
          ct.label AS spending_tier_label,
          cs.code AS customer_source_code,
          cs.name AS customer_source_name,
-         cs.label AS customer_source_label
+         cs.label AS customer_source_label,
+         (
+           SELECT MAX(t.order_date)
+           FROM tr_transaction t
+           WHERE t.customer_id = c.id
+             AND COALESCE(t.is_delete_requested, 0) = 0
+         ) AS last_transaction_at
   FROM mst_customer c
   LEFT JOIN mst_outlet o ON o.id = c.preferred_outlet_id
   LEFT JOIN mst_customer_tier ct ON ct.id = c.spending_tier_id
@@ -69,7 +76,10 @@ export const getCustomers = async (req, res) => {
     const spendingTierId = req.query.spendingTierId;
     const customerSourceId = req.query.customerSourceId;
     const preferredOutletId = req.query.preferredOutletId;
-    const sortBy = SORT_COLUMNS.includes(req.query.sortBy) ? req.query.sortBy : "id";
+    const dateFrom = String(req.query.dateFrom || "").trim().slice(0, 10);
+    const dateTo = String(req.query.dateTo || "").trim().slice(0, 10);
+    const sortByRaw = String(req.query.sortBy || "id");
+    const sortBy = SORT_COLUMNS.includes(sortByRaw) ? sortByRaw : "id";
     const sortDir = String(req.query.sortDir || "desc").toLowerCase() === "asc" ? "ASC" : "DESC";
 
     const where = [];
@@ -105,13 +115,56 @@ export const getCustomers = async (req, res) => {
     }
 
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    const orderExpr = sortBy === "last_transaction_at"
+      ? `last_transaction_at`
+      : `c.${sortBy}`;
 
     const [rows] = await safeMyWaschenQuery(
-      `${CUSTOMER_SELECT} ${whereSql} ORDER BY c.${sortBy} ${sortDir}`,
+      `${CUSTOMER_SELECT} ${whereSql} ORDER BY ${orderExpr} ${sortDir}`,
       params
     );
 
-    res.json({ success: true, data: rows });
+    const fromTs = /^\d{4}-\d{2}-\d{2}$/.test(dateFrom)
+      ? new Date(`${dateFrom}T00:00:00`).getTime()
+      : null;
+    const toTs = /^\d{4}-\d{2}-\d{2}$/.test(dateTo)
+      ? new Date(`${dateTo}T23:59:59`).getTime()
+      : null;
+    const now = Date.now();
+    let churnCount = 0;
+    let newCustomers = 0;
+    const hasPeriod = fromTs != null || toTs != null;
+    for (const row of rows) {
+      if (hasPeriod) {
+        const created = row.created_at ? new Date(row.created_at).getTime() : NaN;
+        if (Number.isFinite(created)) {
+          const inFrom = fromTs == null || created >= fromTs;
+          const inTo = toTs == null || created <= toTs;
+          if (inFrom && inTo) newCustomers += 1;
+        }
+      }
+
+      const last = row.last_transaction_at ? new Date(row.last_transaction_at) : null;
+      if (!last || Number.isNaN(last.getTime())) {
+        // Belum pernah transaksi → Lost di POS, bukan Churn
+        continue;
+      }
+      const days = Math.max(0, Math.floor((now - last.getTime()) / (1000 * 60 * 60 * 24)));
+      // Samakan band My Waschen POS: Churn = 46–60 hari sejak order terakhir
+      if (days > 45 && days <= 60) churnCount += 1;
+    }
+
+    res.json({
+      success: true,
+      data: rows,
+      meta: {
+        total: rows.length,
+        newCustomers,
+        churnCount,
+        dateFrom: dateFrom || null,
+        dateTo: dateTo || null,
+      },
+    });
   } catch (err) {
     console.error("getCustomers error:", err);
     res.status(500).json({ success: false, message: err.message });
