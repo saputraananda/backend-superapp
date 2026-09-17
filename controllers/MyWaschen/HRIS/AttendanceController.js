@@ -47,14 +47,41 @@ function attendanceStatusLabel(row) {
 
 
 
-function tryDeleteAttendancePhoto(photoName) {
+/** Hapus foto absensi: lokal (dev path) ATAU remote ke Waschen Mobile (prod HTTP). */
+async function tryDeleteAttendancePhoto(photoName) {
+  if (!photoName) return;
+
   const dir = getWaschenMobileAttendanceDir();
-  if (!dir || !photoName) return;
+  if (dir) {
+    try {
+      const fp = path.join(dir, photoName);
+      if (fs.existsSync(fp)) fs.unlinkSync(fp);
+    } catch (_) {
+      /* ignore */
+    }
+    return;
+  }
+
+  // Prod: file ada di server Waschen Mobile
+  const base = (process.env.WASCHEN_MOBILE_API_URL || "").replace(/\/$/, "");
+  if (!base) return;
+  const secret =
+    process.env.WASCHEN_MOBILE_REALTIME_SECRET ||
+    process.env.REALTIME_SECRET ||
+    process.env.SESSION_SECRET ||
+    "waschensecret";
+
   try {
-    const fp = path.join(dir, photoName);
-    if (fs.existsSync(fp)) fs.unlinkSync(fp);
-  } catch (_) {
-    /* ignore */
+    await fetch(`${base}/api/realtime/delete-upload`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Realtime-Secret": secret,
+      },
+      body: JSON.stringify({ type: "attendance", fileName: photoName }),
+    });
+  } catch (err) {
+    console.warn("[tryDeleteAttendancePhoto] remote skip:", err?.message || err);
   }
 }
 
@@ -487,8 +514,8 @@ export const deleteAttendance = async (req, res) => {
       return res.status(404).json({ success: false, message: "Data absensi tidak ditemukan" });
     }
 
-    tryDeleteAttendancePhoto(existing[0].check_in_photo_name);
-    tryDeleteAttendancePhoto(existing[0].check_out_photo_name);
+    await tryDeleteAttendancePhoto(existing[0].check_in_photo_name);
+    await tryDeleteAttendancePhoto(existing[0].check_out_photo_name);
 
     await safeMyWaschenQuery(`DELETE FROM tr_attendance WHERE attendance_id = ?`, [id]);
 
