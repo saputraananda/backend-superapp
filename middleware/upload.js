@@ -44,11 +44,9 @@ export const CLEANOX_MEAL_DIR = CLEANOX_BASE
   ? path.join(CLEANOX_BASE, "worker-meal")
   : null;
 
-export const CLEANOX_PAYMENT_PROOF_DIR = process.env.CLEANOX_PAYMENT_PROOF_DIR
-  ? path.resolve(process.env.CLEANOX_PAYMENT_PROOF_DIR)
-  : CLEANOX_BASE
-    ? path.join(CLEANOX_BASE, "transaction-payment-proofs")
-    : null;
+export const CLEANOX_PAYMENT_PROOF_DIR = CLEANOX_BASE
+  ? path.join(CLEANOX_BASE, "transaction-payment-proofs")
+  : null;
 
 if (CLEANOX_BASE) {
   [
@@ -57,13 +55,10 @@ if (CLEANOX_BASE) {
     CLEANOX_KEBERSIHAN_DIR,
     CLEANOX_KASBON_DIR,
     CLEANOX_MEAL_DIR,
+    CLEANOX_PAYMENT_PROOF_DIR,
   ].forEach((dir) => {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   });
-}
-
-if (CLEANOX_PAYMENT_PROOF_DIR && !fs.existsSync(CLEANOX_PAYMENT_PROOF_DIR)) {
-  fs.mkdirSync(CLEANOX_PAYMENT_PROOF_DIR, { recursive: true });
 }
 
 // =========================

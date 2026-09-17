@@ -209,7 +209,7 @@ export async function listRiwayatTransaksi(req, res) {
 export async function servePaymentProof(req, res) {
 	try {
 		if (!CLEANOX_PAYMENT_PROOF_DIR) {
-			return res.status(500).json({ message: "CLEANOX_PAYMENT_PROOF_DIR belum dikonfigurasi" });
+			return res.status(500).json({ message: "CLEANOX_BASE_DIR belum dikonfigurasi" });
 		}
 
 		const safeFileName = path.basename(String(req.params.filename || ""));
