@@ -227,7 +227,7 @@ export const getCustomer = async (req, res) => {
   }
 };
 
-// ─── daftar seluruh customer (search + sort, tanpa pagination) ──────────────
+// ─── daftar seluruh customer (paginated + search + sort) ────────────────────
 
 const LIST_SORTS = {
   nama:               "nama",
@@ -249,6 +249,8 @@ export const getCustomerList = async (req, res) => {
     const { clause: dateClause,  params: dateParams  } = buildDateClause(filterType, month, year, startDate, endDate);
 
     const q       = String(req.query.q ?? "").trim().slice(0, 100);
+    const page    = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit   = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 25));
     const sortBy  = LIST_SORTS[req.query.sortBy] || "nama";
     const sortDir = String(req.query.sortDir).toLowerCase() === "desc" ? "DESC" : "ASC";
 
@@ -259,20 +261,25 @@ export const getCustomerList = async (req, res) => {
       params.push(`%${q}%`, `%${q}%`, `%${q}%`);
     }
 
-    const [rows] = await safeSmartlinkQuery(`
-      SELECT
-        TRIM(nama)                                    AS nama,
-        COALESCE(NULLIF(TRIM(alamat), ''), '-')       AS alamat,
-        COALESCE(NULLIF(TRIM(nomor_telpon), ''), '-') AS nomor_telpon,
-        ${OUTLET_CASE}                                AS outlet,
-        terdaftar_sejak,
-        transaksi_terakhir
-      FROM customer
-      ${where}
-      ORDER BY ${sortBy} ${sortDir}
-    `, params);
+    const [[rows], [[countRow]]] = await Promise.all([
+      safeSmartlinkQuery(`
+        SELECT
+          TRIM(nama)                                    AS nama,
+          COALESCE(NULLIF(TRIM(alamat), ''), '-')       AS alamat,
+          COALESCE(NULLIF(TRIM(nomor_telpon), ''), '-') AS nomor_telpon,
+          ${OUTLET_CASE}                                AS outlet,
+          terdaftar_sejak,
+          transaksi_terakhir
+        FROM customer
+        ${where}
+        ORDER BY ${sortBy} ${sortDir}
+        LIMIT ? OFFSET ?
+      `, [...params, limit, (page - 1) * limit]),
+      safeSmartlinkQuery(`SELECT COUNT(*) AS total FROM customer ${where}`, params),
+    ]);
 
-    res.json({ rows, total: rows.length });
+    const total = Number(countRow?.total) || 0;
+    res.json({ rows, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) });
   } catch (err) {
     console.error("[customerController.getCustomerList]", err);
     res.status(500).json({ message: err.message });
