@@ -2,7 +2,7 @@ import express from "express";
 import { getPenjualan } from "../controllers/salesDashboard/salesController.js";
 import { getMembership } from "../controllers/salesDashboard/membershipController.js";
 import { getPiutang } from "../controllers/salesDashboard/piutangController.js";
-import { getCustomer } from "../controllers/salesDashboard/customerController.js";
+import { getCustomer, getCustomerList } from "../controllers/salesDashboard/customerController.js";
 import { getCleanoxByWaschen } from "../controllers/salesDashboard/cleanoxByWaschenController.js";
 import { requireAuth } from "../middleware/auth.js";
 
@@ -14,6 +14,7 @@ router.get("/penjualan", getPenjualan);
 router.get("/membership", getMembership);
 router.get("/piutang", getPiutang);
 router.get("/customer", getCustomer);
+router.get("/customer/list", getCustomerList);
 router.get("/cleanox-by-waschen", getCleanoxByWaschen);
 
 export default router;
