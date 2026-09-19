@@ -5,10 +5,14 @@ import {
   createAttendance,
   updateAttendance,
   deleteAttendance,
+  getAttendanceDetail,
+  getCleanlinessList,
 } from "../../../controllers/MyWaschen/HRIS/AttendanceController.js";
 
 const router = express.Router();
 router.use(requireAuth);
+router.get("/cleanliness", getCleanlinessList);
+router.get("/:id/detail", getAttendanceDetail);
 router.get("/", getAttendanceList);
 router.post("/", createAttendance);
 router.put("/:id", updateAttendance);

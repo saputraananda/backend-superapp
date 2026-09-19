@@ -41,7 +41,7 @@ async function assertWaschenEmployee(employeeId) {
     [id]
   );
   if (!roleRows.length) {
-    const err = new Error("Karyawan belum terdaftar di role My Waschen");
+    const err = new Error("Karyawan belum terdaftar di posisi My Waschen");
     err.status = 403;
     throw err;
   }

@@ -223,7 +223,7 @@ export const updateEmployeeRole = async (req, res) => {
 
     const ALLOWED_ROLES = ["Frontliner", "Washing Staff", "Ironing Staff", "Packing Staff", "Delivery Staff"];
     if (role && !ALLOWED_ROLES.includes(role) && role !== "null" && role !== null) {
-      return res.status(400).json({ message: "Role tidak valid." });
+      return res.status(400).json({ message: "Posisi tidak valid." });
     }
 
     const [emp] = await safeQuery(
@@ -320,14 +320,14 @@ export const updateEmployeeRole = async (req, res) => {
 
     return res.json({
       success: true,
-      message: code_pin !== undefined ? "PIN karyawan berhasil diperbarui." : "Unit/bagian karyawan berhasil diperbarui.",
+      message: code_pin !== undefined ? "PIN karyawan berhasil diperbarui." : "Posisi karyawan berhasil diperbarui.",
       data: code_pin !== undefined ? { code_pin: cleanPin } : undefined,
     });
   } catch (error) {
     console.error("[updateEmployeeRole] Error:", error);
     return res.status(500).json({
       success: false,
-      message: error.message || "Gagal memperbarui unit/bagian karyawan",
+      message: error.message || "Gagal memperbarui posisi karyawan",
     });
   }
 };
