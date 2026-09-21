@@ -3,12 +3,12 @@ import { requireAuth } from "../middleware/auth.js";
 import { uploadPurchase } from "../middleware/upload.js";
 import {
     getSatuan, getCompanies, getOutlets, getVendors, getPeriods, getDepartments,
-    getClassifications,
+    getClassifications, createClassification, getEmployeeOptions,
     getDashboard,
     listMy, listDepartment, listApproval, listAll, listGaReview, getDetail,
     listFinanceReview, listPaymentPending,
     listCredit, getPaymentHistory, addInstallment,
-    createPR, updatePR, deletePR, deleteAttachment,
+    createPR, updatePR, deletePR, deleteAttachment, addAttachments, updateHeaderInfo,
     approvePR, rejectPR,
     approveGA, rejectGA, getPOData,
     approveFinance, rejectFinance,
@@ -26,6 +26,8 @@ router.get("/vendors",     requireAuth, getVendors);
 router.get("/departments", requireAuth, getDepartments);
 router.get("/periods",         requireAuth, getPeriods);
 router.get("/classifications", requireAuth, getClassifications);
+router.post("/classifications", requireAuth, createClassification);
+router.get("/employee-options", requireAuth, getEmployeeOptions);
 
 // ── Dashboard & list ──
 router.get("/dashboard",            requireAuth, getDashboard);
@@ -51,6 +53,8 @@ router.post("/",   requireAuth, uploadPurchase.array("attachments", 10), createP
 router.put("/:id", requireAuth, uploadPurchase.array("attachments", 10), updatePR);
 router.delete("/:id", requireAuth, deletePR);
 router.delete("/attachment/:attachmentId", requireAuth, deleteAttachment);
+router.post("/:id/attachments", requireAuth, uploadPurchase.array("attachments", 10), addAttachments);
+router.put("/:id/header-info",  requireAuth, updateHeaderInfo);
 
 // ── Approval flow ──
 router.post("/:id/approve",         requireAuth, approvePR);

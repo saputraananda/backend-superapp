@@ -247,6 +247,9 @@ export const updateEmployeeRole = async (req, res) => {
         if (!digits) {
           return res.status(400).json({ message: "PIN harus berupa angka." });
         }
+        if (digits.length !== 4) {
+          return res.status(400).json({ message: "PIN harus 4 digit." });
+        }
         cleanPin = digits;
       }
     }

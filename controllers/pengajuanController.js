@@ -180,6 +180,68 @@ const isFinance = (positionName) => {
     return pos.includes("finance") || pos.includes("accounting") || pos.includes("accountiing");
 };
 
+// Hapus file fisik di ASSETS_BASE. Path harus relatif & tetap di dalam base (anti path traversal).
+const removeAssetFile = (relPath) => {
+    if (!relPath) return;
+    try {
+        const base = path.resolve(ASSETS_BASE);
+        const full = path.resolve(base, String(relPath).replace(/^[/\\]+/, ""));
+        if (!full.startsWith(base + path.sep)) return;
+        if (fs.existsSync(full)) fs.unlinkSync(full);
+    } catch (e) {
+        console.warn("[removeAssetFile]", e.message);
+    }
+};
+
+// ── Multi-klasifikasi (tr_purchase_request_classification) ──────────────────
+// Kolom tr_purchase_request.classification_id tetap diisi klasifikasi pertama
+// agar export/report lama tidak rusak.
+const parseClassificationIds = (raw) => {
+    if (raw == null || raw === "") return [];
+    let list = raw;
+    if (typeof raw === "string") {
+        try {
+            const parsed = JSON.parse(raw);
+            list = Array.isArray(parsed) ? parsed : raw.split(",");
+        } catch {
+            list = raw.split(",");
+        }
+    }
+    if (!Array.isArray(list)) list = [list];
+    return [...new Set(list.map(v => Number(v)).filter(v => Number.isInteger(v) && v > 0))];
+};
+
+// Validasi ID ke master; buang yang tidak ada / nonaktif.
+const fetchValidClassifications = async (ids) => {
+    if (!ids.length) return [];
+    const rows = await safeQuery(
+        `SELECT id, classification_name FROM mst_purchase_classification
+         WHERE is_active = 1 AND id IN (${ids.map(() => "?").join(",")})
+         ORDER BY classification_name`,
+        ids
+    );
+    return rows;
+};
+
+const syncClassifications = async (prId, ids) => {
+    await safeQuery(`DELETE FROM tr_purchase_request_classification WHERE pr_id = ?`, [prId]);
+    if (!ids.length) return;
+    await safeQuery(
+        `INSERT IGNORE INTO tr_purchase_request_classification (pr_id, classification_id)
+         VALUES ${ids.map(() => "(?, ?)").join(", ")}`,
+        ids.flatMap(cid => [prId, cid])
+    );
+};
+
+const getClassificationsOfPr = async (prId) => safeQuery(
+    `SELECT c.id, c.classification_name
+     FROM tr_purchase_request_classification prc
+     JOIN mst_purchase_classification c ON c.id = prc.classification_id
+     WHERE prc.pr_id = ?
+     ORDER BY c.classification_name`,
+    [prId]
+);
+
 const writeLog = async (prId, action, employeeId, name, note = null) => {
     await safeQuery(
         `INSERT INTO tr_purchase_request_log (pr_id, action, by_employee_id, by_name, note)
@@ -249,6 +311,63 @@ export const getClassifications = async (_req, res) => {
     } catch (err) {
         console.error("[getClassifications]", err);
         res.status(500).json({ message: "Gagal memuat klasifikasi" });
+    }
+};
+
+// Tambah klasifikasi custom (Finance) — auto Title Case, anti-duplikat
+export const createClassification = async (req, res) => {
+    try {
+        const employeeId = getEmployeeId(req);
+        if (!employeeId) return res.status(401).json({ message: "Unauthorized" });
+        const me = await fetchEmployee(employeeId);
+        if (!me || !isFinance(me.position_name)) {
+            return res.status(403).json({ message: "Akses ditolak: hanya Finance" });
+        }
+
+        const name = titleCase(sanitize(req.body.classification_name));
+        if (!name || name.length < 2 || name.length > 100) {
+            return res.status(400).json({ message: "Nama klasifikasi tidak valid (2–100 karakter)" });
+        }
+
+        const exist = await safeQuery(
+            `SELECT id, classification_name, is_active FROM mst_purchase_classification
+             WHERE LOWER(TRIM(classification_name)) = LOWER(?) LIMIT 1`,
+            [name]
+        );
+        if (exist.length) {
+            if (!Number(exist[0].is_active)) {
+                await safeQuery(`UPDATE mst_purchase_classification SET is_active = 1 WHERE id = ?`, [exist[0].id]);
+            }
+            return res.json({
+                data: { id: exist[0].id, classification_name: exist[0].classification_name },
+                message: "Klasifikasi sudah ada",
+            });
+        }
+
+        const ins = await safeQuery(
+            `INSERT INTO mst_purchase_classification (classification_name, is_active) VALUES (?, 1)`,
+            [name]
+        );
+        res.status(201).json({ data: { id: ins.insertId, classification_name: name }, message: "Klasifikasi ditambahkan" });
+    } catch (err) {
+        console.error("[createClassification]", err);
+        res.status(500).json({ message: "Gagal menambah klasifikasi" });
+    }
+};
+
+// Lookup karyawan aktif (untuk edit header pengajuan oleh Finance)
+export const getEmployeeOptions = async (_req, res) => {
+    try {
+        const data = await safeQuery(
+            `SELECT e.employee_id, e.full_name, e.department_id, d.department_name
+             FROM mst_employee e
+             LEFT JOIN mst_department d ON d.department_id = e.department_id
+             WHERE e.is_deleted = 0 ORDER BY e.full_name`
+        );
+        res.json({ data });
+    } catch (err) {
+        console.error("[getEmployeeOptions]", err);
+        res.status(500).json({ message: "Gagal memuat karyawan" });
     }
 };
 
@@ -509,7 +628,11 @@ export const listMy = async (req, res) => {
             `SELECT pr.*, s.satuan_name, c.company_name, o.full_name AS outlet_name,
                     COALESCE((SELECT SUM(p.nominal_bayar)
                               FROM tr_purchase_request_payment p
-                              WHERE p.pr_id = pr.pr_id), 0) AS total_paid
+                              WHERE p.pr_id = pr.pr_id), 0) AS total_paid,
+                    (SELECT GROUP_CONCAT(mc.classification_name ORDER BY mc.classification_name SEPARATOR ', ')
+                     FROM tr_purchase_request_classification prc
+                     JOIN mst_purchase_classification mc ON mc.id = prc.classification_id
+                     WHERE prc.pr_id = pr.pr_id) AS classification_name
              FROM tr_purchase_request pr
              LEFT JOIN mst_satuan  s ON s.satuan_id  = pr.satuan_id
              LEFT JOIN mst_company c ON c.company_id = pr.company_id
@@ -618,7 +741,11 @@ export const listDepartment = async (req, res) => {
                     s.satuan_name, c.company_name, o.full_name AS outlet_name,
                     COALESCE((SELECT SUM(p.nominal_bayar)
                               FROM tr_purchase_request_payment p
-                              WHERE p.pr_id = pr.pr_id), 0) AS total_paid
+                              WHERE p.pr_id = pr.pr_id), 0) AS total_paid,
+                    (SELECT GROUP_CONCAT(mc.classification_name ORDER BY mc.classification_name SEPARATOR ', ')
+                     FROM tr_purchase_request_classification prc
+                     JOIN mst_purchase_classification mc ON mc.id = prc.classification_id
+                     WHERE prc.pr_id = pr.pr_id) AS classification_name
              FROM tr_purchase_request pr
              LEFT JOIN mst_employee   e ON e.employee_id   = pr.employee_id
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
@@ -743,7 +870,17 @@ export const getDetail = async (req, res) => {
             [id]
         );
 
-        res.json({ data: rows[0], attachments, logs });
+        const classifications = await getClassificationsOfPr(id);
+
+        res.json({
+            data: {
+                ...rows[0],
+                classifications,
+                classification_names: classifications.map(c => c.classification_name).join(", "),
+            },
+            attachments,
+            logs,
+        });
     } catch (err) {
         console.error("[getDetail]", err);
         res.status(500).json({ message: "Gagal memuat detail" });
@@ -1281,7 +1418,7 @@ export const deletePR = async (req, res) => {
 };
 
 // ════════════════════════════════════════════════════════════════════════════
-// DELETE ATTACHMENT (oleh pengaju, status IN (1, 2, 9))
+// DELETE ATTACHMENT (pengaju status IN (1,2,9) — atau Finance kapan pun)
 // ════════════════════════════════════════════════════════════════════════════
 export const deleteAttachment = async (req, res) => {
     try {
@@ -1298,24 +1435,156 @@ export const deleteAttachment = async (req, res) => {
         );
         if (!att.length) return res.status(404).json({ message: "Lampiran tidak ditemukan" });
         const row = att[0];
-        if (row.employee_id !== employeeId) return res.status(403).json({ message: "Tidak diizinkan" });
-        if (![1, 2, 9].includes(Number(row.status))) {
-            return res.status(400).json({ message: "Tidak bisa menghapus lampiran pada status ini" });
+
+        const me = await fetchEmployee(employeeId);
+        const financeAccess = isFinance(me?.position_name);
+        if (!financeAccess) {
+            if (row.employee_id !== employeeId) return res.status(403).json({ message: "Tidak diizinkan" });
+            if (![1, 2, 9].includes(Number(row.status))) {
+                return res.status(400).json({ message: "Tidak bisa menghapus lampiran pada status ini" });
+            }
         }
 
-        // hapus file fisik
-        try {
-            const full = path.join(ASSETS_BASE, row.file_path);
-            if (fs.existsSync(full)) fs.unlinkSync(full);
-        } catch (e) {
-            console.warn("[deleteAttachment] fs unlink:", e.message);
-        }
+        removeAssetFile(row.file_path);
 
         await safeQuery(`DELETE FROM tr_purchase_request_attachment WHERE attachment_id = ?`, [attachmentId]);
+        if (financeAccess) {
+            await writeLog(row.pr_id, "updated", employeeId, me?.full_name,
+                `Lampiran dihapus oleh Finance: ${row.original_name || row.file_path}`);
+        }
         res.json({ message: "Lampiran dihapus" });
     } catch (err) {
         console.error("[deleteAttachment]", err);
         res.status(500).json({ message: "Gagal menghapus lampiran" });
+    }
+};
+
+// ════════════════════════════════════════════════════════════════════════════
+// ADD ATTACHMENT (Finance — tambah/ganti lampiran pada pengajuan apa pun)
+// ════════════════════════════════════════════════════════════════════════════
+export const addAttachments = async (req, res) => {
+    const files = req.files || [];
+    try {
+        const employeeId = getEmployeeId(req);
+        if (!employeeId) return res.status(401).json({ message: "Unauthorized" });
+
+        const me = await fetchEmployee(employeeId);
+        if (!me || !isFinance(me.position_name)) {
+            files.forEach(f => removeAssetFile(`purchase/${f.filename}`));
+            return res.status(403).json({ message: "Akses ditolak: hanya Finance" });
+        }
+
+        const { id } = req.params;
+        const rows = await safeQuery(
+            `SELECT pr_id FROM tr_purchase_request WHERE pr_id = ? AND is_deleted = 0`,
+            [id]
+        );
+        if (!rows.length) {
+            files.forEach(f => removeAssetFile(`purchase/${f.filename}`));
+            return res.status(404).json({ message: "Data tidak ditemukan" });
+        }
+        if (!files.length) return res.status(400).json({ message: "Tidak ada file yang diunggah" });
+
+        for (const f of files) {
+            await safeQuery(
+                `INSERT INTO tr_purchase_request_attachment
+                    (pr_id, file_path, original_name, mime_type, file_size_kb)
+                 VALUES (?, ?, ?, ?, ?)`,
+                [id, `purchase/${f.filename}`, f.originalname, f.mimetype, Math.round(f.size / 1024)]
+            );
+        }
+
+        await writeLog(id, "updated", employeeId, me.full_name,
+            `Lampiran ditambahkan oleh Finance (${files.length} file)`);
+
+        res.json({ message: "Lampiran ditambahkan" });
+    } catch (err) {
+        console.error("[addAttachments]", err);
+        files.forEach(f => removeAssetFile(`purchase/${f.filename}`));
+        res.status(500).json({ message: "Gagal menambah lampiran" });
+    }
+};
+
+// ════════════════════════════════════════════════════════════════════════════
+// UPDATE HEADER (Finance — koreksi pengaju / departemen / kategori / outlet)
+// ════════════════════════════════════════════════════════════════════════════
+export const updateHeaderInfo = async (req, res) => {
+    try {
+        const employeeId = getEmployeeId(req);
+        if (!employeeId) return res.status(401).json({ message: "Unauthorized" });
+
+        const me = await fetchEmployee(employeeId);
+        if (!me || !isFinance(me.position_name)) {
+            return res.status(403).json({ message: "Akses ditolak: hanya Finance" });
+        }
+
+        const { id } = req.params;
+        const rows = await safeQuery(
+            `SELECT pr.*, e.full_name AS pengaju_name, d.department_name, c.company_name, o.full_name AS outlet_name
+             FROM tr_purchase_request pr
+             LEFT JOIN mst_employee   e ON e.employee_id   = pr.employee_id
+             LEFT JOIN mst_department d ON d.department_id = pr.department_id
+             LEFT JOIN mst_company    c ON c.company_id    = pr.company_id
+             LEFT JOIN mst_outlet     o ON o.id            = pr.outlet_id
+             WHERE pr.pr_id = ? AND pr.is_deleted = 0`,
+            [id]
+        );
+        if (!rows.length) return res.status(404).json({ message: "Data tidak ditemukan" });
+        const pr = rows[0];
+
+        const newEmployeeId = req.body.employee_id ? Number(req.body.employee_id) : null;
+        const companyId     = req.body.company_id  ? Number(req.body.company_id)  : null;
+        const outletIdRaw   = req.body.outlet_id   ? Number(req.body.outlet_id)   : null;
+        if (!newEmployeeId) return res.status(400).json({ message: "Pengaju wajib dipilih" });
+        if (!companyId)     return res.status(400).json({ message: "Kategori wajib dipilih" });
+
+        const empRows = await safeQuery(
+            `SELECT e.employee_id, e.full_name, e.department_id, d.department_name
+             FROM mst_employee e
+             LEFT JOIN mst_department d ON d.department_id = e.department_id
+             WHERE e.employee_id = ? AND e.is_deleted = 0 LIMIT 1`,
+            [newEmployeeId]
+        );
+        if (!empRows.length) return res.status(400).json({ message: "Pengaju tidak valid" });
+        const emp = empRows[0];
+
+        const compRows = await safeQuery(
+            `SELECT company_id, company_name FROM mst_company WHERE company_id = ? AND is_active = 1 LIMIT 1`,
+            [companyId]
+        );
+        if (!compRows.length) return res.status(400).json({ message: "Kategori tidak valid" });
+
+        let outletId = null, outletName = null;
+        if (companyId === 5 && outletIdRaw) {
+            const outRows = await safeQuery(
+                `SELECT id, full_name FROM mst_outlet WHERE id = ? LIMIT 1`, [outletIdRaw]
+            );
+            if (!outRows.length) return res.status(400).json({ message: "Outlet tidak valid" });
+            outletId   = outRows[0].id;
+            outletName = outRows[0].full_name;
+        }
+
+        // Departemen mengikuti karyawan (single source of truth)
+        const departmentId = emp.department_id;
+
+        await safeQuery(
+            `UPDATE tr_purchase_request SET
+                employee_id = ?, department_id = ?, company_id = ?, outlet_id = ?, updated_at = NOW()
+             WHERE pr_id = ?`,
+            [newEmployeeId, departmentId, companyId, outletId, id]
+        );
+
+        await writeLog(id, "updated", employeeId, me.full_name,
+            `Data pengajuan dikoreksi oleh Finance | ` +
+            `Pengaju: ${pr.pengaju_name || "—"} -> ${emp.full_name} | ` +
+            `Departemen: ${pr.department_name || "—"} -> ${emp.department_name || "—"} | ` +
+            `Kategori: ${pr.company_name || "—"} -> ${compRows[0].company_name} | ` +
+            `Outlet: ${pr.outlet_name || "—"} -> ${outletName || "—"}`);
+
+        res.json({ message: "Data pengajuan berhasil diperbarui" });
+    } catch (err) {
+        console.error("[updateHeaderInfo]", err);
+        res.status(500).json({ message: "Gagal memperbarui data pengajuan" });
     }
 };
 
@@ -1564,7 +1833,11 @@ export const listAll = async (req, res) => {
                     s.satuan_name, c.company_name, o.full_name AS outlet_name,
                     COALESCE((SELECT SUM(p.nominal_bayar)
                               FROM tr_purchase_request_payment p
-                              WHERE p.pr_id = pr.pr_id), 0) AS total_paid
+                              WHERE p.pr_id = pr.pr_id), 0) AS total_paid,
+                    (SELECT GROUP_CONCAT(mc.classification_name ORDER BY mc.classification_name SEPARATOR ', ')
+                     FROM tr_purchase_request_classification prc
+                     JOIN mst_purchase_classification mc ON mc.id = prc.classification_id
+                     WHERE prc.pr_id = pr.pr_id) AS classification_name
              FROM tr_purchase_request pr
              LEFT JOIN mst_employee   e ON e.employee_id   = pr.employee_id
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
@@ -2142,17 +2415,18 @@ export const processPayment = async (req, res) => {
             return res.status(400).json({ message: "Pengajuan belum siap untuk pembayaran" });
         }
 
-        const classificationId = req.body.classification_id ? Number(req.body.classification_id) : null;
-        if (!classificationId) return res.status(400).json({ message: "Klasifikasi wajib dipilih" });
+        // Multi-klasifikasi: terima classification_ids[], fallback classification_id (legacy)
+        const requestedClassIds = parseClassificationIds(
+            req.body.classification_ids ?? req.body.classification_id
+        );
+        if (!requestedClassIds.length) return res.status(400).json({ message: "Klasifikasi wajib dipilih" });
 
-        let classificationName = "—";
-        if (classificationId) {
-            const [classRow] = await safeQuery(
-                `SELECT classification_name FROM mst_purchase_classification WHERE id = ?`,
-                [classificationId]
-            );
-            classificationName = classRow?.classification_name || "—";
-        }
+        const classRows = await fetchValidClassifications(requestedClassIds);
+        if (!classRows.length) return res.status(400).json({ message: "Klasifikasi tidak valid" });
+
+        const classificationIds = classRows.map(c => c.id);
+        const classificationId  = classificationIds[0];
+        const classificationName = classRows.map(c => c.classification_name).join(", ");
 
         const paymentMethod = ["cash", "kredit"].includes(req.body.payment_method) ? req.body.payment_method : null;
         if (!paymentMethod) return res.status(400).json({ message: "Metode pembayaran (Cash/Kredit) wajib dipilih" });
@@ -2220,6 +2494,8 @@ export const processPayment = async (req, res) => {
                  employeeId, ...paidAtParam, proofPath, id]
             );
 
+            await syncClassifications(id, classificationIds);
+
             if (paymentMethod === "cash") {
                 await safeQuery(
                     `INSERT INTO tr_purchase_request_payment
@@ -2268,6 +2544,8 @@ export const processPayment = async (req, res) => {
              WHERE pr_id = ?`,
             [classificationId, paymentMethod, terminValue, terminUnit, jatuhTempo, nominalBayar, adminFee, employeeId, ...paidAtParam, proofPath, paymentNote, id]
         );
+
+        await syncClassifications(id, classificationIds);
 
         if (paymentMethod === "cash") {
             await safeQuery(
@@ -2427,8 +2705,17 @@ export const updatePaymentInfo = async (req, res) => {
             return res.status(400).json({ message: "Pengajuan belum dibayar" });
         }
 
-        const classificationId = req.body.classification_id ? Number(req.body.classification_id) : null;
-        if (!classificationId) return res.status(400).json({ message: "Klasifikasi wajib dipilih" });
+        const requestedClassIds = parseClassificationIds(
+            req.body.classification_ids ?? req.body.classification_id
+        );
+        if (!requestedClassIds.length) return res.status(400).json({ message: "Klasifikasi wajib dipilih" });
+
+        const classRows = await fetchValidClassifications(requestedClassIds);
+        if (!classRows.length) return res.status(400).json({ message: "Klasifikasi tidak valid" });
+
+        const classificationIds  = classRows.map(c => c.id);
+        const classificationId   = classificationIds[0];
+        const classificationName = classRows.map(c => c.classification_name).join(", ");
 
         const paymentMethod = ["cash", "kredit"].includes(req.body.payment_method) ? req.body.payment_method : null;
         if (!paymentMethod) return res.status(400).json({ message: "Metode pembayaran wajib dipilih" });
@@ -2440,25 +2727,17 @@ export const updatePaymentInfo = async (req, res) => {
         const adminFeeRaw    = req.body.admin_fee ? Number(req.body.admin_fee) : null;
         const adminFee       = adminFeeRaw || null;
 
-        // Fetch new classification name
-        let classificationName = "—";
-        if (classificationId) {
-            const [classRow] = await safeQuery(
-                `SELECT classification_name FROM mst_purchase_classification WHERE id = ?`,
-                [classificationId]
-            );
-            classificationName = classRow?.classification_name || "—";
-        }
-
-        // Fetch old classification name
-        let oldClassificationName = "—";
-        if (pr.classification_id) {
-            const [oldClassRow] = await safeQuery(
+        // Klasifikasi lama (multi; fallback ke kolom legacy jika junction kosong)
+        const oldClassRows = await getClassificationsOfPr(id);
+        let oldClassificationName = oldClassRows.map(c => c.classification_name).join(", ");
+        if (!oldClassificationName && pr.classification_id) {
+            const [legacy] = await safeQuery(
                 `SELECT classification_name FROM mst_purchase_classification WHERE id = ?`,
                 [pr.classification_id]
             );
-            oldClassificationName = oldClassRow?.classification_name || "—";
+            oldClassificationName = legacy?.classification_name || "";
         }
+        if (!oldClassificationName) oldClassificationName = "—";
 
         const fmtRp = (n) => n ? `Rp ${new Intl.NumberFormat("id-ID").format(n)}` : "—";
 
@@ -2479,6 +2758,8 @@ export const updatePaymentInfo = async (req, res) => {
              WHERE pr_id = ?`,
             [classificationId, paymentMethod, nominalBayar, adminFee, id]
         );
+
+        await syncClassifications(id, classificationIds);
 
         if (paymentMethod === "cash") {
             const payRows = await safeQuery(
@@ -2588,7 +2869,11 @@ export const listCredit = async (req, res) => {
                     o.full_name AS outlet_name,
                     COALESCE((SELECT SUM(p.nominal_bayar)
                               FROM tr_purchase_request_payment p
-                              WHERE p.pr_id = pr.pr_id), 0) AS total_paid
+                              WHERE p.pr_id = pr.pr_id), 0) AS total_paid,
+                    (SELECT GROUP_CONCAT(mc.classification_name ORDER BY mc.classification_name SEPARATOR ', ')
+                     FROM tr_purchase_request_classification prc
+                     JOIN mst_purchase_classification mc ON mc.id = prc.classification_id
+                     WHERE prc.pr_id = pr.pr_id) AS classification_name
              FROM tr_purchase_request pr
              LEFT JOIN mst_employee   e ON e.employee_id   = pr.employee_id
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
