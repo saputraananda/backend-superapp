@@ -223,18 +223,43 @@ const fetchValidClassifications = async (ids) => {
     return rows;
 };
 
-const syncClassifications = async (prId, ids) => {
+// Split nominal per klasifikasi. Input: { [classification_id]: nominal }.
+// Hanya 1 klasifikasi → nominal otomatis = nominal bayar.
+const parseClassificationSplits = (raw, ids, nominalBayar) => {
+    if (ids.length === 1) return { [ids[0]]: nominalBayar ?? null };
+
+    let obj = raw;
+    if (typeof raw === "string") {
+        try { obj = JSON.parse(raw); } catch { obj = null; }
+    }
+    const out = {};
+    for (const id of ids) {
+        const v = obj && typeof obj === "object" ? Number(obj[id] ?? obj[String(id)]) : NaN;
+        out[id] = Number.isFinite(v) && v > 0 ? v : null;
+    }
+    return out;
+};
+
+const syncClassifications = async (prId, ids, splits = {}) => {
     await safeQuery(`DELETE FROM tr_purchase_request_classification WHERE pr_id = ?`, [prId]);
     if (!ids.length) return;
     await safeQuery(
-        `INSERT IGNORE INTO tr_purchase_request_classification (pr_id, classification_id)
-         VALUES ${ids.map(() => "(?, ?)").join(", ")}`,
-        ids.flatMap(cid => [prId, cid])
+        `INSERT IGNORE INTO tr_purchase_request_classification (pr_id, classification_id, nominal)
+         VALUES ${ids.map(() => "(?, ?, ?)").join(", ")}`,
+        ids.flatMap(cid => [prId, cid, splits[cid] ?? null])
     );
 };
 
+// "Peralatan (Rp 100.000), Hanger (Rp 50.000)" — untuk catatan log
+const formatClassificationLabel = (rows, splits = {}) => rows
+    .map(c => {
+        const n = splits[c.id] ?? c.nominal;
+        return n ? `${c.classification_name} (Rp ${new Intl.NumberFormat("id-ID").format(n)})` : c.classification_name;
+    })
+    .join(", ");
+
 const getClassificationsOfPr = async (prId) => safeQuery(
-    `SELECT c.id, c.classification_name
+    `SELECT c.id, c.classification_name, prc.nominal
      FROM tr_purchase_request_classification prc
      JOIN mst_purchase_classification c ON c.id = prc.classification_id
      WHERE prc.pr_id = ?
@@ -2426,8 +2451,6 @@ export const processPayment = async (req, res) => {
 
         const classificationIds = classRows.map(c => c.id);
         const classificationId  = classificationIds[0];
-        const classificationName = classRows.map(c => c.classification_name).join(", ");
-
         const paymentMethod = ["cash", "kredit"].includes(req.body.payment_method) ? req.body.payment_method : null;
         if (!paymentMethod) return res.status(400).json({ message: "Metode pembayaran (Cash/Kredit) wajib dipilih" });
 
@@ -2453,6 +2476,10 @@ export const processPayment = async (req, res) => {
         const nominalBayar   = nominalBayarRaw || null;
         const adminFeeRaw    = req.body.admin_fee ? Number(req.body.admin_fee) : null;
         const adminFee       = adminFeeRaw || null;
+
+        const classificationSplits = parseClassificationSplits(
+            req.body.classification_splits, classificationIds, nominalBayar);
+        const classificationName = formatClassificationLabel(classRows, classificationSplits);
 
         // Waktu pembayaran: gunakan yang dikirim frontend, fallback ke NOW() jika kosong
         const paidAtRaw = req.body.paid_at ? String(req.body.paid_at).trim() : null;
@@ -2494,7 +2521,7 @@ export const processPayment = async (req, res) => {
                  employeeId, ...paidAtParam, proofPath, id]
             );
 
-            await syncClassifications(id, classificationIds);
+            await syncClassifications(id, classificationIds, classificationSplits);
 
             if (paymentMethod === "cash") {
                 await safeQuery(
@@ -2545,7 +2572,7 @@ export const processPayment = async (req, res) => {
             [classificationId, paymentMethod, terminValue, terminUnit, jatuhTempo, nominalBayar, adminFee, employeeId, ...paidAtParam, proofPath, paymentNote, id]
         );
 
-        await syncClassifications(id, classificationIds);
+        await syncClassifications(id, classificationIds, classificationSplits);
 
         if (paymentMethod === "cash") {
             await safeQuery(
@@ -2715,7 +2742,6 @@ export const updatePaymentInfo = async (req, res) => {
 
         const classificationIds  = classRows.map(c => c.id);
         const classificationId   = classificationIds[0];
-        const classificationName = classRows.map(c => c.classification_name).join(", ");
 
         const paymentMethod = ["cash", "kredit"].includes(req.body.payment_method) ? req.body.payment_method : null;
         if (!paymentMethod) return res.status(400).json({ message: "Metode pembayaran wajib dipilih" });
@@ -2727,9 +2753,13 @@ export const updatePaymentInfo = async (req, res) => {
         const adminFeeRaw    = req.body.admin_fee ? Number(req.body.admin_fee) : null;
         const adminFee       = adminFeeRaw || null;
 
+        const classificationSplits = parseClassificationSplits(
+            req.body.classification_splits, classificationIds, nominalBayar);
+        const classificationName = formatClassificationLabel(classRows, classificationSplits);
+
         // Klasifikasi lama (multi; fallback ke kolom legacy jika junction kosong)
         const oldClassRows = await getClassificationsOfPr(id);
-        let oldClassificationName = oldClassRows.map(c => c.classification_name).join(", ");
+        let oldClassificationName = formatClassificationLabel(oldClassRows);
         if (!oldClassificationName && pr.classification_id) {
             const [legacy] = await safeQuery(
                 `SELECT classification_name FROM mst_purchase_classification WHERE id = ?`,
@@ -2759,7 +2789,7 @@ export const updatePaymentInfo = async (req, res) => {
             [classificationId, paymentMethod, nominalBayar, adminFee, id]
         );
 
-        await syncClassifications(id, classificationIds);
+        await syncClassifications(id, classificationIds, classificationSplits);
 
         if (paymentMethod === "cash") {
             const payRows = await safeQuery(
