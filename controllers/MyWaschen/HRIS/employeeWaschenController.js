@@ -263,7 +263,7 @@ export const updateEmployeeRole = async (req, res) => {
         [cleanPin, id]
       );
       if (dup.length > 0) {
-        return res.status(400).json({
+        return res.status(409).json({
           message: `PIN ${cleanPin} sudah dipakai karyawan lain. Gunakan PIN unik.`,
         });
       }
