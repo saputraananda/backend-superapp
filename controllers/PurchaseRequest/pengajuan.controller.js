@@ -72,7 +72,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { pool } from "../db/pool.js";
+import { pool } from "../../db/pool.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -80,7 +80,7 @@ const __dirname  = path.dirname(__filename);
 const isProd = process.env.NODE_ENV === "production";
 const ASSETS_BASE = isProd
     ? (process.env.UPLOAD_BASE_DIR || "/home/u420573163/domains/api.waschenalora.com/storage/assets/")
-    : path.join(__dirname, "..", "assets");
+    : path.join(__dirname, "..", "..", "assets");
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 const safeQuery = async (sql, params = []) => {
@@ -266,6 +266,125 @@ const getClassificationsOfPr = async (prId) => safeQuery(
      ORDER BY c.classification_name`,
     [prId]
 );
+
+// ── Multi kategori & outlet (tr_purchase_request_scope) ─────────────────────
+// 1 baris = 1 kombinasi company + outlet. outlet_id NULL = seluruh outlet /
+// company tanpa turunan. Kolom lama pr.company_id & pr.outlet_id tetap diisi
+// pilihan pertama supaya report/filter lama tidak rusak.
+const WASCHEN_COMPANY_ID = 5;
+
+const parseIdList = (raw) => {
+    if (raw == null || raw === "") return [];
+    let list = raw;
+    if (typeof raw === "string") {
+        try {
+            const parsed = JSON.parse(raw);
+            list = Array.isArray(parsed) ? parsed : raw.split(",");
+        } catch {
+            list = raw.split(",");
+        }
+    }
+    if (!Array.isArray(list)) list = [list];
+    return [...new Set(list.map(v => Number(v)).filter(v => Number.isInteger(v) && v > 0))];
+};
+
+// Validasi ke master + buang id yang tidak ada/nonaktif.
+const resolveScopeSelection = async (companyIdsRaw, outletIdsRaw, fallbackCompanyId = null, fallbackOutletId = null) => {
+    let companyIds = parseIdList(companyIdsRaw);
+    let outletIds  = parseIdList(outletIdsRaw);
+    if (!companyIds.length && fallbackCompanyId) companyIds = [Number(fallbackCompanyId)];
+    if (!outletIds.length && fallbackOutletId)   outletIds  = [Number(fallbackOutletId)];
+    if (!companyIds.length) return { companies: [], outlets: [] };
+
+    const companies = await safeQuery(
+        `SELECT company_id, company_name FROM mst_company
+         WHERE is_active = 1 AND company_id IN (${companyIds.map(() => "?").join(",")})
+         ORDER BY company_name`,
+        companyIds
+    );
+    if (!companies.length) return { companies: [], outlets: [] };
+
+    const hasWaschen = companies.some(c => Number(c.company_id) === WASCHEN_COMPANY_ID);
+    let outlets = [];
+    if (hasWaschen && outletIds.length) {
+        outlets = await safeQuery(
+            `SELECT id AS outlet_id, full_name FROM mst_outlet
+             WHERE id IN (${outletIds.map(() => "?").join(",")}) ORDER BY full_name`,
+            outletIds
+        );
+    }
+    return { companies, outlets };
+};
+
+// Kolom lama pr.company_id / pr.outlet_id = "primary". Waschen diprioritaskan
+// supaya tampilan lama yang mengecek company_id === 5 tetap menampilkan outlet.
+const primaryScope = ({ companies, outlets }) => {
+    if (!companies.length) return { companyId: null, outletId: null };
+    const waschen = companies.find(c => Number(c.company_id) === WASCHEN_COMPANY_ID);
+    const companyId = Number((waschen || companies[0]).company_id);
+    const outletId = waschen && outlets.length ? Number(outlets[0].outlet_id) : null;
+    return { companyId, outletId };
+};
+
+const syncScopes = async (prId, companies, outlets) => {
+    await safeQuery(`DELETE FROM tr_purchase_request_scope WHERE pr_id = ?`, [prId]);
+    if (!companies.length) return;
+
+    const pairs = [];
+    for (const c of companies) {
+        const cid = Number(c.company_id);
+        if (cid === WASCHEN_COMPANY_ID && outlets.length) {
+            for (const o of outlets) pairs.push([prId, cid, Number(o.outlet_id)]);
+        } else {
+            pairs.push([prId, cid, null]);
+        }
+    }
+    await safeQuery(
+        `INSERT IGNORE INTO tr_purchase_request_scope (pr_id, company_id, outlet_id)
+         VALUES ${pairs.map(() => "(?, ?, ?)").join(", ")}`,
+        pairs.flat()
+    );
+};
+
+const getScopesOfPr = async (prId) => {
+    const rows = await safeQuery(
+        `SELECT prs.company_id, c.company_name, prs.outlet_id, o.full_name AS outlet_name
+         FROM tr_purchase_request_scope prs
+         LEFT JOIN mst_company c ON c.company_id = prs.company_id
+         LEFT JOIN mst_outlet  o ON o.id         = prs.outlet_id
+         WHERE prs.pr_id = ?
+         ORDER BY c.company_name, o.full_name`,
+        [prId]
+    );
+    const companies = [];
+    const outlets   = [];
+    for (const r of rows) {
+        if (!companies.some(c => c.company_id === r.company_id)) {
+            companies.push({ company_id: r.company_id, company_name: r.company_name });
+        }
+        if (r.outlet_id && !outlets.some(o => o.outlet_id === r.outlet_id)) {
+            outlets.push({ outlet_id: r.outlet_id, outlet_name: r.outlet_name });
+        }
+    }
+    return { companies, outlets };
+};
+
+// Fragment SELECT — gabungkan semua kategori/outlet jadi 1 kolom string agar
+// tabel, export, dan modal lama tetap kompatibel.
+const SCOPE_COMPANY_SELECT = `COALESCE((SELECT GROUP_CONCAT(DISTINCT mc.company_name ORDER BY mc.company_name SEPARATOR ', ')
+                      FROM tr_purchase_request_scope prs
+                      JOIN mst_company mc ON mc.company_id = prs.company_id
+                      WHERE prs.pr_id = pr.pr_id), c.company_name) AS company_name`;
+const SCOPE_OUTLET_SELECT = `COALESCE((SELECT GROUP_CONCAT(DISTINCT mo.full_name ORDER BY mo.full_name SEPARATOR ', ')
+                      FROM tr_purchase_request_scope prs
+                      JOIN mst_outlet mo ON mo.id = prs.outlet_id
+                      WHERE prs.pr_id = pr.pr_id), o.full_name) AS outlet_name`;
+
+const scopeLabel = ({ companies, outlets }) => {
+    const c = companies.map(x => x.company_name).filter(Boolean).join(", ") || "—";
+    const o = outlets.map(x => x.outlet_name || x.full_name).filter(Boolean).join(", ");
+    return o ? `${c} (${o})` : c;
+};
 
 const writeLog = async (prId, action, employeeId, name, note = null) => {
     await safeQuery(
@@ -650,7 +769,7 @@ export const listMy = async (req, res) => {
         const total = Number(countRows[0].total);
 
         const data = await safeQuery(
-            `SELECT pr.*, s.satuan_name, c.company_name, o.full_name AS outlet_name,
+            `SELECT pr.*, s.satuan_name, ${SCOPE_COMPANY_SELECT}, ${SCOPE_OUTLET_SELECT},
                     COALESCE((SELECT SUM(p.nominal_bayar)
                               FROM tr_purchase_request_payment p
                               WHERE p.pr_id = pr.pr_id), 0) AS total_paid,
@@ -763,7 +882,7 @@ export const listDepartment = async (req, res) => {
 
         const data = await safeQuery(
             `SELECT pr.*, e.full_name AS pengaju_name, d.department_name,
-                    s.satuan_name, c.company_name, o.full_name AS outlet_name,
+                    s.satuan_name, ${SCOPE_COMPANY_SELECT}, ${SCOPE_OUTLET_SELECT},
                     COALESCE((SELECT SUM(p.nominal_bayar)
                               FROM tr_purchase_request_payment p
                               WHERE p.pr_id = pr.pr_id), 0) AS total_paid,
@@ -839,7 +958,7 @@ export const listApproval = async (req, res) => {
         const where = `WHERE ${conditions.join(" AND ")}`;
         const data = await safeQuery(
             `SELECT pr.*, e.full_name AS pengaju_name, d.department_name,
-                    s.satuan_name, c.company_name, o.full_name AS outlet_name
+                    s.satuan_name, ${SCOPE_COMPANY_SELECT}, ${SCOPE_OUTLET_SELECT}
              FROM tr_purchase_request pr
              LEFT JOIN mst_employee   e ON e.employee_id   = pr.employee_id
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
@@ -869,7 +988,7 @@ export const getDetail = async (req, res) => {
         const { id } = req.params;
         const rows = await safeQuery(
             `SELECT pr.*, e.full_name AS pengaju_name, e.job_level_id AS pengaju_job_level,
-                    d.department_name, s.satuan_name, c.company_name, o.full_name AS outlet_name,
+                    d.department_name, s.satuan_name, ${SCOPE_COMPANY_SELECT}, ${SCOPE_OUTLET_SELECT},
                     bnk.bank_name, pc.classification_name
              FROM tr_purchase_request pr
              LEFT JOIN mst_employee   e   ON e.employee_id   = pr.employee_id
@@ -896,12 +1015,15 @@ export const getDetail = async (req, res) => {
         );
 
         const classifications = await getClassificationsOfPr(id);
+        const scope = await getScopesOfPr(id);
 
         res.json({
             data: {
                 ...rows[0],
                 classifications,
                 classification_names: classifications.map(c => c.classification_name).join(", "),
+                companies: scope.companies,
+                outlets: scope.outlets,
             },
             attachments,
             logs,
@@ -925,10 +1047,13 @@ export const createPR = async (req, res) => {
 
         const type             = ["pengajuan", "reimburse"].includes(req.body.type) ? req.body.type : "pengajuan";
         const tanggalPengajuan = req.body.tanggal_pengajuan || new Date().toISOString().split("T")[0];
-        const companyId        = req.body.company_id ? Number(req.body.company_id) : null;
-        const outletIdRaw      = req.body.outlet_id ? Number(req.body.outlet_id) : null;
-        // Outlet hanya disimpan jika company_id == 5 (sesuai spec: derivatif)
-        const outletId         = companyId === 5 ? outletIdRaw : null;
+
+        // Multi kategori + multi outlet. Kolom lama diisi pilihan pertama.
+        const scope = await resolveScopeSelection(
+            req.body.company_ids ?? req.body.company_id,
+            req.body.outlet_ids  ?? req.body.outlet_id
+        );
+        const { companyId, outletId } = primaryScope(scope);
 
         const namaBarang      = sanitize(req.body.nama_barang);
         const deskripsi       = sanitize(req.body.deskripsi);
@@ -975,6 +1100,10 @@ export const createPR = async (req, res) => {
 
         const jobLevel = Number(me.job_level_id);
 
+        // Link referensi (opsional) — berlaku untuk reimburse maupun pengajuan
+        const reqLinkUrl   = req.body.link_url   ? sanitize(req.body.link_url)   : null;
+        const reqLinkTitle = req.body.link_title ? sanitize(req.body.link_title) : null;
+
         // ── FLOW REIMBURSE: tidak ada GA, tidak ada auto-approve SPV level ──────
         // Reimburse selalu mulai dari status 1 (menunggu SPV Departemen), kecuali
         // pengaju sendiri adalah SPV dept (job_level 3) → auto-approve SPV.
@@ -988,11 +1117,13 @@ export const createPR = async (req, res) => {
                      company_id, outlet_id,
                      nama_barang, deskripsi, merk, qty, satuan_id, estimasi_harga, alasan_pembelian,
                      bank_id, nomor_rekening, atas_nama,
+                     vendor_mode, link_url, link_title,
                      status,
                      approved_spv_by, approved_spv_at)
                  VALUES (?, ?, ?, ?, ?,
                          ?, ?,
                          ?, ?, ?, ?, ?, ?, ?,
+                         ?, ?, ?,
                          ?, ?, ?,
                          ?,
                          ?, ${autoSpvReimburse ? "NOW()" : "NULL"})`,
@@ -1000,10 +1131,12 @@ export const createPR = async (req, res) => {
                  companyId, outletId,
                  namaBarang, deskripsi, merk, qty, satuanId, estimasiHarga, alasanPembelian,
                  bankId, nomorRekening, atasNama,
+                 reqLinkUrl ? "link" : null, reqLinkUrl, reqLinkTitle,
                  initialStatus,
                  autoSpvReimburse ? employeeId : null]
             );
             const prId = insertResult.insertId;
+            await syncScopes(prId, scope.companies, scope.outlets);
 
             const files = req.files || [];
             for (const file of files) {
@@ -1015,7 +1148,8 @@ export const createPR = async (req, res) => {
                 );
             }
 
-            await writeLog(prId, "created", employeeId, me.full_name, "Reimburse dibuat & diajukan");
+            await writeLog(prId, "created", employeeId, me.full_name,
+                `Reimburse dibuat & diajukan | Kategori: ${scopeLabel(scope)}`);
             if (autoSpvReimburse) {
                 await writeLog(prId, "approved_spv", employeeId, me.full_name,
                     "Disetujui SPV Departemen (otomatis — pengaju adalah supervisor)");
@@ -1024,8 +1158,8 @@ export const createPR = async (req, res) => {
         }
 
         // ── FLOW PENGAJUAN BIASA ────────────────────────────────────────────────
-        const linkUrl   = req.body.link_url   ? sanitize(req.body.link_url)   : null;
-        const linkTitle = req.body.link_title  ? sanitize(req.body.link_title) : null;
+        const linkUrl   = reqLinkUrl;
+        const linkTitle = reqLinkTitle;
         let vendorMode  = linkUrl ? "link" : null;
         let vendorName  = null;
         let vendorId    = null;
@@ -1165,6 +1299,7 @@ export const createPR = async (req, res) => {
         );
 
         const prId = insertResult.insertId;
+        await syncScopes(prId, scope.companies, scope.outlets);
 
         const files = req.files || [];
         for (const file of files) {
@@ -1177,9 +1312,9 @@ export const createPR = async (req, res) => {
         }
 
         await writeLog(prId, "created", employeeId, me.full_name,
-            skipGaByFinance
+            (skipGaByFinance
                 ? "Pengajuan dibuat & diajukan (Finance — tanpa approval GA)"
-                : "Pengajuan dibuat & diajukan");
+                : "Pengajuan dibuat & diajukan") + ` | Kategori: ${scopeLabel(scope)}`);
 
         if (isRutin) {
             await writeLog(prId, "approved_spv", employeeId, me.full_name,
@@ -1245,9 +1380,12 @@ export const updatePR = async (req, res) => {
 
         const type             = ["pengajuan", "reimburse"].includes(req.body.type) ? req.body.type : row.type;
         const tanggalPengajuan = req.body.tanggal_pengajuan || row.tanggal_pengajuan;
-        const companyId        = req.body.company_id ? Number(req.body.company_id) : null;
-        const outletIdRaw      = req.body.outlet_id ? Number(req.body.outlet_id) : null;
-        const outletId         = companyId === 5 ? outletIdRaw : null;
+
+        const scope = await resolveScopeSelection(
+            req.body.company_ids ?? req.body.company_id,
+            req.body.outlet_ids  ?? req.body.outlet_id
+        );
+        const { companyId, outletId } = primaryScope(scope);
 
         const namaBarang      = sanitize(req.body.nama_barang);
         const deskripsi       = sanitize(req.body.deskripsi);
@@ -1382,6 +1520,8 @@ export const updatePR = async (req, res) => {
              id]
         );
 
+        await syncScopes(id, scope.companies, scope.outlets);
+
         // tambah lampiran baru
         const files = req.files || [];
         for (const file of files) {
@@ -1393,7 +1533,8 @@ export const updatePR = async (req, res) => {
             );
         }
 
-        await writeLog(id, "updated", employeeId, me?.full_name, "Pengajuan diperbarui");
+        await writeLog(id, "updated", employeeId, me?.full_name,
+            `Pengajuan diperbarui | Kategori: ${scopeLabel(scope)}`);
 
         res.json({ message: "Pengajuan berhasil diperbarui" });
     } catch (err) {
@@ -1545,7 +1686,7 @@ export const updateHeaderInfo = async (req, res) => {
 
         const { id } = req.params;
         const rows = await safeQuery(
-            `SELECT pr.*, e.full_name AS pengaju_name, d.department_name, c.company_name, o.full_name AS outlet_name
+            `SELECT pr.*, e.full_name AS pengaju_name, d.department_name, ${SCOPE_COMPANY_SELECT}, ${SCOPE_OUTLET_SELECT}
              FROM tr_purchase_request pr
              LEFT JOIN mst_employee   e ON e.employee_id   = pr.employee_id
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
@@ -1558,10 +1699,14 @@ export const updateHeaderInfo = async (req, res) => {
         const pr = rows[0];
 
         const newEmployeeId = req.body.employee_id ? Number(req.body.employee_id) : null;
-        const companyId     = req.body.company_id  ? Number(req.body.company_id)  : null;
-        const outletIdRaw   = req.body.outlet_id   ? Number(req.body.outlet_id)   : null;
         if (!newEmployeeId) return res.status(400).json({ message: "Pengaju wajib dipilih" });
-        if (!companyId)     return res.status(400).json({ message: "Kategori wajib dipilih" });
+
+        const scope = await resolveScopeSelection(
+            req.body.company_ids ?? req.body.company_id,
+            req.body.outlet_ids  ?? req.body.outlet_id
+        );
+        if (!scope.companies.length) return res.status(400).json({ message: "Kategori wajib dipilih" });
+        const { companyId, outletId } = primaryScope(scope);
 
         const empRows = await safeQuery(
             `SELECT e.employee_id, e.full_name, e.department_id, d.department_name
@@ -1573,22 +1718,6 @@ export const updateHeaderInfo = async (req, res) => {
         if (!empRows.length) return res.status(400).json({ message: "Pengaju tidak valid" });
         const emp = empRows[0];
 
-        const compRows = await safeQuery(
-            `SELECT company_id, company_name FROM mst_company WHERE company_id = ? AND is_active = 1 LIMIT 1`,
-            [companyId]
-        );
-        if (!compRows.length) return res.status(400).json({ message: "Kategori tidak valid" });
-
-        let outletId = null, outletName = null;
-        if (companyId === 5 && outletIdRaw) {
-            const outRows = await safeQuery(
-                `SELECT id, full_name FROM mst_outlet WHERE id = ? LIMIT 1`, [outletIdRaw]
-            );
-            if (!outRows.length) return res.status(400).json({ message: "Outlet tidak valid" });
-            outletId   = outRows[0].id;
-            outletName = outRows[0].full_name;
-        }
-
         // Departemen mengikuti karyawan (single source of truth)
         const departmentId = emp.department_id;
 
@@ -1598,13 +1727,14 @@ export const updateHeaderInfo = async (req, res) => {
              WHERE pr_id = ?`,
             [newEmployeeId, departmentId, companyId, outletId, id]
         );
+        await syncScopes(id, scope.companies, scope.outlets);
 
         await writeLog(id, "updated", employeeId, me.full_name,
             `Data pengajuan dikoreksi oleh Finance | ` +
             `Pengaju: ${pr.pengaju_name || "—"} -> ${emp.full_name} | ` +
             `Departemen: ${pr.department_name || "—"} -> ${emp.department_name || "—"} | ` +
-            `Kategori: ${pr.company_name || "—"} -> ${compRows[0].company_name} | ` +
-            `Outlet: ${pr.outlet_name || "—"} -> ${outletName || "—"}`);
+            `Kategori: ${pr.company_name || "—"} -> ${scope.companies.map(c => c.company_name).join(", ")} | ` +
+            `Outlet: ${pr.outlet_name || "—"} -> ${scope.outlets.map(o => o.full_name).join(", ") || "—"}`);
 
         res.json({ message: "Data pengajuan berhasil diperbarui" });
     } catch (err) {
@@ -1855,7 +1985,7 @@ export const listAll = async (req, res) => {
 
         const data = await safeQuery(
             `SELECT pr.*, e.full_name AS pengaju_name, d.department_name,
-                    s.satuan_name, c.company_name, o.full_name AS outlet_name,
+                    s.satuan_name, ${SCOPE_COMPANY_SELECT}, ${SCOPE_OUTLET_SELECT},
                     COALESCE((SELECT SUM(p.nominal_bayar)
                               FROM tr_purchase_request_payment p
                               WHERE p.pr_id = pr.pr_id), 0) AS total_paid,
@@ -1924,7 +2054,7 @@ export const listGaReview = async (req, res) => {
 
         const data = await safeQuery(
             `SELECT pr.*, e.full_name AS pengaju_name, d.department_name,
-                    s.satuan_name, c.company_name, o.full_name AS outlet_name
+                    s.satuan_name, ${SCOPE_COMPANY_SELECT}, ${SCOPE_OUTLET_SELECT}
              FROM tr_purchase_request pr
              LEFT JOIN mst_employee   e ON e.employee_id   = pr.employee_id
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
@@ -2117,9 +2247,9 @@ export const getPOData = async (req, res) => {
                     e.full_name AS pengaju_name, e.employee_code, e.job_level_id AS pengaju_job_level,
                     d.department_name,
                     s.satuan_name,
-                    c.company_name,
+                    ${SCOPE_COMPANY_SELECT},
                     c.address     AS company_address,
-                    o.full_name AS outlet_name,
+                    ${SCOPE_OUTLET_SELECT},
                     o.address     AS outlet_address,
                     bnk.bank_name,
                     spv_e.full_name  AS spv_name,
@@ -2208,7 +2338,7 @@ export const listFinanceReview = async (req, res) => {
         // - Reimburse: status 2 (sudah disetujui SPV Departemen)
         const data = await safeQuery(
             `SELECT pr.*, e.full_name AS pengaju_name, d.department_name,
-                    s.satuan_name, c.company_name, o.full_name AS outlet_name
+                    s.satuan_name, ${SCOPE_COMPANY_SELECT}, ${SCOPE_OUTLET_SELECT}
              FROM tr_purchase_request pr
              LEFT JOIN mst_employee   e ON e.employee_id   = pr.employee_id
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
@@ -2392,7 +2522,7 @@ export const listPaymentPending = async (req, res) => {
         // - Reimburse: status 5 (disetujui SPV Finance, menunggu pembayaran)
         const data = await safeQuery(
             `SELECT pr.*, e.full_name AS pengaju_name, d.department_name,
-                    s.satuan_name, c.company_name, o.full_name AS outlet_name,
+                    s.satuan_name, ${SCOPE_COMPANY_SELECT}, ${SCOPE_OUTLET_SELECT},
                     bnk.bank_name
              FROM tr_purchase_request pr
              LEFT JOIN mst_employee   e   ON e.employee_id   = pr.employee_id
@@ -2895,8 +3025,8 @@ export const listCredit = async (req, res) => {
                     e.full_name AS pengaju_name,
                     d.department_name,
                     s.satuan_name,
-                    c.company_name,
-                    o.full_name AS outlet_name,
+                    ${SCOPE_COMPANY_SELECT},
+                    ${SCOPE_OUTLET_SELECT},
                     COALESCE((SELECT SUM(p.nominal_bayar)
                               FROM tr_purchase_request_payment p
                               WHERE p.pr_id = pr.pr_id), 0) AS total_paid,

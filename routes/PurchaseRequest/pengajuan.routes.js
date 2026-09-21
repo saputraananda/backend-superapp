@@ -1,6 +1,6 @@
 import { Router } from "express";
-import { requireAuth } from "../middleware/auth.js";
-import { uploadPurchase } from "../middleware/upload.js";
+import { requireAuth } from "../../middleware/auth.js";
+import { uploadPurchase } from "../../middleware/upload.js";
 import {
     getSatuan, getCompanies, getOutlets, getVendors, getPeriods, getDepartments,
     getClassifications, createClassification, getEmployeeOptions,
@@ -14,7 +14,7 @@ import {
     approveFinance, rejectFinance,
     processPayment, rejectPayment, completePR,
     updatePaymentInfo,
-} from "../controllers/pengajuanController.js";
+} from "../../controllers/PurchaseRequest/pengajuan.controller.js";
 
 const router = Router();
 

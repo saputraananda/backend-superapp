@@ -60,7 +60,8 @@ import linenTransactionKomersilRoutes from "./routes/IKM/LinenTransaction/linenT
 import operationalRoutes from "./routes/operationalRoutes.js";
 import internalRoutes from "./routes/internalRoutes.js";
 import complaintRoutes from "./routes/complaintRoutes.js";
-import pengajuanRoutes from "./routes/pengajuanRoutes.js";
+import pengajuanRoutes from "./routes/PurchaseRequest/pengajuan.routes.js";
+import masterClassificationRoutes from "./routes/PurchaseRequest/masterClassification.routes.js";
 import docAloraRoutes from "./routes/docAloraRoutes.js";
 import csatNpsRoutes from "./routes/csatNpsRoutes.js";
 import b2bKoperasiRoutes from "./routes/B2B/B2B-Koperasi-2026/b2bKoperasiDashboardRoutes.js";
@@ -399,6 +400,9 @@ app.use("/ikm/linen-transactions-komersil", linenTransactionKomersilRoutes);
 app.use("/operational", operationalRoutes);
 app.use("/internal", internalRoutes);
 app.use("/complaints", complaintRoutes);
+// master-classification harus didaftarkan lebih dulu agar tidak tertangkap
+// route dinamis "/pengajuan/:id" di pengajuanRoutes
+app.use("/pengajuan/master-classification", masterClassificationRoutes);
 app.use("/pengajuan", pengajuanRoutes);
 app.use("/doc-alora", docAloraRoutes);
 app.use("/csat-nps", csatNpsRoutes);
