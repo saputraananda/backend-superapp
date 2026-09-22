@@ -53,7 +53,7 @@ function buildServiceModeClause(mode, alias = "t") {
 
 /**
  * GET /cleanox/pendapatan
- * POS lunas vs mst_target_cleanox — filter by service_mode.
+ * POS lunas vs mst_target_cleanox — omzet by payment_settled_date; filter by service_mode.
  */
 export async function getPendapatanCleanox(req, res) {
 	try {
@@ -103,8 +103,9 @@ export async function getPendapatanCleanox(req, res) {
 		const [actualRows] = await safeCleanoxQuery(
 			`SELECT COALESCE(SUM(t.final_amount), 0) AS actual_sales
        FROM tr_transactions t
-       WHERE DATE(t.service_date) >= ?
-         AND DATE(t.service_date) <= ?
+       WHERE t.payment_settled_date IS NOT NULL
+         AND t.payment_settled_date >= ?
+         AND t.payment_settled_date <= ?
          AND t.payment_status = 'lunas'
          AND t.status <> 'Cancelled'
          ${modeClause.sql}`,
@@ -113,15 +114,16 @@ export async function getPendapatanCleanox(req, res) {
 		const cleanoxActual = toNum(actualRows?.[0]?.actual_sales);
 
 		const [trendRows] = await safeCleanoxQuery(
-			`SELECT DATE_FORMAT(DATE(t.service_date), '%Y-%m-%d') AS date,
+			`SELECT DATE_FORMAT(t.payment_settled_date, '%Y-%m-%d') AS date,
               COALESCE(SUM(t.final_amount), 0) AS sales
        FROM tr_transactions t
-       WHERE DATE(t.service_date) >= ?
-         AND DATE(t.service_date) <= ?
+       WHERE t.payment_settled_date IS NOT NULL
+         AND t.payment_settled_date >= ?
+         AND t.payment_settled_date <= ?
          AND t.payment_status = 'lunas'
          AND t.status <> 'Cancelled'
          ${modeClause.sql}
-       GROUP BY DATE_FORMAT(DATE(t.service_date), '%Y-%m-%d')
+       GROUP BY DATE_FORMAT(t.payment_settled_date, '%Y-%m-%d')
        ORDER BY date ASC`,
 			[dateStart, effectiveAsOfDate, ...modeClause.params],
 		);
