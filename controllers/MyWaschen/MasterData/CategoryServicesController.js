@@ -17,15 +17,13 @@ async function ensureTable() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
 
-    // Seed default categories if table is empty
+    // Seed 2 kategori utama (Kiloan & Satuan) jika tabel kosong
     const [rows] = await safeMyWaschenQuery("SELECT COUNT(*) as cnt FROM mst_service_category");
     if (rows[0].cnt === 0) {
       await safeMyWaschenQuery(`
         INSERT INTO mst_service_category (code, name, icon, description, is_active) VALUES
-        ('KILOAN', 'Layanan Kiloan', 'Scale', 'Pencucian pakaian harian dengan hitungan per kilogram', 1),
-        ('SATUAN', 'Layanan Satuan', 'Shirt', 'Penanganan khusus per pcs pakaian premium, jas, dress & gaun', 1),
-        ('SEPATU_TAS', 'Sepatu & Tas', 'Sparkles', 'Perawatan & deep cleaning sepatu, tas & dompet kulit', 1),
-        ('BEDDING_KARPET', 'Bedding & Karpet', 'Home', 'Pencucian selimut, bedcover, sprei, tirai & karpet', 1)
+        ('KILOAN', 'Laundry Kiloan', 'Scale', 'Layanan cuci pakaian harian dengan hitungan per kilogram (Kg)', 1),
+        ('SATUAN', 'Laundry Satuan', 'Shirt', 'Layanan perawatan satuan (Pcs, Unit, Meter, Pasang, Set, dll)', 1)
       `);
     }
   } catch (err) {

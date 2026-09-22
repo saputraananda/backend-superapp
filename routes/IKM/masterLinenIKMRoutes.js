@@ -8,6 +8,7 @@ import {
   getCategories,
   getSizes,
   getColors,
+  getUnits,
   getMaterials,
   createLinen,
   updateLinen,
@@ -25,6 +26,7 @@ const router = express.Router();
 router.get("/categories",       requireAuth, getCategories);
 router.get("/sizes",            requireAuth, getSizes);
 router.get("/colors",           requireAuth, getColors);
+router.get("/units",            requireAuth, getUnits);
 router.get("/materials",        requireAuth, getMaterials);
 router.get("/vendors",          requireAuth, getVendors);
 

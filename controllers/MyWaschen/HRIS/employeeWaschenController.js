@@ -1,4 +1,4 @@
-import { pool, safeQuery, safeMyWaschenQuery } from "../../db/pool.js";
+import { pool, safeQuery, safeMyWaschenQuery } from "../../../db/pool.js";
 import bcrypt from "bcrypt";
 
 const SORT_COLUMNS = {
@@ -20,13 +20,19 @@ export const listWaschenEmployees = async (req, res) => {
     const filterIsLeader = req.query.isLeader !== undefined && req.query.isLeader !== "" ? Number(req.query.isLeader) : null;
 
     // Fetch mst_role entries (produksi/frontliner from company 5)
-    const [roleRows] = await safeMyWaschenQuery("SELECT employee_id, role, is_leader, outlet_id FROM mst_role");
+    const [roleRows] = await safeMyWaschenQuery(
+      "SELECT employee_id, role, is_leader, outlet_id, code_pin, employee_name FROM mst_role"
+    );
     const roleMap = {};
     for (const rr of roleRows) {
       roleMap[rr.employee_id] = {
         role: rr.role,
         is_leader: rr.is_leader,
         outlet_id: rr.outlet_id,
+        code_pin: rr.code_pin != null && String(rr.code_pin).trim() !== ""
+          ? String(rr.code_pin).trim()
+          : null,
+        employee_name: rr.employee_name || null,
       };
     }
 
@@ -85,6 +91,7 @@ export const listWaschenEmployees = async (req, res) => {
       is_leader: roleMap[r.employee_id]?.is_leader ?? null,
       outlet_id: roleMap[r.employee_id]?.outlet_id ?? null,
       outlet_name: roleMap[r.employee_id]?.outlet_id ? (outletMap[roleMap[r.employee_id].outlet_id] ?? "-") : "-",
+      code_pin: roleMap[r.employee_id]?.code_pin ?? null,
     }));
 
     // Apply post-merge filters (role/outlet/leader live in separate DB)
@@ -212,15 +219,15 @@ export const addWaschenEmployee = async (req, res) => {
 export const updateEmployeeRole = async (req, res) => {
   try {
     const { id } = req.params;
-    const { role, is_leader, outlet_id } = req.body;
+    const { role, is_leader, outlet_id, code_pin } = req.body;
 
     const ALLOWED_ROLES = ["Frontliner", "Washing Staff", "Ironing Staff", "Packing Staff", "Delivery Staff"];
     if (role && !ALLOWED_ROLES.includes(role) && role !== "null" && role !== null) {
-      return res.status(400).json({ message: "Role tidak valid." });
+      return res.status(400).json({ message: "Posisi tidak valid." });
     }
 
     const [emp] = await safeQuery(
-      "SELECT employee_id FROM mst_employee WHERE employee_id = ? AND is_deleted = 0 LIMIT 1",
+      "SELECT employee_id, full_name FROM mst_employee WHERE employee_id = ? AND is_deleted = 0 LIMIT 1",
       [id]
     );
     if (emp.length === 0) {
@@ -231,13 +238,48 @@ export const updateEmployeeRole = async (req, res) => {
     const cleanIsLeader = is_leader !== undefined && is_leader !== null && is_leader !== "null" && is_leader !== "" ? (Number(is_leader) === 1 ? 1 : 0) : null;
     const cleanOutletId = outlet_id && outlet_id !== "null" && outlet_id !== "" ? Number(outlet_id) : null;
 
-    const [exist] = await safeMyWaschenQuery("SELECT employee_id, role, is_leader, outlet_id FROM mst_role WHERE employee_id = ? LIMIT 1", [id]);
+    let cleanPin;
+    if (code_pin !== undefined) {
+      if (code_pin === null || code_pin === "" || code_pin === "null") {
+        cleanPin = null;
+      } else {
+        const digits = String(code_pin).replace(/\D/g, "");
+        if (!digits) {
+          return res.status(400).json({ message: "PIN harus berupa angka." });
+        }
+        if (digits.length !== 4) {
+          return res.status(400).json({ message: "PIN harus 4 digit." });
+        }
+        cleanPin = digits;
+      }
+    }
+
+    if (code_pin !== undefined && cleanPin) {
+      const [dup] = await safeMyWaschenQuery(
+        `SELECT employee_id FROM mst_role
+         WHERE TRIM(CAST(code_pin AS CHAR)) = ?
+           AND employee_id != ?
+         LIMIT 1`,
+        [cleanPin, id]
+      );
+      if (dup.length > 0) {
+        return res.status(409).json({
+          message: `PIN ${cleanPin} sudah dipakai karyawan lain. Gunakan PIN unik.`,
+        });
+      }
+    }
+
+    const [exist] = await safeMyWaschenQuery(
+      "SELECT employee_id, role, is_leader, outlet_id, code_pin FROM mst_role WHERE employee_id = ? LIMIT 1",
+      [id]
+    );
     if (exist.length > 0) {
       const finalRole = role !== undefined ? cleanRole : exist[0].role;
       const finalIsLeader = is_leader !== undefined ? cleanIsLeader : exist[0].is_leader;
       const finalOutletId = outlet_id !== undefined ? cleanOutletId : exist[0].outlet_id;
+      const finalPin = code_pin !== undefined ? cleanPin : (exist[0].code_pin != null && String(exist[0].code_pin).trim() !== "" ? String(exist[0].code_pin).trim() : null);
 
-      if (finalRole === null && finalIsLeader === null && finalOutletId === null) {
+      if (finalRole === null && finalIsLeader === null && finalOutletId === null && !finalPin) {
         await safeMyWaschenQuery("DELETE FROM mst_role WHERE employee_id = ?", [id]);
       } else {
         const updates = [];
@@ -254,23 +296,41 @@ export const updateEmployeeRole = async (req, res) => {
           updates.push("outlet_id = ?");
           params.push(cleanOutletId);
         }
+        if (code_pin !== undefined) {
+          updates.push("code_pin = ?");
+          params.push(cleanPin);
+        }
         if (updates.length > 0) {
           params.push(id);
           await safeMyWaschenQuery(`UPDATE mst_role SET ${updates.join(", ")} WHERE employee_id = ?`, params);
         }
       }
     } else {
-      if (cleanRole !== null || cleanIsLeader !== null || cleanOutletId !== null) {
-        await safeMyWaschenQuery("INSERT INTO mst_role (employee_id, role, is_leader, outlet_id) VALUES (?, ?, ?, ?)", [id, cleanRole, cleanIsLeader, cleanOutletId]);
+      if (cleanRole !== null || cleanIsLeader !== null || cleanOutletId !== null || (code_pin !== undefined && cleanPin)) {
+        await safeMyWaschenQuery(
+          "INSERT INTO mst_role (employee_id, employee_name, role, is_leader, outlet_id, code_pin) VALUES (?, ?, ?, ?, ?, ?)",
+          [
+            id,
+            emp[0].full_name || null,
+            cleanRole,
+            cleanIsLeader,
+            cleanOutletId,
+            code_pin !== undefined ? cleanPin : null,
+          ]
+        );
       }
     }
 
-    return res.json({ success: true, message: "Unit/bagian karyawan berhasil diperbarui." });
+    return res.json({
+      success: true,
+      message: code_pin !== undefined ? "PIN karyawan berhasil diperbarui." : "Posisi karyawan berhasil diperbarui.",
+      data: code_pin !== undefined ? { code_pin: cleanPin } : undefined,
+    });
   } catch (error) {
     console.error("[updateEmployeeRole] Error:", error);
     return res.status(500).json({
       success: false,
-      message: error.message || "Gagal memperbarui unit/bagian karyawan",
+      message: error.message || "Gagal memperbarui posisi karyawan",
     });
   }
 };

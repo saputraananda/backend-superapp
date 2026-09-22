@@ -144,18 +144,38 @@ export const getPendingApprovals = async (req, res) => {
 };
 
 export const uploadBodAttachment = async (req, res) => {
+	const uploadedAbs = req.file?.path || null;
+	const cleanupNew = () => {
+		if (uploadedAbs && fs.existsSync(uploadedAbs)) {
+			try { fs.unlinkSync(uploadedAbs); } catch (_) { /* ignore */ }
+		}
+	};
+
 	try {
 		const id = toPositiveInt(req.params.id);
-		if (!id) return res.status(400).json({ message: "ID tidak valid" });
+		if (!id) {
+			cleanupNew();
+			return res.status(400).json({ message: "ID tidak valid" });
+		}
 		if (!req.file) return res.status(422).json({ message: "File bukti BOD wajib dilampirkan" });
 
 		const currentEmpId = req.session?.employeeId;
 		const [rows] = await safeAloraMobileQuery(`SELECT * FROM tr_worker_attendance WHERE id = ?`, [id]);
 		const item = rows[0];
-		if (!item) return res.status(404).json({ message: "Absensi tidak ditemukan" });
+		if (!item) {
+			cleanupNew();
+			return res.status(404).json({ message: "Absensi tidak ditemukan" });
+		}
 		if (!["wfa", "wod"].includes(item.attendance_mode)) {
+			cleanupNew();
 			return res.status(400).json({ message: "Bukti BOD hanya untuk WFA/WOD" });
 		}
+
+		const [oldRows] = await safeAloraMobileQuery(
+			`SELECT id, file_path FROM tr_approval_attachments
+       WHERE entity_type = 'attendance' AND entity_id = ? AND attachment_role = 'bod_proof'`,
+			[id]
+		);
 
 		const filePath = `/alora/attendance-sessions/bod/${req.file.filename}`;
 		await safeAloraMobileQuery(
@@ -164,8 +184,20 @@ export const uploadBodAttachment = async (req, res) => {
 			[id, filePath, currentEmpId]
 		);
 
+		for (const old of oldRows) {
+			await safeAloraMobileQuery(`DELETE FROM tr_approval_attachments WHERE id = ?`, [old.id]);
+			const oldName = path.basename(String(old.file_path || ""));
+			if (oldName) {
+				const oldAbs = path.join(BOD_DIR, oldName);
+				if (fs.existsSync(oldAbs)) {
+					try { fs.unlinkSync(oldAbs); } catch (_) { /* ignore */ }
+				}
+			}
+		}
+
 		return res.json({ message: "Bukti BOD berhasil diunggah", file_path: filePath });
 	} catch (err) {
+		cleanupNew();
 		console.error("[alora attendance uploadBod]", err);
 		return res.status(500).json({ message: "Gagal mengunggah bukti BOD" });
 	}

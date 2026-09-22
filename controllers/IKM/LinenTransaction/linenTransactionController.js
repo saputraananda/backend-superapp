@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { safeIKMQuery, safeQuery } from "../../db/pool.js";
+import { safeIKMQuery, safeQuery } from "../../../db/pool.js";
 
 function toISODateString(v) {
   return /^\d{4}-\d{2}-\d{2}$/.test(v || "") ? v : null;
@@ -11,10 +11,20 @@ function toPositiveInt(v) {
   return Number.isInteger(n) && n > 0 ? n : null;
 }
 
+function parseKg(v) {
+  if (v === "" || v === null || v === undefined) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function parseExpress(v) {
+  return v === true || v === 1 || v === "1" ? 1 : 0;
+}
+
 export const getHospitals = async (req, res) => {
   try {
     const [rows] = await safeIKMQuery(
-      "SELECT id, hospital_name FROM mst_hospital ORDER BY hospital_name ASC"
+      "SELECT id, hospital_name, billing_by_kg, allow_express FROM mst_hospital ORDER BY hospital_name ASC"
     );
     res.json({ success: true, data: rows });
   } catch (err) {
@@ -105,7 +115,8 @@ export const getLinenTransactions = async (req, res) => {
 
     const fetchSql = `
       SELECT tr.id, tr.form_number, tr.hospital_id, tr.user_pickup, tr.user_delivery, tr.pickup_date, tr.delivery_date, tr.status, tr.notes_pickup, tr.notes_delivery,
-             h.hospital_name,
+             tr.total_kg_valet, tr.is_express, tr.total_kg_admin,
+             h.hospital_name, h.billing_by_kg, h.allow_express,
              COALESCE(SUM(d.qty_kotor), 0) AS total_kotor,
              COALESCE(SUM(d.qty_bersih), 0) AS total_bersih,
              (COALESCE(SUM(d.qty_kotor), 0) - COALESCE(SUM(d.qty_bersih), 0)) AS kurang_kirim
@@ -172,7 +183,9 @@ export const getLinenTransactionById = async (req, res) => {
               tr.signature_valet_pickup, tr.signature_hospital_pickup, tr.signature_assistant_pickup,
               tr.signature_valet_delivery, tr.signature_hospital_delivery, tr.signature_assistant_delivery,
               tr.pickup_date, tr.delivery_date, tr.status, tr.notes_pickup, tr.notes_delivery,
-              h.hospital_name
+              tr.total_kg_valet, tr.is_express, tr.total_kg_admin,
+              h.hospital_name, h.billing_by_kg, h.allow_express,
+              h.price_per_kg, h.express_price_per_kg
        FROM tr_linen_transaction tr
        LEFT JOIN mst_hospital h ON h.id = tr.hospital_id
        WHERE tr.id = ?`,
@@ -459,8 +472,12 @@ async function getTransactionSnapshot(transactionId) {
 // ── CRUD Endpoints ───────────────────────────────────────────────────────────
 export const getEmployees = async (req, res) => {
   try {
+    // company_id = 2 (IKM) diurutkan di atas, tapi nama di luar company tetap di-return
     const [rows] = await safeQuery(
-      "SELECT employee_id, full_name FROM mst_employee WHERE company_id = 2 AND exit_date IS NULL ORDER BY full_name ASC"
+      `SELECT employee_id, full_name, company_id
+       FROM mst_employee
+       WHERE exit_date IS NULL
+       ORDER BY CASE WHEN company_id = 2 THEN 0 ELSE 1 END, full_name ASC`
     );
     res.json({ success: true, data: rows });
   } catch (err) {
@@ -484,7 +501,7 @@ export const getHospitalLinens = async (req, res) => {
        LEFT JOIN mst_color cl ON l.color_id = cl.id
        LEFT JOIN mst_material mt ON l.material_id = mt.id
        LEFT JOIN mst_hospital_linen_rooms hlr ON hlr.hospital_linen_id = hl.id
-       WHERE hl.hospital_id = ? AND hl.is_active = 1
+       WHERE hl.hospital_id = ? AND hl.is_active = 1 AND COALESCE(hl.is_commercial, 0) = 0
        GROUP BY hl.id, hl.hospital_linen_name, hl.ownership_type, l.linen_name, sz.size_name, cl.color_name, mt.material_name
        ORDER BY hl.hospital_linen_name ASC, l.linen_name ASC`,
       [hospitalId]
@@ -519,7 +536,10 @@ export const createLinenTransaction = async (req, res) => {
       notes_pickup,
       notes_delivery,
       status,
-      details
+      details,
+      total_kg_valet,
+      is_express,
+      total_kg_admin
     } = req.body;
 
     if (!hospital_id || !user_pickup || !pickup_date) {
@@ -551,8 +571,8 @@ export const createLinenTransaction = async (req, res) => {
     // Insert Header
     const [result] = await safeIKMQuery(
       `INSERT INTO tr_linen_transaction 
-       (form_number, hospital_id, user_pickup, user_delivery, hospital_staff_pickup, hospital_staff_delivery, hospital_assistant_pickup, hospital_assistant_delivery, pickup_date, delivery_date, status, notes_pickup, notes_delivery) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (form_number, hospital_id, user_pickup, user_delivery, hospital_staff_pickup, hospital_staff_delivery, hospital_assistant_pickup, hospital_assistant_delivery, pickup_date, delivery_date, status, notes_pickup, notes_delivery, total_kg_valet, is_express, total_kg_admin) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         form_number,
         Number(hospital_id),
@@ -566,7 +586,10 @@ export const createLinenTransaction = async (req, res) => {
         delivery_date || null,
         status || "PROSES",
         notes_pickup || null,
-        notes_delivery || null
+        notes_delivery || null,
+        parseKg(total_kg_valet),
+        parseExpress(is_express),
+        parseKg(total_kg_admin)
       ]
     );
 
@@ -626,7 +649,10 @@ export const updateLinenTransaction = async (req, res) => {
       notes_pickup,
       notes_delivery,
       status,
-      details
+      details,
+      total_kg_valet,
+      is_express,
+      total_kg_admin
     } = req.body;
 
     if (!form_number || !user_pickup || !pickup_date) {
@@ -653,7 +679,10 @@ export const updateLinenTransaction = async (req, res) => {
            delivery_date = ?, 
            status = ?, 
            notes_pickup = ?,
-           notes_delivery = ?
+           notes_delivery = ?,
+           total_kg_valet = ?,
+           is_express = ?,
+           total_kg_admin = ?
        WHERE id = ?`,
       [
         form_number,
@@ -668,6 +697,9 @@ export const updateLinenTransaction = async (req, res) => {
         status || "PROSES",
         notes_pickup || null,
         notes_delivery || null,
+        parseKg(total_kg_valet),
+        parseExpress(is_express),
+        parseKg(total_kg_admin),
         id
       ]
     );
@@ -782,7 +814,7 @@ export const getRekapCuciLinen = async (req, res) => {
       LEFT JOIN mst_size sz ON l.size_id = sz.id
       LEFT JOIN mst_color cl ON l.color_id = cl.id
       LEFT JOIN mst_material mt ON l.material_id = mt.id
-      WHERE hl.is_active = 1 AND hl.hospital_id IN (${ph})
+      WHERE hl.is_active = 1 AND COALESCE(hl.is_commercial, 0) = 0 AND hl.hospital_id IN (${ph})
     `;
     let linenParams = [...hospitalIds];
 
@@ -821,6 +853,84 @@ export const getRekapCuciLinen = async (req, res) => {
         };
       }),
       transactions: txRows
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+export const getRekapKgLinen = async (req, res) => {
+  try {
+    const { startDate, endDate, hospital_id } = req.query;
+    if (!startDate || !endDate) {
+      return res.status(400).json({ success: false, message: "Tanggal awal dan akhir harus diisi" });
+    }
+    if (!hospital_id) {
+      return res.status(400).json({ success: false, message: "Pilih satu rumah sakit untuk export KG" });
+    }
+
+    const [hospitals] = await safeIKMQuery(
+      `SELECT id, hospital_name, billing_by_kg, price_per_kg, express_price_per_kg FROM mst_hospital WHERE id = ?`,
+      [Number(hospital_id)]
+    );
+    if (!hospitals.length) {
+      return res.status(404).json({ success: false, message: "Rumah sakit tidak ditemukan" });
+    }
+    if (!Number(hospitals[0].billing_by_kg)) {
+      return res.status(400).json({ success: false, message: "RS ini tidak memakai billing per kilogram" });
+    }
+
+    const [details] = await safeIKMQuery(
+      `SELECT
+         tr.id,
+         tr.form_number,
+         tr.pickup_date,
+         tr.delivery_date,
+         tr.status,
+         tr.total_kg_valet,
+         tr.total_kg_admin,
+         tr.is_express,
+         DATE_FORMAT(tr.pickup_date, '%Y-%m-%d') AS tx_date,
+         COALESCE(SUM(d.qty_kotor), 0) AS total_kotor,
+         COALESCE(SUM(d.qty_bersih), 0) AS total_bersih
+       FROM tr_linen_transaction tr
+       LEFT JOIN tr_linen_transaction_detail d ON d.transaction_id = tr.id
+       WHERE tr.hospital_id = ?
+         AND tr.pickup_date >= ?
+         AND tr.pickup_date <= ?
+       GROUP BY tr.id
+       ORDER BY tr.pickup_date ASC, tr.id ASC`,
+      [Number(hospital_id), `${startDate} 00:00:00`, `${endDate} 23:59:59`]
+    );
+
+    const dailyMap = new Map();
+    details.forEach((row) => {
+      const key = row.tx_date;
+      if (!dailyMap.has(key)) {
+        dailyMap.set(key, {
+          tx_date: key,
+          tx_count: 0,
+          total_kg_valet: 0,
+          total_kg_admin: 0,
+          express_count: 0,
+          total_kotor: 0,
+          total_bersih: 0,
+        });
+      }
+      const agg = dailyMap.get(key);
+      agg.tx_count += 1;
+      agg.total_kg_valet += Number(row.total_kg_valet || 0);
+      agg.total_kg_admin += Number(row.total_kg_admin || 0);
+      agg.express_count += Number(row.is_express) === 1 ? 1 : 0;
+      agg.total_kotor += Number(row.total_kotor || 0);
+      agg.total_bersih += Number(row.total_bersih || 0);
+    });
+
+    res.json({
+      success: true,
+      hospital: hospitals[0],
+      daily: [...dailyMap.values()],
+      details,
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

@@ -159,12 +159,22 @@ export const deleteUnit = async (req, res) => {
       return res.status(404).json({ success: false, message: "Satuan tidak ditemukan" });
     }
 
-    // Check FK usage in mst_service
-    const [usedInService] = await safeMyWaschenQuery("SELECT id FROM mst_service WHERE unit_id = ?", [id]);
+    const [usedInService] = await safeMyWaschenQuery("SELECT id FROM mst_service WHERE unit_id = ? LIMIT 1", [id]);
     if (usedInService.length) {
       return res.status(400).json({
         success: false,
         message: "Satuan ini tidak dapat dihapus karena sedang digunakan oleh beberapa Layanan Laundry."
+      });
+    }
+
+    const [usedInInventory] = await safeMyWaschenQuery(
+      "SELECT id FROM mst_inventory_item WHERE unit_id = ? LIMIT 1",
+      [id]
+    );
+    if (usedInInventory.length) {
+      return res.status(400).json({
+        success: false,
+        message: "Satuan ini tidak dapat dihapus karena sedang digunakan oleh item Inventory."
       });
     }
 

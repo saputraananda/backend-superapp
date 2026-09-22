@@ -6,6 +6,7 @@ import {
   getMaterialsMD, createMaterial, updateMaterial, deleteMaterial,
   getLinenCategories, createLinenCategory, updateLinenCategory, deleteLinenCategory,
   getVendorsMD, createVendor, updateVendor, deleteVendor,
+  getUnitsMD, createUnit, updateUnit, deleteUnit,
 } from "../../controllers/IKM/masterDataIKMController.js";
 
 const router = express.Router();
@@ -34,5 +35,10 @@ router.get("/vendors",       requireAuth, getVendorsMD);
 router.post("/vendors",      requireAuth, createVendor);
 router.put("/vendors/:id",   requireAuth, updateVendor);
 router.delete("/vendors/:id", requireAuth, deleteVendor);
+
+router.get("/units",       requireAuth, getUnitsMD);
+router.post("/units",      requireAuth, createUnit);
+router.put("/units/:id",   requireAuth, updateUnit);
+router.delete("/units/:id", requireAuth, deleteUnit);
 
 export default router;

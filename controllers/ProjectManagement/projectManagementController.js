@@ -23,6 +23,95 @@ async function getSessionEmployee(req) {
   return rows[0] || null;
 }
 
+const EVIDENCE_LINK_SELECT = `
+  (SELECT COUNT(*) FROM tr_projectmanagement_task_evidance ev
+   WHERE ev.id_pm_task = t.id AND ev.evidence_type = 'link') AS link_evidence_count,
+  (SELECT ev.file_path FROM tr_projectmanagement_task_evidance ev
+   WHERE ev.id_pm_task = t.id AND ev.evidence_type = 'link'
+   ORDER BY ev.created_at ASC LIMIT 1) AS first_link_url,
+  (SELECT ev.file_name FROM tr_projectmanagement_task_evidance ev
+   WHERE ev.id_pm_task = t.id AND ev.evidence_type = 'link'
+   ORDER BY ev.created_at ASC LIMIT 1) AS first_link_title
+`;
+
+function normalizeEvidenceUrl(raw) {
+  const trimmed = String(raw || "").trim();
+  if (!trimmed || trimmed.length > 500) return null;
+  if (/^javascript:/i.test(trimmed) || /^data:/i.test(trimmed)) return null;
+  if (/^https?:\/\/.+/i.test(trimmed)) return trimmed;
+  if (/^[\w.-]+\.[a-z]{2,}/i.test(trimmed)) return `https://${trimmed}`;
+  return null;
+}
+
+async function assertCanManageTaskEvidence(emp, taskId) {
+  const [taskRows] = await db.query(
+    `SELECT owner_employee_id, pic_employee_id FROM tr_projectmanagement_task WHERE id = ? AND is_deleted = 0`,
+    [taskId]
+  );
+  if (!taskRows.length) return { ok: false, status: 404, message: "Task tidak ditemukan" };
+
+  const ownerId = taskRows[0].owner_employee_id;
+  const picId = taskRows[0].pic_employee_id;
+
+  const [assigneeRows] = await db.query(
+    `SELECT id FROM tr_projectmanagement_task_assignee
+     WHERE id_pm_task = ? AND employee_id = ? AND role = 'co-pic'`,
+    [taskId, emp.employee_id]
+  );
+
+  const allowed =
+    emp.employee_id === ownerId ||
+    emp.employee_id === picId ||
+    assigneeRows.length > 0;
+
+  if (!allowed) {
+    return { ok: false, status: 403, message: "Anda tidak memiliki akses untuk mengelola evidence pada task ini" };
+  }
+
+  return { ok: true };
+}
+
+async function syncLegacyFileEvidence(taskId) {
+  const [remaining] = await db.query(
+    `SELECT file_name, file_path FROM tr_projectmanagement_task_evidance
+     WHERE id_pm_task = ? AND evidence_type = 'file'
+     ORDER BY created_at DESC LIMIT 1`,
+    [taskId]
+  );
+
+  if (remaining.length > 0) {
+    await db.query(
+      `UPDATE tr_projectmanagement_task SET evidance_path = ?, evidance = ? WHERE id = ?`,
+      [remaining[0].file_path, remaining[0].file_name, taskId]
+    );
+  } else {
+    await db.query(
+      `UPDATE tr_projectmanagement_task SET evidance_path = NULL, evidance = NULL WHERE id = ?`,
+      [taskId]
+    );
+  }
+}
+
+async function insertTaskLinkEvidence(taskId, url, title, uploadedBy) {
+  const normalizedUrl = normalizeEvidenceUrl(url);
+  if (!normalizedUrl) return null;
+
+  const safeTitle = title ? String(title).trim().slice(0, 255) : null;
+  const [result] = await db.query(
+    `INSERT INTO tr_projectmanagement_task_evidance
+       (id_pm_task, evidence_type, file_name, file_path, uploaded_by)
+     VALUES (?, 'link', ?, ?, ?)`,
+    [taskId, safeTitle, normalizedUrl, uploadedBy]
+  );
+
+  return {
+    id: result.insertId,
+    evidence_type: "link",
+    file_name: safeTitle,
+    file_path: normalizedUrl,
+  };
+}
+
 // ─── WORKSPACE (tr_projectmanagement) ────────────────────────────────────────
 
 /**
@@ -351,6 +440,7 @@ export async function listTasks(req, res) {
          t.evidance,
          t.evidance_path,
          t.link,
+         ${EVIDENCE_LINK_SELECT},
          t.owner_employee_id,
          t.pic_employee_id,
          t.position_id,
@@ -394,6 +484,7 @@ export async function listWorkspaceTasks(req, res) {
          t.evidance,
          t.evidance_path,
          t.link,
+         ${EVIDENCE_LINK_SELECT},
          t.owner_employee_id,
          t.pic_employee_id,
          t.position_id,
@@ -431,7 +522,7 @@ export async function createTask(req, res) {
     const { id } = req.params;
     const {
       title, desc, startdate, enddate,
-      pic_employee_id, priority, link, link_title,
+      pic_employee_id, priority, link, link_title, links,
       co_pics, reviewers, position_id, id_pm_detail
     } = req.body;
 
@@ -456,11 +547,10 @@ export async function createTask(req, res) {
       }
     }
 
-    // Insert task — link_title disimpan di kolom evidance
     const [result] = await db.query(
       `INSERT INTO tr_projectmanagement_task
-         (id_pm, id_pm_detail, title, \`desc\`, startdate, enddate, owner_employee_id, pic_employee_id, position_id, priority, link, evidance, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'To Do')`,
+         (id_pm, id_pm_detail, title, \`desc\`, startdate, enddate, owner_employee_id, pic_employee_id, position_id, priority, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'To Do')`,
       [
         final_id_pm,
         final_id_pm_detail || null,
@@ -472,12 +562,25 @@ export async function createTask(req, res) {
         pic_employee_id,
         position_id || null,
         priority || "medium",
-        link?.trim() || null,
-        link_title?.trim() || null,
       ]
     );
 
     const taskId = result.insertId;
+
+    const linksToAdd = [];
+    if (Array.isArray(links)) {
+      for (const item of links) {
+        if (item?.url?.trim()) {
+          linksToAdd.push({ url: item.url, title: item.title || null });
+        }
+      }
+    } else if (link?.trim()) {
+      linksToAdd.push({ url: link, title: link_title || null });
+    }
+
+    for (const item of linksToAdd) {
+      await insertTaskLinkEvidence(taskId, item.url, item.title, emp.employee_id);
+    }
 
     // Assignee: PIC
     await db.query(
@@ -735,13 +838,14 @@ export async function getTaskDetail(req, res) {
     task.reviewers = revRows.map(r => String(r.employee_id));
 
     const [evRows] = await db.query(
-      `SELECT id, file_name, file_path, file_type, file_size, created_at
+      `SELECT id, evidence_type, file_name, file_path, file_type, file_size, created_at
        FROM tr_projectmanagement_task_evidance
        WHERE id_pm_task = ?
        ORDER BY created_at ASC`,
       [id]
     );
     task.evidences = evRows;
+    task.link_evidence_count = evRows.filter(r => r.evidence_type === "link").length;
 
     res.json({ data: task });
   } catch (err) {
@@ -910,7 +1014,7 @@ export async function getMe(req, res) {
 
 /**
  * POST /api/pm2/tasks/:id/evidence
- * Upload lampiran untuk task
+ * Upload lampiran file untuk task
  */
 export async function uploadTaskEvidence(req, res) {
   if (!requireAuth(req, res)) return;
@@ -919,30 +1023,8 @@ export async function uploadTaskEvidence(req, res) {
     if (!emp) return res.status(401).json({ message: "Unauthorized" });
     const { id } = req.params;
 
-    // Check if user is owner, PIC, or Co-PIC
-    const [taskRows] = await db.query(
-      `SELECT owner_employee_id, pic_employee_id FROM tr_projectmanagement_task WHERE id = ? AND is_deleted = 0`,
-      [id]
-    );
-    if (!taskRows.length) return res.status(404).json({ message: "Task tidak ditemukan" });
-
-    const ownerId = taskRows[0].owner_employee_id;
-    const picId = taskRows[0].pic_employee_id;
-
-    // Check if user is Co-PIC
-    const [assigneeRows] = await db.query(
-      `SELECT id FROM tr_projectmanagement_task_assignee 
-       WHERE id_pm_task = ? AND employee_id = ? AND role = 'co-pic'`,
-      [id, emp.employee_id]
-    );
-
-    const isOwner = (emp.employee_id === ownerId);
-    const isPic = (emp.employee_id === picId);
-    const isCoPic = (assigneeRows.length > 0);
-
-    if (!isOwner && !isPic && !isCoPic) {
-      return res.status(403).json({ message: "Anda tidak memiliki akses untuk mengunggah evidence pada task ini" });
-    }
+    const access = await assertCanManageTaskEvidence(emp, id);
+    if (!access.ok) return res.status(access.status).json({ message: access.message });
 
     if (!req.file) return res.status(400).json({ message: "File tidak ditemukan" });
 
@@ -951,17 +1033,45 @@ export async function uploadTaskEvidence(req, res) {
     const fileType = req.file.mimetype;
     const fileSize = req.file.size;
 
-    await db.query(
-      `INSERT INTO tr_projectmanagement_task_evidance (id_pm_task, file_name, file_path, file_type, file_size, uploaded_by)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+    const [result] = await db.query(
+      `INSERT INTO tr_projectmanagement_task_evidance
+         (id_pm_task, evidence_type, file_name, file_path, file_type, file_size, uploaded_by)
+       VALUES (?, 'file', ?, ?, ?, ?, ?)`,
       [id, fileName, filePath, fileType, fileSize, emp.employee_id]
     );
-    await db.query(
-      `UPDATE tr_projectmanagement_task SET evidance_path = ?, evidance = ? WHERE id = ?`,
-      [filePath, fileName, id]
-    );
+    await syncLegacyFileEvidence(id);
 
-    res.status(201).json({ message: "File berhasil diunggah", file_path: filePath, file_name: fileName });
+    res.status(201).json({
+      message: "File berhasil diunggah",
+      id: result.insertId,
+      evidence_type: "file",
+      file_path: filePath,
+      file_name: fileName,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+/**
+ * POST /api/pm2/tasks/:id/evidence/link
+ * Tambah link URL sebagai evidence task
+ */
+export async function addTaskEvidenceLink(req, res) {
+  if (!requireAuth(req, res)) return;
+  try {
+    const emp = await getSessionEmployee(req);
+    if (!emp) return res.status(401).json({ message: "Unauthorized" });
+    const { id } = req.params;
+    const { url, title } = req.body;
+
+    const access = await assertCanManageTaskEvidence(emp, id);
+    if (!access.ok) return res.status(access.status).json({ message: access.message });
+
+    const inserted = await insertTaskLinkEvidence(id, url, title, emp.employee_id);
+    if (!inserted) return res.status(400).json({ message: "URL tidak valid" });
+
+    res.status(201).json({ message: "Link berhasil disimpan", data: inserted });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -969,14 +1079,14 @@ export async function uploadTaskEvidence(req, res) {
 
 /**
  * GET /api/pm2/tasks/:id/evidence
- * List semua evidence file milik task
+ * List semua evidence (file & link) milik task
  */
 export async function listTaskEvidences(req, res) {
   if (!requireAuth(req, res)) return;
   try {
     const { id } = req.params;
     const [rows] = await db.query(
-      `SELECT id, file_name, file_path, file_type, file_size, created_at
+      `SELECT id, evidence_type, file_name, file_path, file_type, file_size, created_at
        FROM tr_projectmanagement_task_evidance
        WHERE id_pm_task = ?
        ORDER BY created_at ASC`,
@@ -990,7 +1100,7 @@ export async function listTaskEvidences(req, res) {
 
 /**
  * DELETE /api/pm2/tasks/:id/evidence/:evidenceId
- * Hapus satu evidence file milik task
+ * Hapus satu evidence (file atau link) milik task
  */
 export async function deleteTaskEvidence(req, res) {
   if (!requireAuth(req, res)) return;
@@ -1000,61 +1110,22 @@ export async function deleteTaskEvidence(req, res) {
 
     const { id, evidenceId } = req.params;
 
-    // Check if user is owner, PIC, or Co-PIC
-    const [taskRows] = await db.query(
-      `SELECT owner_employee_id, pic_employee_id FROM tr_projectmanagement_task WHERE id = ? AND is_deleted = 0`,
-      [id]
-    );
-    if (!taskRows.length) return res.status(404).json({ message: "Task tidak ditemukan" });
+    const access = await assertCanManageTaskEvidence(emp, id);
+    if (!access.ok) return res.status(access.status).json({ message: access.message });
 
-    const ownerId = taskRows[0].owner_employee_id;
-    const picId = taskRows[0].pic_employee_id;
-
-    // Check if user is Co-PIC
-    const [assigneeRows] = await db.query(
-      `SELECT id FROM tr_projectmanagement_task_assignee 
-       WHERE id_pm_task = ? AND employee_id = ? AND role = 'co-pic'`,
-      [id, emp.employee_id]
-    );
-
-    const isOwner = (emp.employee_id === ownerId);
-    const isPic = (emp.employee_id === picId);
-    const isCoPic = (assigneeRows.length > 0);
-
-    if (!isOwner && !isPic && !isCoPic) {
-      return res.status(403).json({ message: "Anda tidak memiliki akses untuk menghapus evidence pada task ini" });
-    }
-
-    // Cek evidence ada & milik task ini
     const [rows] = await db.query(
-      `SELECT * FROM tr_projectmanagement_task_evidance WHERE id = ? AND id_pm_task = ?`,
+      `SELECT evidence_type FROM tr_projectmanagement_task_evidance WHERE id = ? AND id_pm_task = ?`,
       [evidenceId, id]
     );
     if (!rows.length) return res.status(404).json({ message: "Evidence tidak ditemukan" });
 
-    // Hapus record dari DB
     await db.query(
       `DELETE FROM tr_projectmanagement_task_evidance WHERE id = ?`,
       [evidenceId]
     );
 
-    // Cek apakah masih ada evidence lain untuk task ini
-    const [remaining] = await db.query(
-      `SELECT id, file_name, file_path FROM tr_projectmanagement_task_evidance
-       WHERE id_pm_task = ? ORDER BY created_at DESC LIMIT 1`,
-      [id]
-    );
-
-    if (remaining.length > 0) {
-      await db.query(
-        `UPDATE tr_projectmanagement_task SET evidance_path = ?, evidance = ? WHERE id = ?`,
-        [remaining[0].file_path, remaining[0].file_name, id]
-      );
-    } else {
-      await db.query(
-        `UPDATE tr_projectmanagement_task SET evidance_path = NULL, evidance = NULL WHERE id = ?`,
-        [id]
-      );
+    if (rows[0].evidence_type === "file") {
+      await syncLegacyFileEvidence(id);
     }
 
     res.json({ message: "Evidence berhasil dihapus" });
@@ -1086,6 +1157,7 @@ export async function listMyTasks(req, res) {
          t.evidance,
          t.evidance_path,
          t.link,
+         ${EVIDENCE_LINK_SELECT},
          t.owner_employee_id,
          t.pic_employee_id,
          t.position_id,

@@ -22,6 +22,7 @@ import pmRoutes from "./routes/pmRoutes.js";
 import masterKarRoutes from "./routes/masterKarRoutes.js";
 import dailyTaskRoutes from "./routes/dailyTaskRoutes.js";
 import broadcastRoutes from "./routes/broadcastRoutes.js";
+import youtubeRoutes from "./routes/youtubeRoutes.js";
 import masterUserRoutes from "./routes/masterDataSuperApp/masterUserRoutes.js";
 import masterMenuRoutes from "./routes/masterDataSuperApp/masterMenuRoutes.js";
 import masterBankRoutes from "./routes/masterDataSuperApp/masterBankRoutes.js";
@@ -54,12 +55,13 @@ import leaderDailyReportRoutes from "./routes/IKM/leaderDailyReportRoutes.js";
 import kasbonRoutes from "./routes/IKM/kasbonRoutes.js";
 import absensiManajemenIKMRoutes from "./routes/IKM/absensiManajemenIKMRoutes.js";
 import stockOpnameIKMRoutes from "./routes/IKM/stockOpnameIKMRoutes.js";
-import linenTransactionRoutes from "./routes/IKM/linenTransactionRoutes.js";
-import linenTransactionKomersilRoutes from "./routes/IKM/linenTransactionKomersilRoutes.js";
+import linenTransactionRoutes from "./routes/IKM/LinenTransaction/linenTransactionRoutes.js";
+import linenTransactionKomersilRoutes from "./routes/IKM/LinenTransaction/linenTransactionKomersilRoutes.js";
 import operationalRoutes from "./routes/operationalRoutes.js";
 import internalRoutes from "./routes/internalRoutes.js";
 import complaintRoutes from "./routes/complaintRoutes.js";
-import pengajuanRoutes from "./routes/pengajuanRoutes.js";
+import pengajuanRoutes from "./routes/PurchaseRequest/pengajuan.routes.js";
+import masterClassificationRoutes from "./routes/PurchaseRequest/masterClassification.routes.js";
 import docAloraRoutes from "./routes/docAloraRoutes.js";
 import csatNpsRoutes from "./routes/csatNpsRoutes.js";
 import b2bKoperasiRoutes from "./routes/B2B/B2B-Koperasi-2026/b2bKoperasiDashboardRoutes.js";
@@ -89,23 +91,46 @@ import targetCleanoxRoutes from "./routes/Cleanox/targetCleanoxRoutes.js";
 import riwayatTransaksiCleanoxRoutes from "./routes/Cleanox/riwayatTransaksiCleanoxRoutes.js";
 import pendapatanCleanoxRoutes from "./routes/Cleanox/pendapatanCleanoxRoutes.js";
 import piutangDashboardCleanoxRoutes from "./routes/Cleanox/piutangDashboardCleanoxRoutes.js";
-import employeeWaschenRoutes from "./routes/MyWaschen/employeeWaschenRoutes.js";
+import employeeWaschenRoutes from "./routes/MyWaschen/HRIS/employeeWaschenRoutes.js";
+import customerRoutes from "./routes/MyWaschen/Transaction/CustomerRoutes.js";
+import dashboardWaschenRoutes from "./routes/MyWaschen/Transaction/DashboardRoutes.js";
 import categoryServicesRoutes from "./routes/MyWaschen/MasterData/CategoryServicesRoutes.js";
 import servicesWaschenRoutes from "./routes/MyWaschen/MasterData/ServicesRoutes.js";
 import serviceSpeedRoutes from "./routes/MyWaschen/MasterData/ServiceSpeedRoutes.js";
 import parfumeRoutes from "./routes/MyWaschen/MasterData/ParfumeRoutes.js";
 import membershipPackageRoutes from "./routes/MyWaschen/MasterData/MembershipPackageRoutes.js";
 import unitRoutes from "./routes/MyWaschen/MasterData/UnitRoutes.js";
-import customerRoutes from "./routes/MyWaschen/MasterData/CustomerRoutes.js";
 import customerTierRoutes from "./routes/MyWaschen/MasterData/CustomerTierRoutes.js";
 import customerSourceRoutes from "./routes/MyWaschen/MasterData/CustomerSourceRoutes.js";
 import paymentMethodRoutes from "./routes/MyWaschen/MasterData/PaymentMethodRoutes.js";
 import pettyCashCategoryRoutes from "./routes/MyWaschen/MasterData/PettyCashCategoryRoutes.js";
 import promoRoutes from "./routes/MyWaschen/MasterData/PromoRoutes.js";
 import statusWorkRoutes from "./routes/MyWaschen/MasterData/StatusWorkRoutes.js";
+import materialRoutes from "./routes/MyWaschen/MasterData/MaterialRoutes.js";
+import methodLaundryRoutes from "./routes/MyWaschen/MasterData/MethodLaundryRoutes.js";
+import outletWaschenRoutes from "./routes/MyWaschen/MasterData/OutletRoutes.js";
+import historyWaschenRoutes from "./routes/MyWaschen/Transaction/HistoryRoutes.js";
+import pettyCashRoutes from "./routes/MyWaschen/Transaction/PettyCashRoutes.js";
+import dailyReportRoutes from "./routes/MyWaschen/Transaction/DailyRoutes.js";
+import printerSettingsRoutes from "./routes/MyWaschen/Settings/PrinterSettingsRoutes.js";
+import inventoryWaschenRoutes from "./routes/MyWaschen/Inventory/InventoryRoutes.js";
+import attendanceWaschenRoutes from "./routes/MyWaschen/HRIS/AttendanceRoutes.js";
+import leaveWaschenRoutes from "./routes/MyWaschen/HRIS/LeaveRoutes.js";
+import kasbonWaschenRoutes from "./routes/MyWaschen/HRIS/KasbonRoutes.js";
+import overtimeWaschenRoutes from "./routes/MyWaschen/HRIS/OvertimeRoutes.js";
+import dayOffWaschenRoutes from "./routes/MyWaschen/HRIS/DayOffRoutes.js";
+import timeMasterWaschenRoutes from "./routes/MyWaschen/HRIS/TimeMasterRoutes.js";
+import dayOffPolicyRoutes from "./routes/MyWaschen/MasterData/DayOffPolicyRoutes.js";
+import dashboardInventoryRoutes from "./routes/MyWaschen/Inventory/DashboardInventoryRoutes.js";
 import trainingRoutes from "./routes/trainingRoutes.js";
 import projectManagementRoutes from "./routes/ProjectManagement/projectManagementRoutes.js";
 import personalChatRoutes from "./routes/ProjectManagement/personalChatRoutes.js";
+import {
+  getWaschenMobileAttendanceDir,
+  getWaschenMobileLeaveDir,
+  getWaschenMobileKasbonDir,
+  getWaschenMobileQcDir,
+} from "./controllers/MyWaschen/HRIS/hrisAssetHelpers.js";
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -267,9 +292,34 @@ app.use("/assets/training_evidence", express.static(path.join(ASSETS_BASE, "trai
 app.use("/assets/pm_evidence", express.static(path.join(ASSETS_BASE, "pm_evidence")));
 app.use("/storage/assets/payslip", express.static(path.join(ASSETS_BASE, "payslip")));
 
+// Waschen Mobile uploads — satu env WASCHEN_MOBILE_PUBLIC_BASE_URL
+// Dev (path lokal): C:\...\waschen-mobile → mount uploads/assets/*
+// Prod (HTTP URL): https://app.mywaschen.com → tidak mount lokal
+const WASCHEN_MOBILE_ATTENDANCE_DIR = getWaschenMobileAttendanceDir();
+const WASCHEN_MOBILE_LEAVE_DIR = getWaschenMobileLeaveDir();
+const WASCHEN_MOBILE_KASBON_DIR = getWaschenMobileKasbonDir();
+if (WASCHEN_MOBILE_ATTENDANCE_DIR && fs.existsSync(WASCHEN_MOBILE_ATTENDANCE_DIR)) {
+  app.use("/uploads/assets/attendance", express.static(WASCHEN_MOBILE_ATTENDANCE_DIR));
+}
+if (WASCHEN_MOBILE_LEAVE_DIR && fs.existsSync(WASCHEN_MOBILE_LEAVE_DIR)) {
+  app.use("/uploads/assets/leave", express.static(WASCHEN_MOBILE_LEAVE_DIR));
+}
+if (WASCHEN_MOBILE_KASBON_DIR && fs.existsSync(WASCHEN_MOBILE_KASBON_DIR)) {
+  app.use("/uploads/assets/kasbon", express.static(WASCHEN_MOBILE_KASBON_DIR));
+}
+
 const ALORA_BOD_DIR =
-	process.env.ALORA_MOBILE_ATTENDANCE_DIR || path.join(__dirname, "uploads", "alora-bod");
+  process.env.ALORA_MOBILE_ATTENDANCE_DIR || path.join(__dirname, "uploads", "alora-bod");
 app.use("/alora/attendance-sessions/bod", express.static(ALORA_BOD_DIR));
+
+// QC produksi (serah terima memakai folder "delivery")
+const PRODUKSI_QC_STAGES = ["frontliner", "washing", "ironing", "packing", "delivery"];
+for (const stage of PRODUKSI_QC_STAGES) {
+  const dir = getWaschenMobileQcDir(stage);
+  if (dir && fs.existsSync(dir)) {
+    app.use(`/uploads/assets/produksi/${stage}`, express.static(dir));
+  }
+}
 
 // =========================
 // Routes
@@ -305,6 +355,7 @@ app.use("/api/pm", pmRoutes);
 app.use("/hr", masterKarRoutes);
 app.use("/daily-tasks", dailyTaskRoutes);
 app.use("/broadcast", broadcastRoutes);
+app.use("/youtube", youtubeRoutes);
 app.use("/users", masterUserRoutes);
 app.use("/menus", masterMenuRoutes);
 app.use("/banks", masterBankRoutes);
@@ -349,6 +400,9 @@ app.use("/ikm/linen-transactions-komersil", linenTransactionKomersilRoutes);
 app.use("/operational", operationalRoutes);
 app.use("/internal", internalRoutes);
 app.use("/complaints", complaintRoutes);
+// master-classification harus didaftarkan lebih dulu agar tidak tertangkap
+// route dinamis "/pengajuan/:id" di pengajuanRoutes
+app.use("/pengajuan/master-classification", masterClassificationRoutes);
 app.use("/pengajuan", pengajuanRoutes);
 app.use("/doc-alora", docAloraRoutes);
 app.use("/csat-nps", csatNpsRoutes);
@@ -373,19 +427,36 @@ app.use("/cleanox/riwayat-transaksi", riwayatTransaksiCleanoxRoutes);
 app.use("/cleanox/pendapatan", pendapatanCleanoxRoutes);
 app.use("/cleanox/piutang-dashboard", piutangDashboardCleanoxRoutes);
 app.use("/waschen/employees", employeeWaschenRoutes);
+app.use("/waschen/dashboard", dashboardWaschenRoutes);
+app.use("/waschen/customers", customerRoutes);
 app.use("/waschen/category-services", categoryServicesRoutes);
 app.use("/waschen/services", servicesWaschenRoutes);
 app.use("/waschen/service-speeds", serviceSpeedRoutes);
 app.use("/waschen/parfumes", parfumeRoutes);
 app.use("/waschen/membership-packages", membershipPackageRoutes);
 app.use("/waschen/units", unitRoutes);
-app.use("/waschen/customers", customerRoutes);
 app.use("/waschen/customer-tiers", customerTierRoutes);
 app.use("/waschen/customer-sources", customerSourceRoutes);
 app.use("/waschen/payment-methods", paymentMethodRoutes);
 app.use("/waschen/petty-cash-categories", pettyCashCategoryRoutes);
 app.use("/waschen/promos", promoRoutes);
 app.use("/waschen/work-statuses", statusWorkRoutes);
+app.use("/waschen/materials", materialRoutes);
+app.use("/waschen/method-laundries", methodLaundryRoutes);
+app.use("/waschen/outlets", outletWaschenRoutes);
+app.use("/waschen/transactions", historyWaschenRoutes);
+app.use("/waschen/petty-cash", pettyCashRoutes);
+app.use("/waschen/daily-report", dailyReportRoutes);
+app.use("/waschen/printer-settings", printerSettingsRoutes);
+app.use("/waschen/inventory/dashboard", dashboardInventoryRoutes);
+app.use("/waschen/inventory", inventoryWaschenRoutes);
+app.use("/waschen/hris/attendance", attendanceWaschenRoutes);
+app.use("/waschen/hris/leaves", leaveWaschenRoutes);
+app.use("/waschen/hris/kasbon", kasbonWaschenRoutes);
+app.use("/waschen/hris/overtime", overtimeWaschenRoutes);
+app.use("/waschen/hris/day-offs", dayOffWaschenRoutes);
+app.use("/waschen/hris/time-masters", timeMasterWaschenRoutes);
+app.use("/waschen/day-off-policies", dayOffPolicyRoutes);
 app.use("/training", trainingRoutes);
 app.use("/api/pm2", projectManagementRoutes);
 app.use("/api/pm2/chat", personalChatRoutes);

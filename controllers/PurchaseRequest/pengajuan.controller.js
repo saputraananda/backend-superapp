@@ -32,6 +32,15 @@
 //   - SPV Finance approve   -> status = 5
 //   - ...sama seperti biasa
 //
+// Flow approval FINANCE (requires_ga):
+//   - Finance create + requires_ga = 1  -> flow biasa (lewat GA → Finance approve → bayar)
+//   - Finance create + requires_ga = 0:
+//       • Staff Finance     -> status = 1
+//       • SPV Finance approve (sebagai SPV dept) -> status = 5 LANGSUNG
+//         (skip GA + skip approve Finance ulang — langsung antrian pembayaran)
+//       • SPV Finance create (auto-SPV) -> status = 5 langsung
+//   - Tim Finance / SPV Finance bayar -> status = 6
+//
 // Flow approval REIMBURSE (berbeda):
 //   - Staff create           -> status = 1
 //   - SPV Departemen approve -> status = 2
@@ -63,7 +72,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { pool } from "../db/pool.js";
+import { pool } from "../../db/pool.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -71,7 +80,7 @@ const __dirname  = path.dirname(__filename);
 const isProd = process.env.NODE_ENV === "production";
 const ASSETS_BASE = isProd
     ? (process.env.UPLOAD_BASE_DIR || "/home/u420573163/domains/api.waschenalora.com/storage/assets/")
-    : path.join(__dirname, "..", "assets");
+    : path.join(__dirname, "..", "..", "assets");
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 const safeQuery = async (sql, params = []) => {
@@ -171,6 +180,212 @@ const isFinance = (positionName) => {
     return pos.includes("finance") || pos.includes("accounting") || pos.includes("accountiing");
 };
 
+// Hapus file fisik di ASSETS_BASE. Path harus relatif & tetap di dalam base (anti path traversal).
+const removeAssetFile = (relPath) => {
+    if (!relPath) return;
+    try {
+        const base = path.resolve(ASSETS_BASE);
+        const full = path.resolve(base, String(relPath).replace(/^[/\\]+/, ""));
+        if (!full.startsWith(base + path.sep)) return;
+        if (fs.existsSync(full)) fs.unlinkSync(full);
+    } catch (e) {
+        console.warn("[removeAssetFile]", e.message);
+    }
+};
+
+// ── Multi-klasifikasi (tr_purchase_request_classification) ──────────────────
+// Kolom tr_purchase_request.classification_id tetap diisi klasifikasi pertama
+// agar export/report lama tidak rusak.
+const parseClassificationIds = (raw) => {
+    if (raw == null || raw === "") return [];
+    let list = raw;
+    if (typeof raw === "string") {
+        try {
+            const parsed = JSON.parse(raw);
+            list = Array.isArray(parsed) ? parsed : raw.split(",");
+        } catch {
+            list = raw.split(",");
+        }
+    }
+    if (!Array.isArray(list)) list = [list];
+    return [...new Set(list.map(v => Number(v)).filter(v => Number.isInteger(v) && v > 0))];
+};
+
+// Validasi ID ke master; buang yang tidak ada / nonaktif.
+const fetchValidClassifications = async (ids) => {
+    if (!ids.length) return [];
+    const rows = await safeQuery(
+        `SELECT id, classification_name FROM mst_purchase_classification
+         WHERE is_active = 1 AND id IN (${ids.map(() => "?").join(",")})
+         ORDER BY classification_name`,
+        ids
+    );
+    return rows;
+};
+
+// Split nominal per klasifikasi. Input: { [classification_id]: nominal }.
+// Hanya 1 klasifikasi → nominal otomatis = nominal bayar.
+const parseClassificationSplits = (raw, ids, nominalBayar) => {
+    if (ids.length === 1) return { [ids[0]]: nominalBayar ?? null };
+
+    let obj = raw;
+    if (typeof raw === "string") {
+        try { obj = JSON.parse(raw); } catch { obj = null; }
+    }
+    const out = {};
+    for (const id of ids) {
+        const v = obj && typeof obj === "object" ? Number(obj[id] ?? obj[String(id)]) : NaN;
+        out[id] = Number.isFinite(v) && v > 0 ? v : null;
+    }
+    return out;
+};
+
+const syncClassifications = async (prId, ids, splits = {}) => {
+    await safeQuery(`DELETE FROM tr_purchase_request_classification WHERE pr_id = ?`, [prId]);
+    if (!ids.length) return;
+    await safeQuery(
+        `INSERT IGNORE INTO tr_purchase_request_classification (pr_id, classification_id, nominal)
+         VALUES ${ids.map(() => "(?, ?, ?)").join(", ")}`,
+        ids.flatMap(cid => [prId, cid, splits[cid] ?? null])
+    );
+};
+
+// "Peralatan (Rp 100.000), Hanger (Rp 50.000)" — untuk catatan log
+const formatClassificationLabel = (rows, splits = {}) => rows
+    .map(c => {
+        const n = splits[c.id] ?? c.nominal;
+        return n ? `${c.classification_name} (Rp ${new Intl.NumberFormat("id-ID").format(n)})` : c.classification_name;
+    })
+    .join(", ");
+
+const getClassificationsOfPr = async (prId) => safeQuery(
+    `SELECT c.id, c.classification_name, prc.nominal
+     FROM tr_purchase_request_classification prc
+     JOIN mst_purchase_classification c ON c.id = prc.classification_id
+     WHERE prc.pr_id = ?
+     ORDER BY c.classification_name`,
+    [prId]
+);
+
+// ── Multi kategori & outlet (tr_purchase_request_scope) ─────────────────────
+// 1 baris = 1 kombinasi company + outlet. outlet_id NULL = seluruh outlet /
+// company tanpa turunan. Kolom lama pr.company_id & pr.outlet_id tetap diisi
+// pilihan pertama supaya report/filter lama tidak rusak.
+const WASCHEN_COMPANY_ID = 5;
+
+const parseIdList = (raw) => {
+    if (raw == null || raw === "") return [];
+    let list = raw;
+    if (typeof raw === "string") {
+        try {
+            const parsed = JSON.parse(raw);
+            list = Array.isArray(parsed) ? parsed : raw.split(",");
+        } catch {
+            list = raw.split(",");
+        }
+    }
+    if (!Array.isArray(list)) list = [list];
+    return [...new Set(list.map(v => Number(v)).filter(v => Number.isInteger(v) && v > 0))];
+};
+
+// Validasi ke master + buang id yang tidak ada/nonaktif.
+const resolveScopeSelection = async (companyIdsRaw, outletIdsRaw, fallbackCompanyId = null, fallbackOutletId = null) => {
+    let companyIds = parseIdList(companyIdsRaw);
+    let outletIds  = parseIdList(outletIdsRaw);
+    if (!companyIds.length && fallbackCompanyId) companyIds = [Number(fallbackCompanyId)];
+    if (!outletIds.length && fallbackOutletId)   outletIds  = [Number(fallbackOutletId)];
+    if (!companyIds.length) return { companies: [], outlets: [] };
+
+    const companies = await safeQuery(
+        `SELECT company_id, company_name FROM mst_company
+         WHERE is_active = 1 AND company_id IN (${companyIds.map(() => "?").join(",")})
+         ORDER BY company_name`,
+        companyIds
+    );
+    if (!companies.length) return { companies: [], outlets: [] };
+
+    const hasWaschen = companies.some(c => Number(c.company_id) === WASCHEN_COMPANY_ID);
+    let outlets = [];
+    if (hasWaschen && outletIds.length) {
+        outlets = await safeQuery(
+            `SELECT id AS outlet_id, full_name FROM mst_outlet
+             WHERE id IN (${outletIds.map(() => "?").join(",")}) ORDER BY full_name`,
+            outletIds
+        );
+    }
+    return { companies, outlets };
+};
+
+// Kolom lama pr.company_id / pr.outlet_id = "primary". Waschen diprioritaskan
+// supaya tampilan lama yang mengecek company_id === 5 tetap menampilkan outlet.
+const primaryScope = ({ companies, outlets }) => {
+    if (!companies.length) return { companyId: null, outletId: null };
+    const waschen = companies.find(c => Number(c.company_id) === WASCHEN_COMPANY_ID);
+    const companyId = Number((waschen || companies[0]).company_id);
+    const outletId = waschen && outlets.length ? Number(outlets[0].outlet_id) : null;
+    return { companyId, outletId };
+};
+
+const syncScopes = async (prId, companies, outlets) => {
+    await safeQuery(`DELETE FROM tr_purchase_request_scope WHERE pr_id = ?`, [prId]);
+    if (!companies.length) return;
+
+    const pairs = [];
+    for (const c of companies) {
+        const cid = Number(c.company_id);
+        if (cid === WASCHEN_COMPANY_ID && outlets.length) {
+            for (const o of outlets) pairs.push([prId, cid, Number(o.outlet_id)]);
+        } else {
+            pairs.push([prId, cid, null]);
+        }
+    }
+    await safeQuery(
+        `INSERT IGNORE INTO tr_purchase_request_scope (pr_id, company_id, outlet_id)
+         VALUES ${pairs.map(() => "(?, ?, ?)").join(", ")}`,
+        pairs.flat()
+    );
+};
+
+const getScopesOfPr = async (prId) => {
+    const rows = await safeQuery(
+        `SELECT prs.company_id, c.company_name, prs.outlet_id, o.full_name AS outlet_name
+         FROM tr_purchase_request_scope prs
+         LEFT JOIN mst_company c ON c.company_id = prs.company_id
+         LEFT JOIN mst_outlet  o ON o.id         = prs.outlet_id
+         WHERE prs.pr_id = ?
+         ORDER BY c.company_name, o.full_name`,
+        [prId]
+    );
+    const companies = [];
+    const outlets   = [];
+    for (const r of rows) {
+        if (!companies.some(c => c.company_id === r.company_id)) {
+            companies.push({ company_id: r.company_id, company_name: r.company_name });
+        }
+        if (r.outlet_id && !outlets.some(o => o.outlet_id === r.outlet_id)) {
+            outlets.push({ outlet_id: r.outlet_id, outlet_name: r.outlet_name });
+        }
+    }
+    return { companies, outlets };
+};
+
+// Fragment SELECT — gabungkan semua kategori/outlet jadi 1 kolom string agar
+// tabel, export, dan modal lama tetap kompatibel.
+const SCOPE_COMPANY_SELECT = `COALESCE((SELECT GROUP_CONCAT(DISTINCT mc.company_name ORDER BY mc.company_name SEPARATOR ', ')
+                      FROM tr_purchase_request_scope prs
+                      JOIN mst_company mc ON mc.company_id = prs.company_id
+                      WHERE prs.pr_id = pr.pr_id), c.company_name) AS company_name`;
+const SCOPE_OUTLET_SELECT = `COALESCE((SELECT GROUP_CONCAT(DISTINCT mo.full_name ORDER BY mo.full_name SEPARATOR ', ')
+                      FROM tr_purchase_request_scope prs
+                      JOIN mst_outlet mo ON mo.id = prs.outlet_id
+                      WHERE prs.pr_id = pr.pr_id), o.full_name) AS outlet_name`;
+
+const scopeLabel = ({ companies, outlets }) => {
+    const c = companies.map(x => x.company_name).filter(Boolean).join(", ") || "—";
+    const o = outlets.map(x => x.outlet_name || x.full_name).filter(Boolean).join(", ");
+    return o ? `${c} (${o})` : c;
+};
+
 const writeLog = async (prId, action, employeeId, name, note = null) => {
     await safeQuery(
         `INSERT INTO tr_purchase_request_log (pr_id, action, by_employee_id, by_name, note)
@@ -240,6 +455,63 @@ export const getClassifications = async (_req, res) => {
     } catch (err) {
         console.error("[getClassifications]", err);
         res.status(500).json({ message: "Gagal memuat klasifikasi" });
+    }
+};
+
+// Tambah klasifikasi custom (Finance) — auto Title Case, anti-duplikat
+export const createClassification = async (req, res) => {
+    try {
+        const employeeId = getEmployeeId(req);
+        if (!employeeId) return res.status(401).json({ message: "Unauthorized" });
+        const me = await fetchEmployee(employeeId);
+        if (!me || !isFinance(me.position_name)) {
+            return res.status(403).json({ message: "Akses ditolak: hanya Finance" });
+        }
+
+        const name = titleCase(sanitize(req.body.classification_name));
+        if (!name || name.length < 2 || name.length > 100) {
+            return res.status(400).json({ message: "Nama klasifikasi tidak valid (2–100 karakter)" });
+        }
+
+        const exist = await safeQuery(
+            `SELECT id, classification_name, is_active FROM mst_purchase_classification
+             WHERE LOWER(TRIM(classification_name)) = LOWER(?) LIMIT 1`,
+            [name]
+        );
+        if (exist.length) {
+            if (!Number(exist[0].is_active)) {
+                await safeQuery(`UPDATE mst_purchase_classification SET is_active = 1 WHERE id = ?`, [exist[0].id]);
+            }
+            return res.json({
+                data: { id: exist[0].id, classification_name: exist[0].classification_name },
+                message: "Klasifikasi sudah ada",
+            });
+        }
+
+        const ins = await safeQuery(
+            `INSERT INTO mst_purchase_classification (classification_name, is_active) VALUES (?, 1)`,
+            [name]
+        );
+        res.status(201).json({ data: { id: ins.insertId, classification_name: name }, message: "Klasifikasi ditambahkan" });
+    } catch (err) {
+        console.error("[createClassification]", err);
+        res.status(500).json({ message: "Gagal menambah klasifikasi" });
+    }
+};
+
+// Lookup karyawan aktif (untuk edit header pengajuan oleh Finance)
+export const getEmployeeOptions = async (_req, res) => {
+    try {
+        const data = await safeQuery(
+            `SELECT e.employee_id, e.full_name, e.department_id, d.department_name
+             FROM mst_employee e
+             LEFT JOIN mst_department d ON d.department_id = e.department_id
+             WHERE e.is_deleted = 0 ORDER BY e.full_name`
+        );
+        res.json({ data });
+    } catch (err) {
+        console.error("[getEmployeeOptions]", err);
+        res.status(500).json({ message: "Gagal memuat karyawan" });
     }
 };
 
@@ -497,10 +769,14 @@ export const listMy = async (req, res) => {
         const total = Number(countRows[0].total);
 
         const data = await safeQuery(
-            `SELECT pr.*, s.satuan_name, c.company_name, o.full_name AS outlet_name,
+            `SELECT pr.*, s.satuan_name, ${SCOPE_COMPANY_SELECT}, ${SCOPE_OUTLET_SELECT},
                     COALESCE((SELECT SUM(p.nominal_bayar)
                               FROM tr_purchase_request_payment p
-                              WHERE p.pr_id = pr.pr_id), 0) AS total_paid
+                              WHERE p.pr_id = pr.pr_id), 0) AS total_paid,
+                    (SELECT GROUP_CONCAT(mc.classification_name ORDER BY mc.classification_name SEPARATOR ', ')
+                     FROM tr_purchase_request_classification prc
+                     JOIN mst_purchase_classification mc ON mc.id = prc.classification_id
+                     WHERE prc.pr_id = pr.pr_id) AS classification_name
              FROM tr_purchase_request pr
              LEFT JOIN mst_satuan  s ON s.satuan_id  = pr.satuan_id
              LEFT JOIN mst_company c ON c.company_id = pr.company_id
@@ -606,10 +882,14 @@ export const listDepartment = async (req, res) => {
 
         const data = await safeQuery(
             `SELECT pr.*, e.full_name AS pengaju_name, d.department_name,
-                    s.satuan_name, c.company_name, o.full_name AS outlet_name,
+                    s.satuan_name, ${SCOPE_COMPANY_SELECT}, ${SCOPE_OUTLET_SELECT},
                     COALESCE((SELECT SUM(p.nominal_bayar)
                               FROM tr_purchase_request_payment p
-                              WHERE p.pr_id = pr.pr_id), 0) AS total_paid
+                              WHERE p.pr_id = pr.pr_id), 0) AS total_paid,
+                    (SELECT GROUP_CONCAT(mc.classification_name ORDER BY mc.classification_name SEPARATOR ', ')
+                     FROM tr_purchase_request_classification prc
+                     JOIN mst_purchase_classification mc ON mc.id = prc.classification_id
+                     WHERE prc.pr_id = pr.pr_id) AS classification_name
              FROM tr_purchase_request pr
              LEFT JOIN mst_employee   e ON e.employee_id   = pr.employee_id
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
@@ -678,7 +958,7 @@ export const listApproval = async (req, res) => {
         const where = `WHERE ${conditions.join(" AND ")}`;
         const data = await safeQuery(
             `SELECT pr.*, e.full_name AS pengaju_name, d.department_name,
-                    s.satuan_name, c.company_name, o.full_name AS outlet_name
+                    s.satuan_name, ${SCOPE_COMPANY_SELECT}, ${SCOPE_OUTLET_SELECT}
              FROM tr_purchase_request pr
              LEFT JOIN mst_employee   e ON e.employee_id   = pr.employee_id
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
@@ -708,7 +988,7 @@ export const getDetail = async (req, res) => {
         const { id } = req.params;
         const rows = await safeQuery(
             `SELECT pr.*, e.full_name AS pengaju_name, e.job_level_id AS pengaju_job_level,
-                    d.department_name, s.satuan_name, c.company_name, o.full_name AS outlet_name,
+                    d.department_name, s.satuan_name, ${SCOPE_COMPANY_SELECT}, ${SCOPE_OUTLET_SELECT},
                     bnk.bank_name, pc.classification_name
              FROM tr_purchase_request pr
              LEFT JOIN mst_employee   e   ON e.employee_id   = pr.employee_id
@@ -734,7 +1014,20 @@ export const getDetail = async (req, res) => {
             [id]
         );
 
-        res.json({ data: rows[0], attachments, logs });
+        const classifications = await getClassificationsOfPr(id);
+        const scope = await getScopesOfPr(id);
+
+        res.json({
+            data: {
+                ...rows[0],
+                classifications,
+                classification_names: classifications.map(c => c.classification_name).join(", "),
+                companies: scope.companies,
+                outlets: scope.outlets,
+            },
+            attachments,
+            logs,
+        });
     } catch (err) {
         console.error("[getDetail]", err);
         res.status(500).json({ message: "Gagal memuat detail" });
@@ -754,10 +1047,13 @@ export const createPR = async (req, res) => {
 
         const type             = ["pengajuan", "reimburse"].includes(req.body.type) ? req.body.type : "pengajuan";
         const tanggalPengajuan = req.body.tanggal_pengajuan || new Date().toISOString().split("T")[0];
-        const companyId        = req.body.company_id ? Number(req.body.company_id) : null;
-        const outletIdRaw      = req.body.outlet_id ? Number(req.body.outlet_id) : null;
-        // Outlet hanya disimpan jika company_id == 5 (sesuai spec: derivatif)
-        const outletId         = companyId === 5 ? outletIdRaw : null;
+
+        // Multi kategori + multi outlet. Kolom lama diisi pilihan pertama.
+        const scope = await resolveScopeSelection(
+            req.body.company_ids ?? req.body.company_id,
+            req.body.outlet_ids  ?? req.body.outlet_id
+        );
+        const { companyId, outletId } = primaryScope(scope);
 
         const namaBarang      = sanitize(req.body.nama_barang);
         const deskripsi       = sanitize(req.body.deskripsi);
@@ -804,6 +1100,10 @@ export const createPR = async (req, res) => {
 
         const jobLevel = Number(me.job_level_id);
 
+        // Link referensi (opsional) — berlaku untuk reimburse maupun pengajuan
+        const reqLinkUrl   = req.body.link_url   ? sanitize(req.body.link_url)   : null;
+        const reqLinkTitle = req.body.link_title ? sanitize(req.body.link_title) : null;
+
         // ── FLOW REIMBURSE: tidak ada GA, tidak ada auto-approve SPV level ──────
         // Reimburse selalu mulai dari status 1 (menunggu SPV Departemen), kecuali
         // pengaju sendiri adalah SPV dept (job_level 3) → auto-approve SPV.
@@ -817,11 +1117,13 @@ export const createPR = async (req, res) => {
                      company_id, outlet_id,
                      nama_barang, deskripsi, merk, qty, satuan_id, estimasi_harga, alasan_pembelian,
                      bank_id, nomor_rekening, atas_nama,
+                     vendor_mode, link_url, link_title,
                      status,
                      approved_spv_by, approved_spv_at)
                  VALUES (?, ?, ?, ?, ?,
                          ?, ?,
                          ?, ?, ?, ?, ?, ?, ?,
+                         ?, ?, ?,
                          ?, ?, ?,
                          ?,
                          ?, ${autoSpvReimburse ? "NOW()" : "NULL"})`,
@@ -829,10 +1131,12 @@ export const createPR = async (req, res) => {
                  companyId, outletId,
                  namaBarang, deskripsi, merk, qty, satuanId, estimasiHarga, alasanPembelian,
                  bankId, nomorRekening, atasNama,
+                 reqLinkUrl ? "link" : null, reqLinkUrl, reqLinkTitle,
                  initialStatus,
                  autoSpvReimburse ? employeeId : null]
             );
             const prId = insertResult.insertId;
+            await syncScopes(prId, scope.companies, scope.outlets);
 
             const files = req.files || [];
             for (const file of files) {
@@ -844,7 +1148,8 @@ export const createPR = async (req, res) => {
                 );
             }
 
-            await writeLog(prId, "created", employeeId, me.full_name, "Reimburse dibuat & diajukan");
+            await writeLog(prId, "created", employeeId, me.full_name,
+                `Reimburse dibuat & diajukan | Kategori: ${scopeLabel(scope)}`);
             if (autoSpvReimburse) {
                 await writeLog(prId, "approved_spv", employeeId, me.full_name,
                     "Disetujui SPV Departemen (otomatis — pengaju adalah supervisor)");
@@ -853,12 +1158,13 @@ export const createPR = async (req, res) => {
         }
 
         // ── FLOW PENGAJUAN BIASA ────────────────────────────────────────────────
-        const linkUrl   = req.body.link_url   ? sanitize(req.body.link_url)   : null;
-        const linkTitle = req.body.link_title  ? sanitize(req.body.link_title) : null;
+        const linkUrl   = reqLinkUrl;
+        const linkTitle = reqLinkTitle;
         let vendorMode  = linkUrl ? "link" : null;
         let vendorName  = null;
         let vendorId    = null;
         const isGAUser  = isGA(me.position_name);
+        const isFinanceUser = isFinance(me.position_name);
 
         // ── GA-specific flow: rutin/tidak_rutin + GA fills own fields ────────
         let gaRutin    = null;
@@ -868,6 +1174,9 @@ export const createPR = async (req, res) => {
         let autoApproveSpv = jobLevel <= 3;
         let initialStatus;
         let isRutin = false;
+        // Default: butuh GA (1). Hanya Finance yang boleh set 0.
+        let requiresGa = 1;
+        let skipGaByFinance = false;
 
         if (isGAUser && type === "pengajuan") {
             gaRutin = ["rutin", "tidak_rutin"].includes(req.body.is_routine) ? req.body.is_routine : null;
@@ -916,25 +1225,35 @@ export const createPR = async (req, res) => {
                 initialStatus = 1;
             }
         } else {
-            // Non-GA flow — existing logic
-            const gaVendorModeBody = req.body.vendor_mode;
-            if (isGAUser && gaVendorModeBody) {
-                vendorMode = gaVendorModeBody;
-                if (gaVendorModeBody === "vendor") {
-                    vendorId   = req.body.vendor_id ? Number(req.body.vendor_id) : null;
-                    vendorName = req.body.vendor ? titleCase(sanitize(req.body.vendor)) : null;
-                    if (vendorId && !vendorName) {
-                        const vRows = await safeQuery(`SELECT nama_vendor FROM mst_vendor WHERE id = ?`, [vendorId]);
-                        vendorName = vRows.length ? vRows[0].nama_vendor : null;
+            // Non-GA flow — Finance boleh pilih skip GA
+            if (isFinanceUser && type === "pengajuan") {
+                const rawReqGa = req.body.requires_ga;
+                requiresGa = (rawReqGa === 0 || rawReqGa === "0") ? 0 : 1;
+                skipGaByFinance = requiresGa === 0;
+
+                // Finance yang skip GA boleh isi vendor sendiri (opsional)
+                const finVendorMode = req.body.vendor_mode;
+                if (skipGaByFinance && finVendorMode) {
+                    vendorMode = finVendorMode;
+                    if (finVendorMode === "vendor") {
+                        vendorId   = req.body.vendor_id ? Number(req.body.vendor_id) : null;
+                        vendorName = req.body.vendor ? titleCase(sanitize(req.body.vendor)) : null;
+                        if (vendorId && !vendorName) {
+                            const vRows = await safeQuery(`SELECT nama_vendor FROM mst_vendor WHERE id = ?`, [vendorId]);
+                            vendorName = vRows.length ? vRows[0].nama_vendor : null;
+                        }
+                    } else if (finVendorMode === "offline") {
+                        const offlineDesc = sanitize(req.body.offline_desc);
+                        if (offlineDesc) vendorName = offlineDesc;
                     }
+                    // link mode: linkUrl/linkTitle sudah dari body
                 }
             }
 
-            const totalEstimasi = (estimasiHarga || 0) * qty;
-            const gaFastTrack   = isGAUser && companyId !== 1 && totalEstimasi < 500000;
-
-            if (gaFastTrack) {
-                initialStatus = 4;
+            if (skipGaByFinance) {
+                // Skip GA: SPV Finance approve = cukup → langsung antrian pembayaran (5)
+                // Tidak lewat status 4 (Finance review) agar tidak double-approve Finance
+                initialStatus = autoApproveSpv ? 5 : 1;
             } else if (autoApproveSpv) {
                 initialStatus = 2;
             } else {
@@ -944,7 +1263,7 @@ export const createPR = async (req, res) => {
 
         const insertResult = await safeQuery(
             `INSERT INTO tr_purchase_request
-                (pr_code, type, is_routine, employee_id, department_id, tanggal_pengajuan,
+                (pr_code, type, is_routine, requires_ga, employee_id, department_id, tanggal_pengajuan,
                  company_id, outlet_id,
                  nama_barang, deskripsi, merk, qty, satuan_id, estimasi_harga, alasan_pembelian,
                  bank_id, nomor_rekening, atas_nama,
@@ -952,28 +1271,35 @@ export const createPR = async (req, res) => {
                  status,
                  approved_spv_by, approved_spv_at,
                  approved_ga_by, approved_ga_at,
+                 approved_finance_by, approved_finance_at,
+                 approved_bod_by, approved_bod_at,
                  ga_qty, ga_merk, ga_note)
-             VALUES (?, ?, ?, ?, ?, ?,
+             VALUES (?, ?, ?, ?, ?, ?, ?,
                      ?, ?,
                      ?, ?, ?, ?, ?, ?, ?,
                      ?, ?, ?,
                      ?, ?, ?, ?, ?,
                      ?,
-                     ?, ${isRutin ? "NOW()" : (autoApproveSpv ? "NOW()" : "NULL")},
+                     ?, ${isRutin || autoApproveSpv ? "NOW()" : "NULL"},
                      ?, ${isRutin ? "NOW()" : "NULL"},
+                     ?, ${skipGaByFinance && autoApproveSpv ? "NOW()" : "NULL"},
+                     ?, ${skipGaByFinance && autoApproveSpv ? "NOW()" : "NULL"},
                      ?, ?, ?)`,
-            [prCode, type, gaRutin, employeeId, me.department_id, tanggalPengajuan,
+            [prCode, type, gaRutin, requiresGa, employeeId, me.department_id, tanggalPengajuan,
              companyId, outletId,
              namaBarang, deskripsi, merk, qty, satuanId, estimasiHarga, alasanPembelian,
              null, null, null,
              vendorMode, vendorName, vendorId, linkUrl, linkTitle,
              initialStatus,
-             isRutin ? employeeId : (autoApproveSpv ? employeeId : null),
+             (isRutin || autoApproveSpv) ? employeeId : null,
              isRutin ? employeeId : null,
+             (skipGaByFinance && autoApproveSpv) ? employeeId : null,
+             (skipGaByFinance && autoApproveSpv) ? 2 : null,
              gaQtyVal, gaMerkVal, gaNoteVal]
         );
 
         const prId = insertResult.insertId;
+        await syncScopes(prId, scope.companies, scope.outlets);
 
         const files = req.files || [];
         for (const file of files) {
@@ -985,7 +1311,10 @@ export const createPR = async (req, res) => {
             );
         }
 
-        await writeLog(prId, "created", employeeId, me.full_name, "Pengajuan dibuat & diajukan");
+        await writeLog(prId, "created", employeeId, me.full_name,
+            (skipGaByFinance
+                ? "Pengajuan dibuat & diajukan (Finance — tanpa approval GA)"
+                : "Pengajuan dibuat & diajukan") + ` | Kategori: ${scopeLabel(scope)}`);
 
         if (isRutin) {
             await writeLog(prId, "approved_spv", employeeId, me.full_name,
@@ -995,6 +1324,17 @@ export const createPR = async (req, res) => {
         } else if (isGAUser && gaRutin === "tidak_rutin") {
             await writeLog(prId, "ga_filled", employeeId, me.full_name,
                 "GA mengisi data langsung, menunggu approval SPV Departemen");
+        } else if (skipGaByFinance && autoApproveSpv) {
+            await writeLog(prId, "approved_spv", employeeId, me.full_name,
+                "Disetujui supervisor (otomatis — pengaju adalah supervisor)");
+            await writeLog(prId, "skip_ga", employeeId, me.full_name,
+                "Skip approval GA — dipilih Finance");
+            await writeLog(prId, "approved_finance", employeeId, me.full_name,
+                "Disetujui SPV Finance (otomatis — pengaju SPV Finance, langsung antrian pembayaran)");
+            const dirRows = await safeQuery(`SELECT full_name FROM mst_employee WHERE employee_id = 2 LIMIT 1`);
+            const dirName = dirRows.length ? dirRows[0].full_name : "Direktur";
+            await writeLog(prId, "approved_bod", 2, dirName,
+                "Disetujui Direktur (otomatis — Finance skip GA)");
         } else if (autoApproveSpv) {
             await writeLog(prId, "approved_spv", employeeId, me.full_name,
                 "Disetujui supervisor (otomatis — pengaju adalah supervisor)");
@@ -1040,9 +1380,12 @@ export const updatePR = async (req, res) => {
 
         const type             = ["pengajuan", "reimburse"].includes(req.body.type) ? req.body.type : row.type;
         const tanggalPengajuan = req.body.tanggal_pengajuan || row.tanggal_pengajuan;
-        const companyId        = req.body.company_id ? Number(req.body.company_id) : null;
-        const outletIdRaw      = req.body.outlet_id ? Number(req.body.outlet_id) : null;
-        const outletId         = companyId === 5 ? outletIdRaw : null;
+
+        const scope = await resolveScopeSelection(
+            req.body.company_ids ?? req.body.company_id,
+            req.body.outlet_ids  ?? req.body.outlet_id
+        );
+        const { companyId, outletId } = primaryScope(scope);
 
         const namaBarang      = sanitize(req.body.nama_barang);
         const deskripsi       = sanitize(req.body.deskripsi);
@@ -1086,12 +1429,20 @@ export const updatePR = async (req, res) => {
         // Link referensi (opsional, diisi karyawan)
         const linkUrl   = req.body.link_url   ? sanitize(req.body.link_url)   : null;
         const linkTitle = req.body.link_title  ? sanitize(req.body.link_title) : null;
-        const vendorMode = linkUrl ? "link" : null;
+        let vendorMode = linkUrl ? "link" : null;
 
         // Handle is_routine update for GA
         let gaRutin = row.is_routine;
         if (isGAUser && ["rutin", "tidak_rutin"].includes(req.body.is_routine)) {
             gaRutin = req.body.is_routine;
+        }
+
+        // Finance: update requires_ga (1 = butuh GA, 0 = skip)
+        const isFinanceUser = isFinance(me.position_name);
+        let requiresGa = Number(row.requires_ga) === 0 ? 0 : 1;
+        if (isFinanceUser && type === "pengajuan" && req.body.requires_ga != null && req.body.requires_ga !== "") {
+            const rawReqGa = req.body.requires_ga;
+            requiresGa = (rawReqGa === 0 || rawReqGa === "0") ? 0 : 1;
         }
 
         // GA fields — only GA can update these
@@ -1102,7 +1453,7 @@ export const updatePR = async (req, res) => {
         let vendorId   = row.vendor_id;
         let vendorModeNew = row.vendor_mode;
 
-        if (isGAUser) {
+        if (isGAUser || (isFinanceUser && requiresGa === 0)) {
             const gaVendorMode = req.body.vendor_mode;
             if (gaVendorMode) {
                 vendorModeNew = gaVendorMode;
@@ -1117,37 +1468,59 @@ export const updatePR = async (req, res) => {
                     const offlineDesc = sanitize(req.body.offline_desc);
                     if (offlineDesc) vendorName = offlineDesc;
                 } else if (gaVendorMode === "link") {
-                    // link captured above
+                    vendorModeNew = "link";
                 }
             }
 
             // GA can update ga_qty, ga_merk, ga_note
-            if (req.body.ga_qty != null) gaQtyVal = Number(req.body.ga_qty);
-            if (req.body.ga_merk) gaMerkVal = titleCase(sanitize(req.body.ga_merk));
-            if (req.body.ga_note != null) gaNoteVal = sanitize(req.body.ga_note);
+            if (isGAUser) {
+                if (req.body.ga_qty != null) gaQtyVal = Number(req.body.ga_qty);
+                if (req.body.ga_merk) gaMerkVal = titleCase(sanitize(req.body.ga_merk));
+                if (req.body.ga_note != null) gaNoteVal = sanitize(req.body.ga_note);
+            }
         }
 
         // jika sebelumnya rejected, set kembali ke 1
-        const newStatus = Number(row.status) === 9 ? 1 : row.status;
+        // Finance skip GA + rejected: re-submit → langsung antrian bayar jika SPV
+        let newStatus = Number(row.status) === 9 ? 1 : row.status;
+        let setFinanceStamp = false;
+        if (Number(row.status) === 9 && isFinanceUser && requiresGa === 0) {
+            const jobLevel = Number(me.job_level_id);
+            if (jobLevel <= 3) {
+                newStatus = 5;
+                setFinanceStamp = true;
+            } else {
+                newStatus = 1;
+            }
+        }
 
         await safeQuery(
             `UPDATE tr_purchase_request SET
-                type = ?, is_routine = ?, tanggal_pengajuan = ?, company_id = ?, outlet_id = ?,
+                type = ?, is_routine = ?, requires_ga = ?, tanggal_pengajuan = ?, company_id = ?, outlet_id = ?,
                 nama_barang = ?, deskripsi = ?, merk = ?, qty = ?, satuan_id = ?,
                 estimasi_harga = ?, alasan_pembelian = ?,
                 bank_id = ?, nomor_rekening = ?, atas_nama = ?,
                 vendor_mode = ?, vendor = ?, vendor_id = ?, link_url = ?, link_title = ?,
                 ga_qty = ?, ga_merk = ?, ga_note = ?,
                 status = ?, rejection_reason = NULL, rejected_at = NULL, rejected_by = NULL,
+                ${setFinanceStamp ? `
+                approved_spv_by = ?, approved_spv_at = NOW(),
+                approved_finance_by = ?, approved_finance_at = NOW(),
+                approved_bod_by = 2, approved_bod_at = NOW(),
+                ` : ""}
                 updated_at = NOW()
              WHERE pr_id = ?`,
-            [type, gaRutin, tanggalPengajuan, companyId, outletId,
+            [type, gaRutin, requiresGa, tanggalPengajuan, companyId, outletId,
              namaBarang, deskripsi, merk, qty, satuanId, estimasiHarga, alasanPembelian,
              bankId, nomorRekening, atasNama,
-             vendorModeNew, vendorName, vendorId, linkUrl, linkTitle,
+             vendorModeNew || vendorMode, vendorName, vendorId, linkUrl, linkTitle,
              gaQtyVal, gaMerkVal, gaNoteVal,
-             newStatus, id]
+             newStatus,
+             ...(setFinanceStamp ? [employeeId, employeeId] : []),
+             id]
         );
+
+        await syncScopes(id, scope.companies, scope.outlets);
 
         // tambah lampiran baru
         const files = req.files || [];
@@ -1160,7 +1533,8 @@ export const updatePR = async (req, res) => {
             );
         }
 
-        await writeLog(id, "updated", employeeId, me?.full_name, "Pengajuan diperbarui");
+        await writeLog(id, "updated", employeeId, me?.full_name,
+            `Pengajuan diperbarui | Kategori: ${scopeLabel(scope)}`);
 
         res.json({ message: "Pengajuan berhasil diperbarui" });
     } catch (err) {
@@ -1210,7 +1584,7 @@ export const deletePR = async (req, res) => {
 };
 
 // ════════════════════════════════════════════════════════════════════════════
-// DELETE ATTACHMENT (oleh pengaju, status IN (1, 2, 9))
+// DELETE ATTACHMENT (pengaju status IN (1,2,9) — atau Finance kapan pun)
 // ════════════════════════════════════════════════════════════════════════════
 export const deleteAttachment = async (req, res) => {
     try {
@@ -1227,24 +1601,145 @@ export const deleteAttachment = async (req, res) => {
         );
         if (!att.length) return res.status(404).json({ message: "Lampiran tidak ditemukan" });
         const row = att[0];
-        if (row.employee_id !== employeeId) return res.status(403).json({ message: "Tidak diizinkan" });
-        if (![1, 2, 9].includes(Number(row.status))) {
-            return res.status(400).json({ message: "Tidak bisa menghapus lampiran pada status ini" });
+
+        const me = await fetchEmployee(employeeId);
+        const financeAccess = isFinance(me?.position_name);
+        if (!financeAccess) {
+            if (row.employee_id !== employeeId) return res.status(403).json({ message: "Tidak diizinkan" });
+            if (![1, 2, 9].includes(Number(row.status))) {
+                return res.status(400).json({ message: "Tidak bisa menghapus lampiran pada status ini" });
+            }
         }
 
-        // hapus file fisik
-        try {
-            const full = path.join(ASSETS_BASE, row.file_path);
-            if (fs.existsSync(full)) fs.unlinkSync(full);
-        } catch (e) {
-            console.warn("[deleteAttachment] fs unlink:", e.message);
-        }
+        removeAssetFile(row.file_path);
 
         await safeQuery(`DELETE FROM tr_purchase_request_attachment WHERE attachment_id = ?`, [attachmentId]);
+        if (financeAccess) {
+            await writeLog(row.pr_id, "updated", employeeId, me?.full_name,
+                `Lampiran dihapus oleh Finance: ${row.original_name || row.file_path}`);
+        }
         res.json({ message: "Lampiran dihapus" });
     } catch (err) {
         console.error("[deleteAttachment]", err);
         res.status(500).json({ message: "Gagal menghapus lampiran" });
+    }
+};
+
+// ════════════════════════════════════════════════════════════════════════════
+// ADD ATTACHMENT (Finance — tambah/ganti lampiran pada pengajuan apa pun)
+// ════════════════════════════════════════════════════════════════════════════
+export const addAttachments = async (req, res) => {
+    const files = req.files || [];
+    try {
+        const employeeId = getEmployeeId(req);
+        if (!employeeId) return res.status(401).json({ message: "Unauthorized" });
+
+        const me = await fetchEmployee(employeeId);
+        if (!me || !isFinance(me.position_name)) {
+            files.forEach(f => removeAssetFile(`purchase/${f.filename}`));
+            return res.status(403).json({ message: "Akses ditolak: hanya Finance" });
+        }
+
+        const { id } = req.params;
+        const rows = await safeQuery(
+            `SELECT pr_id FROM tr_purchase_request WHERE pr_id = ? AND is_deleted = 0`,
+            [id]
+        );
+        if (!rows.length) {
+            files.forEach(f => removeAssetFile(`purchase/${f.filename}`));
+            return res.status(404).json({ message: "Data tidak ditemukan" });
+        }
+        if (!files.length) return res.status(400).json({ message: "Tidak ada file yang diunggah" });
+
+        for (const f of files) {
+            await safeQuery(
+                `INSERT INTO tr_purchase_request_attachment
+                    (pr_id, file_path, original_name, mime_type, file_size_kb)
+                 VALUES (?, ?, ?, ?, ?)`,
+                [id, `purchase/${f.filename}`, f.originalname, f.mimetype, Math.round(f.size / 1024)]
+            );
+        }
+
+        await writeLog(id, "updated", employeeId, me.full_name,
+            `Lampiran ditambahkan oleh Finance (${files.length} file)`);
+
+        res.json({ message: "Lampiran ditambahkan" });
+    } catch (err) {
+        console.error("[addAttachments]", err);
+        files.forEach(f => removeAssetFile(`purchase/${f.filename}`));
+        res.status(500).json({ message: "Gagal menambah lampiran" });
+    }
+};
+
+// ════════════════════════════════════════════════════════════════════════════
+// UPDATE HEADER (Finance — koreksi pengaju / departemen / kategori / outlet)
+// ════════════════════════════════════════════════════════════════════════════
+export const updateHeaderInfo = async (req, res) => {
+    try {
+        const employeeId = getEmployeeId(req);
+        if (!employeeId) return res.status(401).json({ message: "Unauthorized" });
+
+        const me = await fetchEmployee(employeeId);
+        if (!me || !isFinance(me.position_name)) {
+            return res.status(403).json({ message: "Akses ditolak: hanya Finance" });
+        }
+
+        const { id } = req.params;
+        const rows = await safeQuery(
+            `SELECT pr.*, e.full_name AS pengaju_name, d.department_name, ${SCOPE_COMPANY_SELECT}, ${SCOPE_OUTLET_SELECT}
+             FROM tr_purchase_request pr
+             LEFT JOIN mst_employee   e ON e.employee_id   = pr.employee_id
+             LEFT JOIN mst_department d ON d.department_id = pr.department_id
+             LEFT JOIN mst_company    c ON c.company_id    = pr.company_id
+             LEFT JOIN mst_outlet     o ON o.id            = pr.outlet_id
+             WHERE pr.pr_id = ? AND pr.is_deleted = 0`,
+            [id]
+        );
+        if (!rows.length) return res.status(404).json({ message: "Data tidak ditemukan" });
+        const pr = rows[0];
+
+        const newEmployeeId = req.body.employee_id ? Number(req.body.employee_id) : null;
+        if (!newEmployeeId) return res.status(400).json({ message: "Pengaju wajib dipilih" });
+
+        const scope = await resolveScopeSelection(
+            req.body.company_ids ?? req.body.company_id,
+            req.body.outlet_ids  ?? req.body.outlet_id
+        );
+        if (!scope.companies.length) return res.status(400).json({ message: "Kategori wajib dipilih" });
+        const { companyId, outletId } = primaryScope(scope);
+
+        const empRows = await safeQuery(
+            `SELECT e.employee_id, e.full_name, e.department_id, d.department_name
+             FROM mst_employee e
+             LEFT JOIN mst_department d ON d.department_id = e.department_id
+             WHERE e.employee_id = ? AND e.is_deleted = 0 LIMIT 1`,
+            [newEmployeeId]
+        );
+        if (!empRows.length) return res.status(400).json({ message: "Pengaju tidak valid" });
+        const emp = empRows[0];
+
+        // Departemen mengikuti karyawan (single source of truth)
+        const departmentId = emp.department_id;
+
+        await safeQuery(
+            `UPDATE tr_purchase_request SET
+                employee_id = ?, department_id = ?, company_id = ?, outlet_id = ?, updated_at = NOW()
+             WHERE pr_id = ?`,
+            [newEmployeeId, departmentId, companyId, outletId, id]
+        );
+        await syncScopes(id, scope.companies, scope.outlets);
+
+        await writeLog(id, "updated", employeeId, me.full_name,
+            `Data pengajuan dikoreksi oleh Finance | ` +
+            `Pengaju: ${pr.pengaju_name || "—"} -> ${emp.full_name} | ` +
+            `Departemen: ${pr.department_name || "—"} -> ${emp.department_name || "—"} | ` +
+            `Kategori: ${pr.company_name || "—"} -> ${scope.companies.map(c => c.company_name).join(", ")} | ` +
+            `Outlet: ${pr.outlet_name || "—"} -> ${scope.outlets.map(o => o.full_name).join(", ") || "—"}`);
+
+        res.json({ message: "Data pengajuan berhasil diperbarui" });
+    } catch (err) {
+        console.error("[updateHeaderInfo]", err);
+        res.status(500).json({ message: "Gagal memperbarui data pengajuan" });
     }
 };
 
@@ -1278,6 +1773,35 @@ export const approvePR = async (req, res) => {
 
             const spvNote = req.body.spv_note ? sanitize(req.body.spv_note) : null;
 
+            // ── Finance skip GA: SPV Finance approve → langsung status 5 (antrian bayar) ──
+            // SPV dept = SPV Finance, jadi tidak perlu approve Finance kedua kali
+            if (Number(pr.requires_ga) === 0) {
+                await safeQuery(
+                    `UPDATE tr_purchase_request SET
+                        status = 5,
+                        approved_spv_by = ?, approved_spv_at = NOW(),
+                        spv_note = ?,
+                        approved_finance_by = ?, approved_finance_at = NOW(),
+                        approved_bod_by = 2, approved_bod_at = NOW(),
+                        updated_at = NOW()
+                     WHERE pr_id = ?`,
+                    [employeeId, spvNote, employeeId, id]
+                );
+                const logNote = spvNote
+                    ? `Disetujui SPV Finance | Catatan: ${spvNote} — langsung antrian pembayaran (skip GA)`
+                    : "Disetujui SPV Finance — langsung antrian pembayaran (skip GA)";
+                await writeLog(id, "approved_spv", employeeId, me.full_name, logNote);
+                await writeLog(id, "skip_ga", employeeId, me.full_name,
+                    "Skip approval GA — dipilih Finance saat pengajuan");
+                await writeLog(id, "approved_finance", employeeId, me.full_name,
+                    "Disetujui SPV Finance (bersamaan SPV dept) — menunggu pembayaran");
+                const dirRows = await safeQuery(`SELECT full_name FROM mst_employee WHERE employee_id = 2 LIMIT 1`);
+                const dirName = dirRows.length ? dirRows[0].full_name : "Direktur";
+                await writeLog(id, "approved_bod", 2, dirName,
+                    "Disetujui Direktur (otomatis — Finance skip GA)");
+                return res.json({ message: "Pengajuan disetujui — langsung masuk antrian pembayaran" });
+            }
+
             // ── GA Tidak Rutin: SPV Dept approve → langsung status 4 (PR Ready) ──
             // karena GA sudah mengisi semua data, tidak perlu GA review lagi
             if (pr.is_routine === "tidak_rutin") {
@@ -1307,11 +1831,30 @@ export const approvePR = async (req, res) => {
 
         // Direktur (1) atau Manager (2) → approve status 2 → status 3
         // Hanya untuk pengajuan biasa (reimburse tidak melewati BoD manual)
+        // Jika Finance skip GA (requires_ga = 0) → langsung antrian pembayaran
         if (jobLevel === 1 || jobLevel === 2) {
             if (pr.type === "reimburse")
                 return res.status(400).json({ message: "Reimburse tidak memerlukan approval Direktur manual" });
             if (Number(pr.status) !== 2)
                 return res.status(400).json({ message: "Pengajuan ini tidak menunggu approval direktur" });
+
+            if (Number(pr.requires_ga) === 0) {
+                await safeQuery(
+                    `UPDATE tr_purchase_request SET
+                        status = 5,
+                        approved_bod_by = ?, approved_bod_at = NOW(),
+                        approved_finance_by = COALESCE(approved_finance_by, ?),
+                        approved_finance_at = COALESCE(approved_finance_at, NOW()),
+                        updated_at = NOW()
+                     WHERE pr_id = ?`,
+                    [employeeId, employeeId, id]
+                );
+                await writeLog(id, "approved_bod", employeeId, me.full_name,
+                    "Disetujui direktur — langsung antrian pembayaran (Finance skip GA)");
+                await writeLog(id, "skip_ga", employeeId, me.full_name,
+                    "Skip approval GA — dipilih Finance saat pengajuan");
+                return res.json({ message: "Pengajuan disetujui direktur — langsung masuk antrian pembayaran" });
+            }
 
             await safeQuery(
                 `UPDATE tr_purchase_request SET status = 3, approved_bod_by = ?, approved_bod_at = NOW(), updated_at = NOW()
@@ -1442,10 +1985,14 @@ export const listAll = async (req, res) => {
 
         const data = await safeQuery(
             `SELECT pr.*, e.full_name AS pengaju_name, d.department_name,
-                    s.satuan_name, c.company_name, o.full_name AS outlet_name,
+                    s.satuan_name, ${SCOPE_COMPANY_SELECT}, ${SCOPE_OUTLET_SELECT},
                     COALESCE((SELECT SUM(p.nominal_bayar)
                               FROM tr_purchase_request_payment p
-                              WHERE p.pr_id = pr.pr_id), 0) AS total_paid
+                              WHERE p.pr_id = pr.pr_id), 0) AS total_paid,
+                    (SELECT GROUP_CONCAT(mc.classification_name ORDER BY mc.classification_name SEPARATOR ', ')
+                     FROM tr_purchase_request_classification prc
+                     JOIN mst_purchase_classification mc ON mc.id = prc.classification_id
+                     WHERE prc.pr_id = pr.pr_id) AS classification_name
              FROM tr_purchase_request pr
              LEFT JOIN mst_employee   e ON e.employee_id   = pr.employee_id
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
@@ -1486,9 +2033,16 @@ export const listGaReview = async (req, res) => {
             "pr.status IN (2, 3)",
             "pr.type = 'pengajuan'",
             "pr.employee_id != ?",
-            "pr.is_routine IS NULL"
+            "pr.is_routine IS NULL",
+            "pr.requires_ga = 1"
         ];
         const params = [employeeId];
+
+        const search = req.query.search?.trim() || "";
+        if (search) {
+            conditions.push("(pr.nama_barang LIKE ? OR pr.pr_code LIKE ? OR e.full_name LIKE ?)");
+            params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+        }
 
         // ── filter tanggal (cutoff 26-25) ─────────────────────────────────
         const dateFrom = req.query.date_from?.trim() || "";
@@ -1500,7 +2054,7 @@ export const listGaReview = async (req, res) => {
 
         const data = await safeQuery(
             `SELECT pr.*, e.full_name AS pengaju_name, d.department_name,
-                    s.satuan_name, c.company_name, o.full_name AS outlet_name
+                    s.satuan_name, ${SCOPE_COMPANY_SELECT}, ${SCOPE_OUTLET_SELECT}
              FROM tr_purchase_request pr
              LEFT JOIN mst_employee   e ON e.employee_id   = pr.employee_id
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
@@ -1693,9 +2247,9 @@ export const getPOData = async (req, res) => {
                     e.full_name AS pengaju_name, e.employee_code, e.job_level_id AS pengaju_job_level,
                     d.department_name,
                     s.satuan_name,
-                    c.company_name,
+                    ${SCOPE_COMPANY_SELECT},
                     c.address     AS company_address,
-                    o.full_name AS outlet_name,
+                    ${SCOPE_OUTLET_SELECT},
                     o.address     AS outlet_address,
                     bnk.bank_name,
                     spv_e.full_name  AS spv_name,
@@ -1763,6 +2317,14 @@ export const listFinanceReview = async (req, res) => {
         ];
         const params = [];
 
+        const search = req.query.search?.trim() || "";
+        const type   = req.query.type?.trim() || "";
+        if (search) {
+            conditions.push("(pr.nama_barang LIKE ? OR pr.pr_code LIKE ? OR e.full_name LIKE ?)");
+            params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+        }
+        if (type) { conditions.push("pr.type = ?"); params.push(type); }
+
         // ── filter tanggal (cutoff 26-25) ─────────────────────────────────
         const dateFrom = req.query.date_from?.trim() || "";
         const dateTo   = req.query.date_to?.trim()   || "";
@@ -1776,7 +2338,7 @@ export const listFinanceReview = async (req, res) => {
         // - Reimburse: status 2 (sudah disetujui SPV Departemen)
         const data = await safeQuery(
             `SELECT pr.*, e.full_name AS pengaju_name, d.department_name,
-                    s.satuan_name, c.company_name, o.full_name AS outlet_name
+                    s.satuan_name, ${SCOPE_COMPANY_SELECT}, ${SCOPE_OUTLET_SELECT}
              FROM tr_purchase_request pr
              LEFT JOIN mst_employee   e ON e.employee_id   = pr.employee_id
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
@@ -1848,7 +2410,7 @@ export const approveFinance = async (req, res) => {
 
         // ── PENGAJUAN BIASA: status 4 → 5 ────────────────────────────────────
         if (Number(pr.status) !== 4) {
-            return res.status(400).json({ message: "Pengajuan belum disetujui GA" });
+            return res.status(400).json({ message: "Pengajuan belum siap untuk approval Finance (belum PR Ready)" });
         }
         await safeQuery(
             `UPDATE tr_purchase_request SET
@@ -1939,6 +2501,14 @@ export const listPaymentPending = async (req, res) => {
         ];
         const params = [];
 
+        const search = req.query.search?.trim() || "";
+        const type   = req.query.type?.trim() || "";
+        if (search) {
+            conditions.push("(pr.nama_barang LIKE ? OR pr.pr_code LIKE ? OR e.full_name LIKE ?)");
+            params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+        }
+        if (type) { conditions.push("pr.type = ?"); params.push(type); }
+
         // ── filter tanggal (cutoff 26-25) ─────────────────────────────────
         const dateFrom = req.query.date_from?.trim() || "";
         const dateTo   = req.query.date_to?.trim()   || "";
@@ -1952,7 +2522,7 @@ export const listPaymentPending = async (req, res) => {
         // - Reimburse: status 5 (disetujui SPV Finance, menunggu pembayaran)
         const data = await safeQuery(
             `SELECT pr.*, e.full_name AS pengaju_name, d.department_name,
-                    s.satuan_name, c.company_name, o.full_name AS outlet_name,
+                    s.satuan_name, ${SCOPE_COMPANY_SELECT}, ${SCOPE_OUTLET_SELECT},
                     bnk.bank_name
              FROM tr_purchase_request pr
              LEFT JOIN mst_employee   e   ON e.employee_id   = pr.employee_id
@@ -2000,18 +2570,17 @@ export const processPayment = async (req, res) => {
             return res.status(400).json({ message: "Pengajuan belum siap untuk pembayaran" });
         }
 
-        const classificationId = req.body.classification_id ? Number(req.body.classification_id) : null;
-        if (!classificationId) return res.status(400).json({ message: "Klasifikasi wajib dipilih" });
+        // Multi-klasifikasi: terima classification_ids[], fallback classification_id (legacy)
+        const requestedClassIds = parseClassificationIds(
+            req.body.classification_ids ?? req.body.classification_id
+        );
+        if (!requestedClassIds.length) return res.status(400).json({ message: "Klasifikasi wajib dipilih" });
 
-        let classificationName = "—";
-        if (classificationId) {
-            const [classRow] = await safeQuery(
-                `SELECT classification_name FROM mst_purchase_classification WHERE id = ?`,
-                [classificationId]
-            );
-            classificationName = classRow?.classification_name || "—";
-        }
+        const classRows = await fetchValidClassifications(requestedClassIds);
+        if (!classRows.length) return res.status(400).json({ message: "Klasifikasi tidak valid" });
 
+        const classificationIds = classRows.map(c => c.id);
+        const classificationId  = classificationIds[0];
         const paymentMethod = ["cash", "kredit"].includes(req.body.payment_method) ? req.body.payment_method : null;
         if (!paymentMethod) return res.status(400).json({ message: "Metode pembayaran (Cash/Kredit) wajib dipilih" });
 
@@ -2037,6 +2606,10 @@ export const processPayment = async (req, res) => {
         const nominalBayar   = nominalBayarRaw || null;
         const adminFeeRaw    = req.body.admin_fee ? Number(req.body.admin_fee) : null;
         const adminFee       = adminFeeRaw || null;
+
+        const classificationSplits = parseClassificationSplits(
+            req.body.classification_splits, classificationIds, nominalBayar);
+        const classificationName = formatClassificationLabel(classRows, classificationSplits);
 
         // Waktu pembayaran: gunakan yang dikirim frontend, fallback ke NOW() jika kosong
         const paidAtRaw = req.body.paid_at ? String(req.body.paid_at).trim() : null;
@@ -2077,6 +2650,8 @@ export const processPayment = async (req, res) => {
                  nominalBayar, adminFee, employeeId, ...paidAtParam, proofPath, paymentNote,
                  employeeId, ...paidAtParam, proofPath, id]
             );
+
+            await syncClassifications(id, classificationIds, classificationSplits);
 
             if (paymentMethod === "cash") {
                 await safeQuery(
@@ -2126,6 +2701,8 @@ export const processPayment = async (req, res) => {
              WHERE pr_id = ?`,
             [classificationId, paymentMethod, terminValue, terminUnit, jatuhTempo, nominalBayar, adminFee, employeeId, ...paidAtParam, proofPath, paymentNote, id]
         );
+
+        await syncClassifications(id, classificationIds, classificationSplits);
 
         if (paymentMethod === "cash") {
             await safeQuery(
@@ -2285,8 +2862,16 @@ export const updatePaymentInfo = async (req, res) => {
             return res.status(400).json({ message: "Pengajuan belum dibayar" });
         }
 
-        const classificationId = req.body.classification_id ? Number(req.body.classification_id) : null;
-        if (!classificationId) return res.status(400).json({ message: "Klasifikasi wajib dipilih" });
+        const requestedClassIds = parseClassificationIds(
+            req.body.classification_ids ?? req.body.classification_id
+        );
+        if (!requestedClassIds.length) return res.status(400).json({ message: "Klasifikasi wajib dipilih" });
+
+        const classRows = await fetchValidClassifications(requestedClassIds);
+        if (!classRows.length) return res.status(400).json({ message: "Klasifikasi tidak valid" });
+
+        const classificationIds  = classRows.map(c => c.id);
+        const classificationId   = classificationIds[0];
 
         const paymentMethod = ["cash", "kredit"].includes(req.body.payment_method) ? req.body.payment_method : null;
         if (!paymentMethod) return res.status(400).json({ message: "Metode pembayaran wajib dipilih" });
@@ -2298,25 +2883,21 @@ export const updatePaymentInfo = async (req, res) => {
         const adminFeeRaw    = req.body.admin_fee ? Number(req.body.admin_fee) : null;
         const adminFee       = adminFeeRaw || null;
 
-        // Fetch new classification name
-        let classificationName = "—";
-        if (classificationId) {
-            const [classRow] = await safeQuery(
-                `SELECT classification_name FROM mst_purchase_classification WHERE id = ?`,
-                [classificationId]
-            );
-            classificationName = classRow?.classification_name || "—";
-        }
+        const classificationSplits = parseClassificationSplits(
+            req.body.classification_splits, classificationIds, nominalBayar);
+        const classificationName = formatClassificationLabel(classRows, classificationSplits);
 
-        // Fetch old classification name
-        let oldClassificationName = "—";
-        if (pr.classification_id) {
-            const [oldClassRow] = await safeQuery(
+        // Klasifikasi lama (multi; fallback ke kolom legacy jika junction kosong)
+        const oldClassRows = await getClassificationsOfPr(id);
+        let oldClassificationName = formatClassificationLabel(oldClassRows);
+        if (!oldClassificationName && pr.classification_id) {
+            const [legacy] = await safeQuery(
                 `SELECT classification_name FROM mst_purchase_classification WHERE id = ?`,
                 [pr.classification_id]
             );
-            oldClassificationName = oldClassRow?.classification_name || "—";
+            oldClassificationName = legacy?.classification_name || "";
         }
+        if (!oldClassificationName) oldClassificationName = "—";
 
         const fmtRp = (n) => n ? `Rp ${new Intl.NumberFormat("id-ID").format(n)}` : "—";
 
@@ -2337,6 +2918,8 @@ export const updatePaymentInfo = async (req, res) => {
              WHERE pr_id = ?`,
             [classificationId, paymentMethod, nominalBayar, adminFee, id]
         );
+
+        await syncClassifications(id, classificationIds, classificationSplits);
 
         if (paymentMethod === "cash") {
             const payRows = await safeQuery(
@@ -2442,11 +3025,15 @@ export const listCredit = async (req, res) => {
                     e.full_name AS pengaju_name,
                     d.department_name,
                     s.satuan_name,
-                    c.company_name,
-                    o.full_name AS outlet_name,
+                    ${SCOPE_COMPANY_SELECT},
+                    ${SCOPE_OUTLET_SELECT},
                     COALESCE((SELECT SUM(p.nominal_bayar)
                               FROM tr_purchase_request_payment p
-                              WHERE p.pr_id = pr.pr_id), 0) AS total_paid
+                              WHERE p.pr_id = pr.pr_id), 0) AS total_paid,
+                    (SELECT GROUP_CONCAT(mc.classification_name ORDER BY mc.classification_name SEPARATOR ', ')
+                     FROM tr_purchase_request_classification prc
+                     JOIN mst_purchase_classification mc ON mc.id = prc.classification_id
+                     WHERE prc.pr_id = pr.pr_id) AS classification_name
              FROM tr_purchase_request pr
              LEFT JOIN mst_employee   e ON e.employee_id   = pr.employee_id
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
