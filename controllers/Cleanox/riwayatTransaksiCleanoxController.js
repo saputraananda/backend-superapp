@@ -24,6 +24,7 @@ export function mapKategori(group) {
 	const g = String(group || "").trim();
 	if (!g) return "-";
 	if (g.toLowerCase() === "tunai") return "TUNAI";
+	if (g.toLowerCase() === "collaboration") return "COLLABORATION";
 	if (["bca", "edc", "qris"].includes(g.toLowerCase())) return "TF BANK";
 	return "TF BANK";
 }
@@ -35,7 +36,8 @@ function buildPaymentProofUrl(photoFile) {
 
 /**
  * GET /cleanox/riwayat-transaksi
- * POS-only riwayat by service_date range (SuperApp cutoff).
+ * POS-only riwayat by date range (SuperApp cutoff).
+ * Query date_by: `service` (default) = service_date; `settled` = payment_settled_date.
  */
 export async function listRiwayatTransaksi(req, res) {
 	try {
@@ -44,6 +46,10 @@ export async function listRiwayatTransaksi(req, res) {
 		const search = String(req.query.search || "").trim();
 		const status = String(req.query.status || "").trim();
 		const paymentStatus = String(req.query.payment_status || "").trim();
+		const dateBy =
+			String(req.query.date_by || "").trim().toLowerCase() === "settled"
+				? "settled"
+				: "service";
 		const serviceModeRaw = String(req.query.service_mode || "").trim().toLowerCase();
 		const serviceMode =
 			serviceModeRaw === "home_service" || serviceModeRaw === "take_home"
@@ -64,6 +70,18 @@ export async function listRiwayatTransaksi(req, res) {
 		}
 
 		// pricing_pending belum ada di skema cleanox_pos_prod saat ini — jangan SELECT.
+		const dateFilterSql =
+			dateBy === "settled"
+				? `t.payment_settled_date IS NOT NULL
+        AND t.payment_settled_date >= ?
+        AND t.payment_settled_date <= ?`
+				: `DATE(t.service_date) >= ?
+        AND DATE(t.service_date) <= ?`;
+		const orderBySql =
+			dateBy === "settled"
+				? ` ORDER BY t.payment_settled_date ASC, t.transaction_no ASC`
+				: ` ORDER BY t.service_date ASC, t.transaction_no ASC`;
+
 		let sql = `
       SELECT
         t.id,
@@ -81,8 +99,7 @@ export async function listRiwayatTransaksi(req, res) {
         pm.label AS payment_method_label
       FROM tr_transactions t
       LEFT JOIN mst_payment_method pm ON pm.id = t.payment_method_id
-      WHERE DATE(t.service_date) >= ?
-        AND DATE(t.service_date) <= ?`;
+      WHERE ${dateFilterSql}`;
 		const params = [startDate, endDate];
 
 		if (status) {
@@ -115,7 +132,7 @@ export async function listRiwayatTransaksi(req, res) {
 			params.push(like, like, like);
 		}
 
-		sql += ` ORDER BY t.service_date ASC, t.transaction_no ASC`;
+		sql += orderBySql;
 
 		const [rows] = await safeCleanoxQuery(sql, params);
 
