@@ -17,6 +17,7 @@ import { pool, startDbPing } from "./db/pool.js";
 import authRoutes from "./routes/auth/authRoutes.js";
 import appRoutes from "./routes/appRoutes.js";
 import employeeRoutes from "./routes/employeeRoutes.js";
+import employeeAssetServiceRoutes from "./routes/employeeAssetServiceRoutes.js";
 import satisfactionRoutes from "./routes/satisfactionRoutes.js";
 import pmRoutes from "./routes/pmRoutes.js";
 import masterKarRoutes from "./routes/masterKarRoutes.js";
@@ -291,6 +292,9 @@ app.use("/assets/document_alora", express.static(path.join(ASSETS_BASE, "documen
 app.use("/assets/training_evidence", express.static(path.join(ASSETS_BASE, "training_evidence")));
 app.use("/assets/pm_evidence", express.static(path.join(ASSETS_BASE, "pm_evidence")));
 app.use("/storage/assets/payslip", express.static(path.join(ASSETS_BASE, "payslip")));
+// Alias /storage/assets → folder yang sama dengan /assets. Dipakai Waschen Mobile
+// (UPLOAD_BASE_PROFILE_DOCUMENT) untuk menampilkan foto profil & dokumen karyawan.
+app.use("/storage/assets", express.static(ASSETS_BASE));
 
 // Waschen Mobile uploads — satu env WASCHEN_MOBILE_PUBLIC_BASE_URL
 // Dev (path lokal): C:\...\waschen-mobile → mount uploads/assets/*
@@ -350,6 +354,8 @@ app.get("/debug-file-exists", (req, res) => {
 app.use("/auth", authRoutes);
 app.use("/apps", appRoutes);
 app.use("/employees", employeeRoutes);
+// Upload aset karyawan dari aplikasi lain (Waschen Mobile) — auth x-service-token
+app.use("/service/employee-assets", employeeAssetServiceRoutes);
 app.use("/satisfaction", satisfactionRoutes);
 app.use("/api/pm", pmRoutes);
 app.use("/hr", masterKarRoutes);
