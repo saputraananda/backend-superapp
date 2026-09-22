@@ -1,6 +1,9 @@
 import crypto from "crypto";
 import express from "express";
-import { uploadEmployeeAssetService } from "../controllers/employeeAssetServiceController.js";
+import {
+  uploadEmployeeAssetService,
+  deleteEmployeeAssetService,
+} from "../controllers/employeeAssetServiceController.js";
 import { uploadAvatar, uploadDocument } from "../middleware/upload.js";
 
 const router = express.Router();
@@ -40,5 +43,6 @@ const pickUploader = (req, res, next) => {
 };
 
 router.post("/:docType", requireServiceToken, pickUploader, uploadEmployeeAssetService);
+router.delete("/:docType", requireServiceToken, deleteEmployeeAssetService);
 
 export default router;

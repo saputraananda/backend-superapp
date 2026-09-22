@@ -96,3 +96,47 @@ export const uploadEmployeeAssetService = async (req, res) => {
     return res.status(500).json({ message: "Gagal menyimpan file." });
   }
 };
+
+/** DELETE /service/employee-assets/:docType?employee_id=123 — hapus file + kosongkan kolom */
+export const deleteEmployeeAssetService = async (req, res) => {
+  const docType = String(req.params.docType || "").toLowerCase();
+  const meta = DOC_MAP[docType];
+
+  if (!meta) {
+    return res.status(400).json({ message: "Tipe dokumen tidak valid." });
+  }
+
+  const employeeId = Number(req.query?.employee_id);
+  if (!Number.isInteger(employeeId) || employeeId <= 0) {
+    return res.status(400).json({ message: "employee_id tidak valid." });
+  }
+
+  const isPhoto = docType === "profile";
+  const dir = isPhoto ? AVATAR_DIR : DOCUMENT_DIR;
+
+  try {
+    const [rows] = await safeQuery(
+      `SELECT ${meta.pathCol} AS old_path, email FROM mst_employee WHERE employee_id = ? AND is_deleted = 0`,
+      [employeeId]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ message: "Employee not found" });
+    }
+
+    await safeQuery(
+      `UPDATE mst_employee SET ${meta.nameCol} = NULL, ${meta.pathCol} = NULL WHERE employee_id = ? AND is_deleted = 0`,
+      [employeeId]
+    );
+
+    if (isPhoto && rows[0].email) {
+      await safeQuery("UPDATE users SET avatar = NULL WHERE email = ?", [rows[0].email]);
+    }
+
+    deleteOldFile(rows[0].old_path, dir);
+
+    return res.json({ message: "Berhasil dihapus." });
+  } catch (error) {
+    console.error("deleteEmployeeAssetService error:", error);
+    return res.status(500).json({ message: "Gagal menghapus file." });
+  }
+};
