@@ -7,6 +7,8 @@ import { getActor, toISODate, resolveMstRoleEmployeeIds, appendEmployeeIdInClaus
 import { buildKasbonProofUrl } from "./hrisAssetHelpers.js";
 
 import { notifyWaschenRealtime } from "../../../utils/notifyWaschenRealtime.js";
+
+import { uploadKasbonPaymentProof, deleteWaschenMobileUpload } from "../../../utils/waschenMobileUpload.js";
 import { buildKasbonSummary, getEmployeeSalary, insertSchedule, splitInstallments } from "./kasbonLimit.js";
 
 
@@ -289,10 +291,12 @@ export const getKasbonMonitorDetail = async (req, res) => {
     if (!Number.isInteger(employeeId) || employeeId <= 0) {
       return res.status(400).json({ success: false, message: "Karyawan tidak valid" });
     }
-    const summary = await buildKasbonSummary(employeeId);
+    // exclude=<kasbonId>: sisa tanpa hold pengajuan itu sendiri (dipakai modal setujui/tolak)
+    const excludeId = Number(req.query.exclude) || null;
+    const summary = await buildKasbonSummary(employeeId, excludeId);
     const [rows] = await safeMyWaschenQuery(
       `SELECT id, type, status, amount_requested, amount_approved, tenor_count, purpose,
-              submission_date, payment_method, is_opening_balance, rejection_note
+              submission_date, payment_method, is_opening_balance, approved_note, rejection_note
        FROM tr_kasbon
        WHERE employee_id = ?
        ORDER BY submission_date DESC, id DESC`,
@@ -302,7 +306,7 @@ export const getKasbonMonitorDetail = async (req, res) => {
     const payMap = new Map();
     if (ids.length) {
       const [pays] = await safeMyWaschenQuery(
-        `SELECT id, kasbon_id, installment_no, due_date, amount, status, paid_at
+        `SELECT id, kasbon_id, installment_no, due_date, amount, status, paid_at, proof_path
          FROM tr_kasbon_payment
          WHERE kasbon_id IN (${ids.map(() => "?").join(",")})
          ORDER BY installment_no ASC, id ASC`,
@@ -317,6 +321,7 @@ export const getKasbonMonitorDetail = async (req, res) => {
           amount: Number(pay.amount) || 0,
           status: pay.status,
           paid_at: pay.paid_at ? toISODate(pay.paid_at) : null,
+          proof_url: buildKasbonProofUrl(req, pay.proof_path),
         });
         payMap.set(pay.kasbon_id, list);
       }
@@ -370,7 +375,9 @@ export const getKasbonById = async (req, res) => {
 
     );
 
-    const totalPaid = payments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+    const totalPaid = payments
+      .filter((p) => p.status === "terbayar")
+      .reduce((s, p) => s + (Number(p.amount) || 0), 0);
 
     const approved = Number(rows[0].amount_approved ?? rows[0].amount_requested) || 0;
 
@@ -386,7 +393,12 @@ export const getKasbonById = async (req, res) => {
 
         proof_url: buildKasbonProofUrl(req, rows[0].proof_path),
 
-        payments,
+        payments: payments.map((p) => ({
+          ...p,
+          due_date: toISODate(p.due_date),
+          payment_date: toISODate(p.payment_date),
+          proof_url: buildKasbonProofUrl(req, p.proof_path),
+        })),
 
         total_paid: totalPaid,
 
@@ -629,47 +641,87 @@ export const addKasbonPayment = async (_req, res) => {
 
 
 export const markKasbonInstallmentPaid = async (req, res) => {
-
-  try {
-
-    const actor = getActor(req);
-
-    const kasbonId = Number(req.params.id);
-
-    const paymentId = Number(req.params.paymentId);
-
-    const [result] = await safeMyWaschenQuery(
-
-      `UPDATE tr_kasbon_payment p
-
-       JOIN tr_kasbon k ON k.id = p.kasbon_id
-
-       SET p.status = 'terbayar', p.paid_at = NOW(), p.recorded_by_name = ?
-
-       WHERE p.id = ? AND p.kasbon_id = ? AND k.status = 'disetujui' AND p.status = 'belum'`,
-
-      [actor.name, paymentId, kasbonId],
-
-    );
-
-    if (!result.affectedRows) {
-
-      return res.status(422).json({ success: false, message: "Termin tidak ditemukan atau sudah lunas" });
-
-    }
-
-    const [row] = await safeMyWaschenQuery(`SELECT employee_id FROM tr_kasbon WHERE id = ? LIMIT 1`, [kasbonId]);
-
-    await notifyWaschenRealtime({ domain: "kasbon", employeeId: row?.[0]?.employee_id, action: "paid" });
-
-    return res.json({ success: true, message: "Termin ditandai lunas" });
-
-  } catch (err) {
-
-    return res.status(500).json({ success: false, message: err.message });
-
+  const actor = getActor(req);
+  const kasbonId = Number(req.params.id);
+  const paymentId = Number(req.params.paymentId);
+  const paid = Math.round(Number(req.body.amount));
+  if (!req.file) {
+    return res.status(422).json({ success: false, message: "Bukti pembayaran wajib dilampirkan" });
+  }
+  if (!paid || paid <= 0) {
+    return res.status(422).json({ success: false, message: "Nominal bayar harus lebih dari 0" });
   }
 
+  let proofPath;
+  try {
+    proofPath = await uploadKasbonPaymentProof(req.file);
+  } catch (err) {
+    return res.status(502).json({ success: false, message: err.message });
+  }
+  const dropFile = () => deleteWaschenMobileUpload("kasbon", proofPath);
+
+  const conn = await myWaschenPool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const q = (sql, params) => conn.query(sql, params);
+    const [rows] = await q(
+      `SELECT p.amount, p.installment_no, p.payment_date, p.due_date, p.payment_method, k.employee_id, k.type
+       FROM tr_kasbon_payment p
+       JOIN tr_kasbon k ON k.id = p.kasbon_id
+       WHERE p.id = ? AND p.kasbon_id = ? AND k.status = 'disetujui' AND p.status = 'belum'
+       LIMIT 1
+       FOR UPDATE`,
+      [paymentId, kasbonId],
+    );
+    const row = rows[0];
+    if (!row) {
+      await conn.rollback();
+      dropFile();
+      return res.status(422).json({ success: false, message: "Jadwal tidak ditemukan atau sudah lunas" });
+    }
+    const scheduled = Math.round(Number(row.amount) || 0);
+    if (paid > scheduled) {
+      await conn.rollback();
+      dropFile();
+      return res.status(422).json({ success: false, message: "Nominal bayar tidak boleh melebihi sisa jadwal ini" });
+    }
+    const [updated] = await q(
+      `UPDATE tr_kasbon_payment
+       SET amount = ?, status = 'terbayar', paid_at = NOW(), recorded_by_name = ?, proof_path = ?
+       WHERE id = ? AND status = 'belum'`,
+      [paid, actor.name, proofPath, paymentId],
+    );
+    if (!updated.affectedRows) {
+      await conn.rollback();
+      dropFile();
+      return res.status(422).json({ success: false, message: "Jadwal tidak ditemukan atau sudah lunas" });
+    }
+    if (paid < scheduled) {
+      await q(
+        `INSERT INTO tr_kasbon_payment
+          (kasbon_id, installment_no, payment_date, due_date, amount, payment_method, status, notes)
+         VALUES (?, ?, ?, ?, ?, ?, 'belum', ?)`,
+        [
+          kasbonId,
+          row.installment_no,
+          row.payment_date,
+          row.due_date,
+          scheduled - paid,
+          row.payment_method,
+          "Sisa belum terbayar",
+        ],
+      );
+    }
+    await conn.commit();
+    await notifyWaschenRealtime({ domain: "kasbon", employeeId: row.employee_id, action: "paid" });
+    return res.json({ success: true, message: paid < scheduled ? "Sebagian pembayaran dicatat. Sisanya tetap belum lunas." : "Pembayaran dicatat lunas" });
+  } catch (err) {
+    await conn.rollback();
+    dropFile();
+    return res.status(500).json({ success: false, message: err.message });
+  } finally {
+    conn.release();
+  }
 };
 
 
