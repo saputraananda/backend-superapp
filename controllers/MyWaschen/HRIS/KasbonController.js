@@ -229,45 +229,52 @@ export const getKasbonMonitor = async (req, res) => {
     );
 
     const [pending] = await safeMyWaschenQuery(
-      `SELECT employee_id, COALESCE(SUM(amount_requested), 0) AS hold
+      `SELECT employee_id, type, COALESCE(SUM(amount_requested), 0) AS hold
        FROM tr_kasbon
        WHERE status IN ('pengajuan','proses')
-       GROUP BY employee_id`,
+       GROUP BY employee_id, type`,
     );
     const [openPay] = await safeMyWaschenQuery(
-      `SELECT k.employee_id, COALESCE(SUM(p.amount), 0) AS hold
+      `SELECT k.employee_id, k.type, COALESCE(SUM(p.amount), 0) AS hold
        FROM tr_kasbon_payment p
        JOIN tr_kasbon k ON k.id = p.kasbon_id
        WHERE k.status = 'disetujui' AND p.status = 'belum'
-       GROUP BY k.employee_id`,
+       GROUP BY k.employee_id, k.type`,
     );
     const [legacy] = await safeMyWaschenQuery(
-      `SELECT k.employee_id, COALESCE(SUM(COALESCE(k.amount_approved, k.amount_requested)), 0) AS hold
+      `SELECT k.employee_id, k.type, COALESCE(SUM(COALESCE(k.amount_approved, k.amount_requested)), 0) AS hold
        FROM tr_kasbon k
        WHERE k.status = 'disetujui'
          AND NOT EXISTS (SELECT 1 FROM tr_kasbon_payment p WHERE p.kasbon_id = k.id)
-       GROUP BY k.employee_id`,
+       GROUP BY k.employee_id, k.type`,
     );
 
+    // hold.get(employeeId) = { kasbon, pinjaman }
     const hold = new Map();
     for (const bucket of [pending, openPay, legacy]) {
       for (const row of bucket) {
         const id = Number(row.employee_id);
-        hold.set(id, (hold.get(id) || 0) + (Number(row.hold) || 0));
+        const cur = hold.get(id) || { kasbon: 0, pinjaman: 0 };
+        const key = row.type === "pinjaman" ? "pinjaman" : "kasbon";
+        cur[key] += Number(row.hold) || 0;
+        hold.set(id, cur);
       }
     }
 
     let data = employees.map((emp) => {
       const salary = Number(emp.take_home_pay) || 0;
       const limit = Math.floor(salary / 2);
-      const pinjaman = hold.get(Number(emp.employee_id)) || 0;
+      const bucket = hold.get(Number(emp.employee_id)) || { kasbon: 0, pinjaman: 0 };
+      const total = bucket.kasbon + bucket.pinjaman;
       return {
         employee_id: emp.employee_id,
         employee_name: emp.full_name,
         employee_code: emp.employee_code,
         limit,
-        pinjaman,
-        sisa: Math.max(0, limit - pinjaman),
+        kasbon: bucket.kasbon,
+        pinjaman: bucket.pinjaman,
+        terpakai: total,
+        sisa: Math.max(0, limit - total),
         has_salary: salary > 0,
       };
     });
@@ -277,7 +284,7 @@ export const getKasbonMonitor = async (req, res) => {
         || String(row.employee_code || "").toLowerCase().includes(search),
       );
     }
-    data.sort((a, b) => b.pinjaman - a.pinjaman || String(a.employee_name || "").localeCompare(String(b.employee_name || ""), "id"));
+    data.sort((a, b) => b.terpakai - a.terpakai || String(a.employee_name || "").localeCompare(String(b.employee_name || ""), "id"));
     return res.json({ success: true, data });
   } catch (err) {
     console.error("getKasbonMonitor:", err);
@@ -332,7 +339,9 @@ export const getKasbonMonitorDetail = async (req, res) => {
         employee_id: employeeId,
         employee_name: summary.employeeName,
         limit: summary.limit,
-        pinjaman: summary.reserved,
+        kasbon: summary.reservedKasbon,
+        pinjaman: summary.reservedPinjaman,
+        terpakai: summary.reserved,
         sisa: summary.sisa,
         has_salary: summary.hasSalary,
         history: rows.map((row) => ({

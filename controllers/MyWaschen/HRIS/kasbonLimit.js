@@ -55,30 +55,41 @@ export async function getEmployeeSalary(employeeId) {
   return rows[0] || null;
 }
 
+/** @returns {Promise<{kasbon:number, pinjaman:number, total:number}>} */
 export async function reservedAmount(employeeId, excludeId = null) {
   const exclude = excludeId ? " AND k.id <> ?" : "";
   const params = excludeId ? [employeeId, excludeId] : [employeeId];
   const [pending] = await safeMyWaschenQuery(
-    `SELECT COALESCE(SUM(k.amount_requested), 0) AS hold
+    `SELECT k.type, COALESCE(SUM(k.amount_requested), 0) AS hold
      FROM tr_kasbon k
-     WHERE k.employee_id = ? AND k.status IN ('pengajuan','proses')${exclude}`,
+     WHERE k.employee_id = ? AND k.status IN ('pengajuan','proses')${exclude}
+     GROUP BY k.type`,
     params
   );
   const [open] = await safeMyWaschenQuery(
-    `SELECT COALESCE(SUM(p.amount), 0) AS hold
+    `SELECT k.type, COALESCE(SUM(p.amount), 0) AS hold
      FROM tr_kasbon_payment p
      JOIN tr_kasbon k ON k.id = p.kasbon_id
-     WHERE k.employee_id = ? AND k.status = 'disetujui' AND p.status = 'belum'${exclude}`,
+     WHERE k.employee_id = ? AND k.status = 'disetujui' AND p.status = 'belum'${exclude}
+     GROUP BY k.type`,
     params
   );
   const [legacy] = await safeMyWaschenQuery(
-    `SELECT COALESCE(SUM(COALESCE(k.amount_approved, k.amount_requested)), 0) AS hold
+    `SELECT k.type, COALESCE(SUM(COALESCE(k.amount_approved, k.amount_requested)), 0) AS hold
      FROM tr_kasbon k
      WHERE k.employee_id = ? AND k.status = 'disetujui'${exclude}
-       AND NOT EXISTS (SELECT 1 FROM tr_kasbon_payment p WHERE p.kasbon_id = k.id)`,
+       AND NOT EXISTS (SELECT 1 FROM tr_kasbon_payment p WHERE p.kasbon_id = k.id)
+     GROUP BY k.type`,
     params
   );
-  return Number(pending[0].hold) + Number(open[0].hold) + Number(legacy[0].hold);
+  const out = { kasbon: 0, pinjaman: 0, total: 0 };
+  for (const bucket of [pending, open, legacy]) {
+    for (const row of bucket) {
+      out[row.type === "pinjaman" ? "pinjaman" : "kasbon"] += Number(row.hold) || 0;
+    }
+  }
+  out.total = out.kasbon + out.pinjaman;
+  return out;
 }
 
 export async function buildKasbonSummary(employeeId, excludeId = null) {
@@ -108,8 +119,10 @@ export async function buildKasbonSummary(employeeId, excludeId = null) {
     basicSalary: salary,
     limit,
     sekarang: (Number(dueRows[0].due) || 0) + (Number(pendingRows[0].hold) || 0),
-    reserved,
-    sisa: Math.max(0, limit - reserved),
+    reserved: reserved.total,
+    reservedKasbon: reserved.kasbon,
+    reservedPinjaman: reserved.pinjaman,
+    sisa: Math.max(0, limit - reserved.total),
     cutoffStart: cutoff.start,
     cutoffEnd: cutoff.end,
     hasSalary: salary > 0,
