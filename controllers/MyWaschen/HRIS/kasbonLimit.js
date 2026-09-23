@@ -49,7 +49,7 @@ export function splitInstallments(total, tenor) {
 
 export async function getEmployeeSalary(employeeId) {
   const [rows] = await safeQuery(
-    "SELECT employee_id, full_name, basic_salary FROM mst_employee WHERE employee_id = ? AND is_deleted = 0 LIMIT 1",
+    "SELECT employee_id, full_name, take_home_pay FROM mst_employee WHERE employee_id = ? AND is_deleted = 0 LIMIT 1",
     [employeeId]
   );
   return rows[0] || null;
@@ -83,7 +83,7 @@ export async function reservedAmount(employeeId, excludeId = null) {
 
 export async function buildKasbonSummary(employeeId, excludeId = null) {
   const emp = await getEmployeeSalary(employeeId);
-  const salary = Number(emp?.basic_salary) || 0;
+  const salary = Number(emp?.take_home_pay) || 0;
   const limit = Math.floor(salary / 2);
   const cutoff = currentCutoff();
   const reserved = await reservedAmount(employeeId, excludeId);

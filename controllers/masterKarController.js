@@ -386,7 +386,7 @@ export const updateEmployee = async (req, res) => {
       exit_date, exit_reason, education_level_id, school_name, major_name, religion_id,
       marital_status, bpjs_health_number, bpjs_employment_number, npwp_number,
       bank_id, bank_account_number, emergency_contact, notes, employee_code,
-      username, mother_name, email, private_email, basic_salary,
+      username, mother_name, email, private_email, take_home_pay,
     } = req.body;
 
     if (!employee_code?.trim()) {
@@ -434,10 +434,10 @@ export const updateEmployee = async (req, res) => {
     const newEmail = email?.trim() || oldEmail;
 
     let salaryValue = null;
-    if (basic_salary !== "" && basic_salary != null) {
-      const n = Number(basic_salary);
+    if (take_home_pay !== "" && take_home_pay != null) {
+      const n = Number(take_home_pay);
       if (!Number.isFinite(n) || n < 0) {
-        return res.status(400).json({ message: "Gaji pokok harus angka 0 atau lebih." });
+        return res.status(400).json({ message: "Take Home Pay harus angka 0 atau lebih." });
       }
       salaryValue = n;
     }
@@ -451,7 +451,7 @@ export const updateEmployee = async (req, res) => {
         contract_end_date = ?, exit_date = ?, exit_reason = ?,
         education_level_id = ?, school_name = ?, major_name = ?, religion_id = ?,
         marital_status = ?, bpjs_health_number = ?, bpjs_employment_number = ?,
-        npwp_number = ?, bank_id = ?, bank_account_number = ?, basic_salary = ?,
+        npwp_number = ?, bank_id = ?, bank_account_number = ?, take_home_pay = ?,
         emergency_contact = ?, notes = ?, employee_code = ?, mother_name = ?,
         email = ?, private_email = ?
        WHERE employee_id = ? AND is_deleted = 0`,

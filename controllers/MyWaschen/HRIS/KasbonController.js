@@ -219,7 +219,7 @@ export const getKasbonMonitor = async (req, res) => {
       params.push(...roleEmployeeIds);
     }
     const [employees] = await safeQuery(
-      `SELECT e.employee_id, e.full_name, e.employee_code, e.basic_salary
+      `SELECT e.employee_id, e.full_name, e.employee_code, e.take_home_pay
        FROM mst_employee e
        WHERE ${cond.join(" AND ")}
        ORDER BY e.full_name ASC`,
@@ -256,7 +256,7 @@ export const getKasbonMonitor = async (req, res) => {
     }
 
     let data = employees.map((emp) => {
-      const salary = Number(emp.basic_salary) || 0;
+      const salary = Number(emp.take_home_pay) || 0;
       const limit = Math.floor(salary / 2);
       const pinjaman = hold.get(Number(emp.employee_id)) || 0;
       return {
@@ -497,7 +497,7 @@ export const approveKasbon = async (req, res) => {
 
     if (!summary.hasSalary) {
 
-      return res.status(422).json({ success: false, message: "Gaji pokok karyawan belum diisi. Lengkapi dulu di Master Karyawan." });
+      return res.status(422).json({ success: false, message: "Take Home Pay karyawan belum diisi. Lengkapi dulu di Master Karyawan." });
 
     }
 
@@ -732,7 +732,7 @@ export const createOpeningBalance = async (req, res) => {
 
     if (!summary.hasSalary) {
 
-      return res.status(422).json({ success: false, message: "Gaji pokok karyawan belum diisi. Lengkapi dulu di Master Karyawan." });
+      return res.status(422).json({ success: false, message: "Take Home Pay karyawan belum diisi. Lengkapi dulu di Master Karyawan." });
 
     }
 
