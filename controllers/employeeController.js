@@ -152,7 +152,7 @@ export const updateProfile = async (req, res) => {
         department_id = ?, join_date = ?, employment_status_id = ?,
         contract_end_date = ?, education_level_id = ?, school_name = ?, major_name = ?,
         religion_id = ?, marital_status = ?, bpjs_health_number = ?,
-        bpjs_employment_number = ?, npwp_number = ?, bank_id = ?,
+        bpjs_employment_number = ?, npwp_number = ?,         bank_id = ?,
         bank_account_number = ?, emergency_contact = ?, notes = ?, employee_code = ?,
         mother_name = ?, email = ?, private_email = ?
        WHERE email = ? AND is_deleted = 0`,
