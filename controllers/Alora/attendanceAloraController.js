@@ -80,6 +80,50 @@ function getDefaultCutoffRange(now = new Date()) {
 	return { startDate: toDateInput(start), endDate: toDateInput(end) };
 }
 
+function buildPeriodRange(month, year) {
+	if (!(month >= 1 && month <= 12 && year >= 2000)) return null;
+	const prevMonth = month === 1 ? 12 : month - 1;
+	const prevYear = month === 1 ? year - 1 : year;
+	return {
+		periodStart: `${prevYear}-${String(prevMonth).padStart(2, "0")}-26`,
+		periodEnd: `${year}-${String(month).padStart(2, "0")}-25`,
+	};
+}
+
+function dateToCutoffPeriod(dateStr) {
+	const s = toDateOnlyJakarta(dateStr) || String(dateStr || "").slice(0, 10);
+	if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+	const y = Number(s.slice(0, 4));
+	const m = Number(s.slice(5, 7));
+	const d = Number(s.slice(8, 10));
+	let month = m;
+	let year = y;
+	if (d >= 26) {
+		month = m === 12 ? 1 : m + 1;
+		year = m === 12 ? y + 1 : y;
+	}
+	const range = buildPeriodRange(month, year);
+	if (!range) return null;
+	return { month, year, periodStart: range.periodStart, periodEnd: range.periodEnd };
+}
+
+function shiftCutoffPeriod({ month, year }, deltaMonths = 0) {
+	const m0 = Number(month);
+	const y0 = Number(year);
+	if (!(m0 >= 1 && m0 <= 12 && y0 >= 2000)) return null;
+	const total = y0 * 12 + (m0 - 1) + Number(deltaMonths || 0);
+	const newYear = Math.floor(total / 12);
+	const newMonth = (total % 12) + 1;
+	if (newYear < 2000) return null;
+	const range = buildPeriodRange(newMonth, newYear);
+	if (!range) return null;
+	return { month: newMonth, year: newYear, periodStart: range.periodStart, periodEnd: range.periodEnd };
+}
+
+function todayDateStringJakarta() {
+	return toDateOnlyJakarta(new Date()) || toDateInput(new Date());
+}
+
 function diffDays(startDate, endDate) {
 	const ms = new Date(endDate).getTime() - new Date(startDate).getTime();
 	return Math.floor(ms / 86400000);
@@ -270,20 +314,67 @@ async function fetchReplaceOffBalances(employeeIds) {
 	const ids = [...new Set((employeeIds || []).map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))];
 	const map = new Map();
 	if (ids.length === 0) return map;
+	ids.forEach((id) => map.set(id, 0));
+
+	const asOf = todayDateStringJakarta();
 	const placeholders = ids.map(() => "?").join(",");
-	const [rows] = await safeAloraMobileQuery(
-		`SELECT l.employee_id, l.balance_after
+	const [earnedRows] = await safeAloraMobileQuery(
+		`SELECT l.employee_id, l.id, l.hours,
+		        COALESCE(a.attendance_date, DATE(l.created_at)) AS earn_date
 		 FROM tr_replace_off_ledger l
-		 INNER JOIN (
-		   SELECT employee_id, MAX(id) AS max_id
-		   FROM tr_replace_off_ledger
-		   WHERE employee_id IN (${placeholders})
-		   GROUP BY employee_id
-		 ) t ON l.id = t.max_id`,
+		 LEFT JOIN tr_worker_attendance a ON a.id = l.attendance_id
+		 WHERE l.employee_id IN (${placeholders})
+		   AND l.mutation_type = 'earned'
+		 ORDER BY l.employee_id ASC, l.id ASC`,
 		ids
 	);
-	for (const row of rows || []) {
-		map.set(Number(row.employee_id), row.balance_after != null ? Number(row.balance_after) : 0);
+	const [usedRows] = await safeAloraMobileQuery(
+		`SELECT l.employee_id, l.id, l.hours
+		 FROM tr_replace_off_ledger l
+		 WHERE l.employee_id IN (${placeholders})
+		   AND l.mutation_type = 'used'
+		 ORDER BY l.employee_id ASC, l.id ASC`,
+		ids
+	);
+
+	const lotsByEmp = new Map();
+	for (const row of earnedRows || []) {
+		const empId = Number(row.employee_id);
+		const earnDate = toDateOnlyJakarta(row.earn_date);
+		const earnPeriod = dateToCutoffPeriod(earnDate);
+		const untilPeriod = earnPeriod ? shiftCutoffPeriod(earnPeriod, 3) : null;
+		if (!lotsByEmp.has(empId)) lotsByEmp.set(empId, []);
+		lotsByEmp.get(empId).push({
+			remaining: Math.max(0, Number(row.hours) || 0),
+			usableUntil: untilPeriod?.periodEnd || null,
+		});
+	}
+
+	const usedByEmp = new Map();
+	for (const row of usedRows || []) {
+		const empId = Number(row.employee_id);
+		if (!usedByEmp.has(empId)) usedByEmp.set(empId, []);
+		usedByEmp.get(empId).push(Math.max(0, Number(row.hours) || 0));
+	}
+
+	for (const empId of ids) {
+		const lots = lotsByEmp.get(empId) || [];
+		for (const hours of usedByEmp.get(empId) || []) {
+			let need = hours;
+			for (const lot of lots) {
+				if (need <= 0) break;
+				if (lot.remaining <= 0) continue;
+				const take = Math.min(lot.remaining, need);
+				lot.remaining = Math.round((lot.remaining - take) * 100) / 100;
+				need = Math.round((need - take) * 100) / 100;
+			}
+		}
+		let usable = 0;
+		for (const lot of lots) {
+			if (!lot.usableUntil || asOf > lot.usableUntil) continue;
+			usable += lot.remaining;
+		}
+		map.set(empId, Math.max(0, Math.round(usable * 100) / 100));
 	}
 	return map;
 }
@@ -292,20 +383,47 @@ async function fetchOvertimeBalances(employeeIds) {
 	const ids = [...new Set((employeeIds || []).map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))];
 	const map = new Map();
 	if (ids.length === 0) return map;
+	ids.forEach((id) => map.set(id, 0));
+
+	const period = dateToCutoffPeriod(todayDateStringJakarta());
+	if (!period) return map;
+
 	const placeholders = ids.map(() => "?").join(",");
-	const [rows] = await safeAloraMobileQuery(
-		`SELECT l.employee_id, l.balance_after
+	const [earnedRows] = await safeAloraMobileQuery(
+		`SELECT l.employee_id, COALESCE(SUM(l.hours), 0) AS total
 		 FROM tr_overtime_ledger l
-		 INNER JOIN (
-		   SELECT employee_id, MAX(id) AS max_id
-		   FROM tr_overtime_ledger
-		   WHERE employee_id IN (${placeholders})
-		   GROUP BY employee_id
-		 ) t ON l.id = t.max_id`,
-		ids
+		 LEFT JOIN tr_attendance_sessions s ON s.id = l.session_id
+		 WHERE l.employee_id IN (${placeholders})
+		   AND l.mutation_type = 'earned'
+		   AND COALESCE(DATE(s.work_date), DATE(l.created_at)) >= ?
+		   AND COALESCE(DATE(s.work_date), DATE(l.created_at)) <= ?
+		 GROUP BY l.employee_id`,
+		[...ids, period.periodStart, period.periodEnd]
 	);
-	for (const row of rows || []) {
-		map.set(Number(row.employee_id), row.balance_after != null ? Number(row.balance_after) : 0);
+	const [usedRows] = await safeAloraMobileQuery(
+		`SELECT l.employee_id, COALESCE(SUM(l.hours), 0) AS total
+		 FROM tr_overtime_ledger l
+		 LEFT JOIN tr_worker_leaves lv ON lv.id = l.leave_id
+		 WHERE l.employee_id IN (${placeholders})
+		   AND l.mutation_type = 'used'
+		   AND COALESCE(DATE(lv.start_date), DATE(l.created_at)) >= ?
+		   AND COALESCE(DATE(lv.start_date), DATE(l.created_at)) <= ?
+		 GROUP BY l.employee_id`,
+		[...ids, period.periodStart, period.periodEnd]
+	);
+
+	const earnedMap = new Map();
+	for (const row of earnedRows || []) {
+		earnedMap.set(Number(row.employee_id), Number(row.total) || 0);
+	}
+	const usedMap = new Map();
+	for (const row of usedRows || []) {
+		usedMap.set(Number(row.employee_id), Number(row.total) || 0);
+	}
+	for (const empId of ids) {
+		const earned = earnedMap.get(empId) || 0;
+		const used = usedMap.get(empId) || 0;
+		map.set(empId, Math.max(0, Math.round((earned - used) * 100) / 100));
 	}
 	return map;
 }
