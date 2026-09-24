@@ -179,6 +179,9 @@ function mapAttendanceRow(req, r, empMap, roleMap = null, photoCountMap = null) 
     grooming_status: groomingStatus,
     grooming_incomplete_reason: r.grooming_incomplete_reason || null,
     grooming_locked_at: r.grooming_locked_at || null,
+    // Catatan absen Waschen Mobile. null bila kolom belum ada / belum diisi.
+    check_in_note: r.check_in_note || null,
+    check_out_note: r.check_out_note || null,
   };
 }
 
@@ -263,7 +266,8 @@ export const getAttendanceList = async (req, res) => {
                 a.check_in_photo_path, a.check_in_photo_name,
                 a.check_out_time, a.check_out_lat, a.check_out_lng,
                 a.check_out_photo_path, a.check_out_photo_name,
-                a.grooming_status, a.grooming_incomplete_reason, a.grooming_locked_at
+                a.grooming_status, a.grooming_incomplete_reason, a.grooming_locked_at,
+                a.check_in_note, a.check_out_note
          FROM tr_attendance a
          ${where}
          ORDER BY a.work_date DESC, a.check_in_time DESC
@@ -490,7 +494,8 @@ export const createAttendance = async (req, res) => {
               a.check_in_photo_path, a.check_in_photo_name,
               a.check_out_time, a.check_out_lat, a.check_out_lng,
               a.check_out_photo_path, a.check_out_photo_name,
-              a.grooming_status, a.grooming_incomplete_reason, a.grooming_locked_at
+              a.grooming_status, a.grooming_incomplete_reason, a.grooming_locked_at,
+              a.check_in_note, a.check_out_note
        FROM tr_attendance a WHERE a.attendance_id = ? LIMIT 1`,
       [result.insertId],
     );

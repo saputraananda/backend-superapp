@@ -386,7 +386,7 @@ export const updateEmployee = async (req, res) => {
       exit_date, exit_reason, education_level_id, school_name, major_name, religion_id,
       marital_status, bpjs_health_number, bpjs_employment_number, npwp_number,
       bank_id, bank_account_number, emergency_contact, notes, employee_code,
-      username, mother_name, email, private_email,
+      username, mother_name, email, private_email, take_home_pay,
     } = req.body;
 
     if (!employee_code?.trim()) {
@@ -433,6 +433,15 @@ export const updateEmployee = async (req, res) => {
     const oldEmail = empBefore?.email ?? null;
     const newEmail = email?.trim() || oldEmail;
 
+    let salaryValue = null;
+    if (take_home_pay !== "" && take_home_pay != null) {
+      const n = Number(take_home_pay);
+      if (!Number.isFinite(n) || n < 0) {
+        return res.status(400).json({ message: "Take Home Pay harus angka 0 atau lebih." });
+      }
+      salaryValue = n;
+    }
+
     await safeQuery(
       `UPDATE mst_employee SET
         full_name = ?, gender = ?, birth_place = ?, birth_date = ?,
@@ -442,7 +451,7 @@ export const updateEmployee = async (req, res) => {
         contract_end_date = ?, exit_date = ?, exit_reason = ?,
         education_level_id = ?, school_name = ?, major_name = ?, religion_id = ?,
         marital_status = ?, bpjs_health_number = ?, bpjs_employment_number = ?,
-        npwp_number = ?, bank_id = ?, bank_account_number = ?,
+        npwp_number = ?, bank_id = ?, bank_account_number = ?, take_home_pay = ?,
         emergency_contact = ?, notes = ?, employee_code = ?, mother_name = ?,
         email = ?, private_email = ?
        WHERE employee_id = ? AND is_deleted = 0`,
@@ -453,7 +462,8 @@ export const updateEmployee = async (req, res) => {
         exit_date || null, exit_reason || null,
         education_level_id, school_name, major_name || null, religion_id, marital_status,
         bpjs_health_number, bpjs_employment_number, npwp_number,
-        bank_id, bank_account_number, emergency_contact, notes, employee_code,
+        bank_id, bank_account_number, salaryValue,
+        emergency_contact, notes, employee_code,
         mother_name || null, newEmail, private_email || null, id,
       ]
     );

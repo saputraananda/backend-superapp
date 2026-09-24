@@ -694,13 +694,14 @@ export const getDashboard = async (req, res) => {
         );
 
         const summary = {
-            pengajuan: { total: 0, byStatus: {}, totalNominal: 0 },
-            reimburse: { total: 0, byStatus: {}, totalNominal: 0 },
+            pengajuan: { total: 0, byStatus: {}, totalNominal: 0, nominalByStatus: {} },
+            reimburse: { total: 0, byStatus: {}, totalNominal: 0, nominalByStatus: {} },
         };
         for (const r of statRows) {
-            const bucket = summary[r.type] || (summary[r.type] = { total: 0, byStatus: {}, totalNominal: 0 });
+            const bucket = summary[r.type] || (summary[r.type] = { total: 0, byStatus: {}, totalNominal: 0, nominalByStatus: {} });
             bucket.total += Number(r.count);
             bucket.byStatus[r.status] = Number(r.count);
+            bucket.nominalByStatus[r.status] = Number(r.total_nominal);
             bucket.totalNominal += Number(r.total_nominal);
         }
 

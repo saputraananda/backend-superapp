@@ -35,6 +35,22 @@ export const getEmployeeStats = async (req, res) => {
   }
 };
 
+// Peta path → role yang diizinkan, dipakai <ProtectedRoute> di frontend.
+export const getAppAuthorization = async (req, res) => {
+  try {
+    const [apps] = await safeQuery(
+      `SELECT href AS path, authorization
+         FROM mst_apps
+        WHERE is_active = 1
+        ORDER BY sort_order ASC`
+    );
+    res.json(apps);
+  } catch (err) {
+    console.error("[getAppAuthorization] Error:", err);
+    res.status(500).json({ message: "Gagal memuat otorisasi aplikasi" });
+  }
+};
+
 export const getApps = async (req, res) => {
 
   const userId = req.session.userId;

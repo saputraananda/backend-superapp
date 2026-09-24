@@ -69,10 +69,10 @@ if (CLEANOX_BASE) {
 const UPLOAD_DIR = path.join(BASE_DIR, "evidence");
 
 // Folder: <BASE>/avatars/
-const AVATAR_DIR = path.join(BASE_DIR, "avatars");
+export const AVATAR_DIR = path.join(BASE_DIR, "avatars");
 
 // Folder: <BASE>/documents/
-const DOCUMENT_DIR = path.join(BASE_DIR, "documents");
+export const DOCUMENT_DIR = path.join(BASE_DIR, "documents");
 
 // Folder: <BASE>/daily_evidence/
 const DAILY_EVIDENCE_DIR = path.join(BASE_DIR, "daily_evidence");
