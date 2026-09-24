@@ -1,4 +1,8 @@
 import { safeCleanoxQuery } from "../../db/pool.js";
+import {
+	buildOmzetDateExpr,
+	buildUnifiedOmzetWhere,
+} from "./cleanoxOmzetUnified.js";
 
 function computeDateRange(asOfDate) {
 	const d = new Date(asOfDate + "T12:00:00");
@@ -37,23 +41,9 @@ function normalizeServiceMode(raw) {
 	return "all";
 }
 
-/** @returns {{ sql: string, params: any[] }} */
-function buildServiceModeClause(mode, alias = "t") {
-	if (mode === "take_home") {
-		return { sql: ` AND ${alias}.service_mode = 'take_home'`, params: [] };
-	}
-	if (mode === "home_service") {
-		return {
-			sql: ` AND (${alias}.service_mode = 'home_service' OR ${alias}.service_mode IS NULL OR ${alias}.service_mode = '')`,
-			params: [],
-		};
-	}
-	return { sql: "", params: [] };
-}
-
 /**
  * GET /cleanox/pendapatan
- * POS lunas vs mst_target_cleanox — omzet by payment_settled_date; filter by service_mode.
+ * Omzet lunas POS + Smartlink (v_transactions_unified) vs mst_target_cleanox.
  */
 export async function getPendapatanCleanox(req, res) {
 	try {
@@ -98,34 +88,30 @@ export async function getPendapatanCleanox(req, res) {
 			if (effectiveAsOfDate < dateStart) effectiveAsOfDate = dateStart;
 		}
 
-		const modeClause = buildServiceModeClause(serviceMode, "t");
+		const omzetExpr = buildOmzetDateExpr("v");
+		const whereOmzet = buildUnifiedOmzetWhere({
+			serviceMode,
+			dateStart,
+			dateEnd: effectiveAsOfDate,
+			alias: "v",
+		});
 
 		const [actualRows] = await safeCleanoxQuery(
-			`SELECT COALESCE(SUM(t.final_amount), 0) AS actual_sales
-       FROM tr_transactions t
-       WHERE t.payment_settled_date IS NOT NULL
-         AND t.payment_settled_date >= ?
-         AND t.payment_settled_date <= ?
-         AND t.payment_status = 'lunas'
-         AND t.status <> 'Cancelled'
-         ${modeClause.sql}`,
-			[dateStart, effectiveAsOfDate, ...modeClause.params],
+			`SELECT COALESCE(SUM(v.final_amount), 0) AS actual_sales
+       FROM v_transactions_unified v
+       WHERE ${whereOmzet.sql}`,
+			whereOmzet.params,
 		);
 		const cleanoxActual = toNum(actualRows?.[0]?.actual_sales);
 
 		const [trendRows] = await safeCleanoxQuery(
-			`SELECT DATE_FORMAT(t.payment_settled_date, '%Y-%m-%d') AS date,
-              COALESCE(SUM(t.final_amount), 0) AS sales
-       FROM tr_transactions t
-       WHERE t.payment_settled_date IS NOT NULL
-         AND t.payment_settled_date >= ?
-         AND t.payment_settled_date <= ?
-         AND t.payment_status = 'lunas'
-         AND t.status <> 'Cancelled'
-         ${modeClause.sql}
-       GROUP BY DATE_FORMAT(t.payment_settled_date, '%Y-%m-%d')
+			`SELECT DATE_FORMAT((${omzetExpr}), '%Y-%m-%d') AS date,
+              COALESCE(SUM(v.final_amount), 0) AS sales
+       FROM v_transactions_unified v
+       WHERE ${whereOmzet.sql}
+       GROUP BY DATE_FORMAT((${omzetExpr}), '%Y-%m-%d')
        ORDER BY date ASC`,
-			[dateStart, effectiveAsOfDate, ...modeClause.params],
+			whereOmzet.params,
 		);
 		const trend = (trendRows || []).map((r) => ({
 			date: String(r.date).slice(0, 10),
@@ -168,6 +154,7 @@ export async function getPendapatanCleanox(req, res) {
 				dateStart,
 				dateEnd,
 				service_mode: serviceMode,
+				sources: ["pos", "smartlink"],
 			},
 		});
 	} catch (err) {
