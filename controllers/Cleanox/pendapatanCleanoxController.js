@@ -4,6 +4,14 @@ import {
 	buildUnifiedOmzetWhere,
 } from "./cleanoxOmzetUnified.js";
 
+function fmtLocalDate(dt) {
+	const y = dt.getFullYear();
+	const m = String(dt.getMonth() + 1).padStart(2, "0");
+	const dd = String(dt.getDate()).padStart(2, "0");
+	return `${y}-${m}-${dd}`;
+}
+
+/** Cutoff 26→25 from asOfDate (YYYY-MM-DD). */
 function computeDateRange(asOfDate) {
 	const d = new Date(asOfDate + "T12:00:00");
 	const day = d.getDate();
@@ -15,13 +23,24 @@ function computeDateRange(asOfDate) {
 		dateStart = new Date(d.getFullYear(), d.getMonth() - 1, 26);
 		dateEnd = new Date(d.getFullYear(), d.getMonth(), 25);
 	}
-	const fmt = (dt) => {
-		const y = dt.getFullYear();
-		const m = String(dt.getMonth() + 1).padStart(2, "0");
-		const dd = String(dt.getDate()).padStart(2, "0");
-		return `${y}-${m}-${dd}`;
-	};
-	return { dateStart: fmt(dateStart), dateEnd: fmt(dateEnd) };
+	return { dateStart: fmtLocalDate(dateStart), dateEnd: fmtLocalDate(dateEnd) };
+}
+
+/** Yesterday Asia/Jakarta — konsisten dengan cutoff bisnis. */
+function yesterdayJakartaISO() {
+	const parts = new Intl.DateTimeFormat("en-CA", {
+		timeZone: "Asia/Jakarta",
+		year: "numeric",
+		month: "2-digit",
+		day: "2-digit",
+	}).formatToParts(new Date());
+	const get = (t) => parts.find((p) => p.type === t)?.value;
+	const y = Number(get("year"));
+	const m = Number(get("month"));
+	const d = Number(get("day"));
+	const local = new Date(y, m - 1, d);
+	local.setDate(local.getDate() - 1);
+	return fmtLocalDate(local);
 }
 
 function toNum(v) {
@@ -69,21 +88,14 @@ export async function getPendapatanCleanox(req, res) {
 			dateEnd = endDate;
 		} else {
 			if (!asOfDate) {
-				const y = new Date();
-				y.setDate(y.getDate() - 1);
-				const yy = y.getFullYear();
-				const mm = String(y.getMonth() + 1).padStart(2, "0");
-				const dd = String(y.getDate()).padStart(2, "0");
-				asOfDate = `${yy}-${mm}-${dd}`;
+				asOfDate = yesterdayJakartaISO();
 			}
 			effectiveAsOfDate = asOfDate;
 			({ dateStart, dateEnd } = computeDateRange(asOfDate));
 		}
 
 		{
-			const y = new Date();
-			y.setDate(y.getDate() - 1);
-			const yesterday = `${y.getFullYear()}-${String(y.getMonth() + 1).padStart(2, "0")}-${String(y.getDate()).padStart(2, "0")}`;
+			const yesterday = yesterdayJakartaISO();
 			if (effectiveAsOfDate > yesterday) effectiveAsOfDate = yesterday;
 			if (effectiveAsOfDate < dateStart) effectiveAsOfDate = dateStart;
 		}
