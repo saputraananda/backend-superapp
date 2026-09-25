@@ -99,6 +99,7 @@ import categoryServicesRoutes from "./routes/MyWaschen/MasterData/CategoryServic
 import servicesWaschenRoutes from "./routes/MyWaschen/MasterData/ServicesRoutes.js";
 import serviceSpeedRoutes from "./routes/MyWaschen/MasterData/ServiceSpeedRoutes.js";
 import parfumeRoutes from "./routes/MyWaschen/MasterData/ParfumeRoutes.js";
+import itemKgRoutes from "./routes/MyWaschen/MasterData/ItemKgRoutes.js";
 import membershipPackageRoutes from "./routes/MyWaschen/MasterData/MembershipPackageRoutes.js";
 import unitRoutes from "./routes/MyWaschen/MasterData/UnitRoutes.js";
 import customerTierRoutes from "./routes/MyWaschen/MasterData/CustomerTierRoutes.js";
@@ -439,6 +440,7 @@ app.use("/waschen/category-services", categoryServicesRoutes);
 app.use("/waschen/services", servicesWaschenRoutes);
 app.use("/waschen/service-speeds", serviceSpeedRoutes);
 app.use("/waschen/parfumes", parfumeRoutes);
+app.use("/waschen/item-kg", itemKgRoutes);
 app.use("/waschen/membership-packages", membershipPackageRoutes);
 app.use("/waschen/units", unitRoutes);
 app.use("/waschen/customer-tiers", customerTierRoutes);
