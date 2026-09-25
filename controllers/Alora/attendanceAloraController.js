@@ -1,6 +1,8 @@
 import fs from "fs";
 import path from "path";
 import { safeAloraMobileQuery, safeQuery } from "../../db/pool.js";
+import { ALORA_MOBILE_ATT_DIR, ALORA_MOBILE_BASE } from "../../middleware/upload.js";
+import { getAloraMobileApiBaseUrl, proxyAloraMobileFile } from "../../utils/aloraMobileApiAssets.js";
 import { resolveFinalStatus } from "../../utils/attendanceStatusResolver.js";
 
 const ALLOWED_STATUS_LABELS = new Set([
@@ -183,9 +185,10 @@ function statusSqlCondition(statusLabel) {
 }
 
 function getAttendanceDir() {
-	const dir = process.env.ALORA_MOBILE_ATTENDANCE_DIR;
-	if (!dir) return null;
-	return path.resolve(dir);
+	if (ALORA_MOBILE_ATT_DIR) return ALORA_MOBILE_ATT_DIR;
+	const legacy = process.env.ALORA_MOBILE_ATTENDANCE_DIR;
+	if (!legacy) return null;
+	return path.resolve(legacy);
 }
 
 function buildAttendancePhotoUrl(storedPath) {
@@ -195,10 +198,14 @@ function buildAttendancePhotoUrl(storedPath) {
 	const fileName = path.basename(String(storedPath));
 	if (!fileName || fileName === "." || fileName === "..") return null;
 
+	if (getAloraMobileApiBaseUrl() || ALORA_MOBILE_BASE || process.env.ALORA_MOBILE_ATTENDANCE_DIR) {
+		return `/alora/attendance/photos/${encodeURIComponent(fileName)}`;
+	}
+
 	const externalBase = (process.env.ALORA_MOBILE_ATTENDANCE_BASE_URL || "").replace(/\/+$/, "");
 	if (externalBase) return `${externalBase}/${encodeURIComponent(fileName)}`;
 
-	return `/alora/attendance/photos/${encodeURIComponent(fileName)}`;
+	return null;
 }
 
 async function getEmployeeMap(employeeIds) {
@@ -1122,17 +1129,19 @@ export const getAttendanceReport = async (req, res) => {
 
 export const serveAttendancePhoto = async (req, res) => {
 	try {
+		const safeFileName = path.basename(String(req.params.filename || ""));
+		if (!safeFileName || safeFileName === "." || safeFileName === "..") {
+			return res.status(400).json({ success: false, message: "Nama file tidak valid" });
+		}
+
+		if (await proxyAloraMobileFile("attendance", safeFileName, res)) return;
+
 		const dir = getAttendanceDir();
 		if (!dir) {
 			return res.status(500).json({
 				success: false,
-				message: "ALORA_MOBILE_ATTENDANCE_DIR belum dikonfigurasi",
+				message: "ALORA_MOBILE_API_BASE_URL / ALORA_MOBILE_UPLOAD_DIR belum dikonfigurasi",
 			});
-		}
-
-		const safeFileName = path.basename(String(req.params.filename || ""));
-		if (!safeFileName || safeFileName === "." || safeFileName === "..") {
-			return res.status(400).json({ success: false, message: "Nama file tidak valid" });
 		}
 
 		const fullPath = path.join(dir, safeFileName);

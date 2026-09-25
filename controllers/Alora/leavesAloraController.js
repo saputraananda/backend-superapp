@@ -1,5 +1,8 @@
+import fs from "fs";
 import path from "path";
 import { safeAloraMobileQuery, safeQuery } from "../../db/pool.js";
+import { ALORA_MOBILE_BASE, ALORA_MOBILE_LEAVE_DIR } from "../../middleware/upload.js";
+import { getAloraMobileApiBaseUrl, proxyAloraMobileFile } from "../../utils/aloraMobileApiAssets.js";
 import { deductAnnualLeaveForApprovedLeave } from "../../utils/annualLeaveService.js";
 import { applyLeaveFundingOnApprove } from "../../utils/leaveFundingService.js";
 import { isRoOnlyIzin } from "../../utils/leaveApprovalRules.js";
@@ -74,10 +77,17 @@ async function getEmployeeDetails(employeeId) {
 function buildLeavePhotoUrl(fileName) {
 	if (!fileName) return null;
 	if (/^https?:\/\//i.test(fileName)) return fileName;
-	const base = (process.env.ALORA_MOBILE_LEAVE_BASE_URL || "").replace(/\/+$/, "");
-	const name = path.basename(fileName);
-	if (!base) return null;
-	return `${base}/${name}`;
+	const name = path.basename(String(fileName));
+	if (!name || name === "." || name === "..") return null;
+
+	// Browser hits SuperApp (auth cookie); SuperApp proxies to Mobile with shared secret
+	if (getAloraMobileApiBaseUrl() || ALORA_MOBILE_BASE) {
+		return `/alora/leaves/doctor-notes/${encodeURIComponent(name)}`;
+	}
+
+	const legacyBase = (process.env.ALORA_MOBILE_LEAVE_BASE_URL || "").replace(/\/+$/, "");
+	if (!legacyBase) return null;
+	return `${legacyBase}/${name}`;
 }
 
 async function getEmployeeMap(employeeIds) {
@@ -460,5 +470,36 @@ export const rejectHRD = async (req, res) => {
 	} catch (err) {
 		console.error("[alora rejectHRD] Error:", err);
 		return res.status(500).json({ message: "Gagal melakukan penolakan HRD" });
+	}
+};
+
+export const serveDoctorNote = async (req, res) => {
+	try {
+		const safeFileName = path.basename(req.params.filename || "");
+		if (!safeFileName || safeFileName === "." || safeFileName === "..") {
+			return res.status(400).json({ message: "Nama file tidak valid" });
+		}
+
+		if (await proxyAloraMobileFile("leave", safeFileName, res)) return;
+
+		const leaveDir = ALORA_MOBILE_LEAVE_DIR;
+		if (!leaveDir) {
+			return res.status(500).json({
+				message: "ALORA_MOBILE_API_BASE_URL / ALORA_MOBILE_UPLOAD_DIR belum dikonfigurasi",
+			});
+		}
+
+		const fullPath = path.join(leaveDir, safeFileName);
+		const resolvedDir = path.resolve(leaveDir);
+		const resolvedFile = path.resolve(fullPath);
+		if (!resolvedFile.startsWith(resolvedDir + path.sep) || !fs.existsSync(resolvedFile)) {
+			return res.status(404).json({ message: "File surat dokter tidak ditemukan" });
+		}
+
+		res.setHeader("Cache-Control", "private, max-age=300");
+		return res.sendFile(resolvedFile);
+	} catch (err) {
+		console.error("[alora serveDoctorNote] Error:", err);
+		return res.status(500).json({ message: "Gagal membuka file surat dokter" });
 	}
 };
