@@ -80,6 +80,8 @@ import attendanceSessionAloraRoutes from "./routes/Alora/attendanceSessionAloraR
 import plannedLateAloraRoutes from "./routes/Alora/plannedLateAloraRoutes.js";
 import attendanceAloraRoutes from "./routes/Alora/attendanceAloraRoutes.js";
 import annualLeaveAloraRoutes from "./routes/Alora/annualLeaveAloraRoutes.js";
+import employeeBalancesAloraRoutes from "./routes/Alora/employeeBalancesAloraRoutes.js";
+import attendanceModeRequestAloraRoutes from "./routes/Alora/attendanceModeRequestAloraRoutes.js";
 import bugarAloraRoutes from "./routes/Alora/bugarAloraRoutes.js";
 import kasbonCleanoxRoutes from "./routes/Cleanox/kasbonCleanoxRoutes.js";
 import overtimeCleanoxRoutes from "./routes/Cleanox/overtimeCleanoxRoutes.js";
@@ -389,6 +391,8 @@ app.use("/alora/attendance-sessions", attendanceSessionAloraRoutes);
 app.use("/alora/planned-late", plannedLateAloraRoutes);
 app.use("/alora/attendance", attendanceAloraRoutes);
 app.use("/alora/annual-leave", annualLeaveAloraRoutes);
+app.use("/alora/employee-balances", employeeBalancesAloraRoutes);
+app.use("/alora/attendance-mode-requests", attendanceModeRequestAloraRoutes);
 app.use("/alora/bugar", bugarAloraRoutes);
 app.use("/ikm/master-absensi", masterAbsensiRoutes);
 app.use("/ikm/master-rs", masterRsIkmRoutes);
