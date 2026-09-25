@@ -307,7 +307,7 @@ export const getTransactionById = async (req, res) => {
     }
     const row = rows[0];
 
-    const [[details], [logs], [statusLogs], [progressRows]] = await Promise.all([
+    const [[details], [logs], [statusLogs], [progressRows], [bagRows], [kgRows]] = await Promise.all([
       safeMyWaschenQuery(
         `SELECT td.*, s.code AS service_code,
                 COALESCE(ml.name, CASE WHEN td.laundry_method_id = 2 THEN 'Dry Clean' ELSE 'Wet Clean' END) AS laundry_method_name,
@@ -331,7 +331,40 @@ export const getTransactionById = async (req, res) => {
         `SELECT * FROM tr_item_progress WHERE transaction_id = ? ORDER BY completed_at ASC, id ASC`,
         [row.id]
       ),
+      // Rincian plastik kiloan per tahap (frontliner, cuci, setrika)
+      safeMyWaschenQuery(
+        `SELECT b.transaction_detail_id, b.bag_no, b.qty_pcs, p.id AS progress_id, p.stage, p.employee_name, p.completed_at
+         FROM tr_item_bag_detail b
+         JOIN tr_item_progress p ON p.id = b.progress_id
+         WHERE p.transaction_id = ?
+         ORDER BY FIELD(p.stage, 'frontliner', 'washing', 'ironing'), p.id ASC, b.bag_no ASC`,
+        [row.id]
+      ),
+      // Rincian jenis pakaian per plastik (Tim Cuci)
+      safeMyWaschenQuery(
+        `SELECT k.transaction_detail_id, k.bag_no, k.item_name, k.qty_pcs
+         FROM tr_item_kg_detail k
+         JOIN tr_transaction_detail d ON d.id = k.transaction_detail_id
+         WHERE d.transaction_id = ?
+         ORDER BY k.bag_no ASC, k.id ASC`,
+        [row.id]
+      ),
     ]);
+
+    // Per item: tahap terakhir per stage (QC ulang menimpa tampilan), lalu rincian jenis per plastik
+    const bagsByDetail = {};
+    for (const b of bagRows) {
+      const stages = (bagsByDetail[b.transaction_detail_id] ||= {});
+      // Rows urut p.id ASC → progress terbaru per stage menggantikan yang lama
+      if (stages[b.stage]?.progress_id !== b.progress_id) {
+        stages[b.stage] = { progress_id: b.progress_id, stage: b.stage, stage_label: PROGRESS_STAGE_LABELS[b.stage] || b.stage, employee_name: b.employee_name, completed_at: b.completed_at, bags: [] };
+      }
+      stages[b.stage].bags.push({ bag_no: b.bag_no, qty_pcs: b.qty_pcs });
+    }
+    const kgByDetail = {};
+    for (const k of kgRows) {
+      (kgByDetail[k.transaction_detail_id] ||= []).push({ bag_no: k.bag_no, item_name: k.item_name, qty_pcs: k.qty_pcs });
+    }
 
     const empMap = await fetchEmployeeNameMap([
       ...statusLogs.map((l) => l.employee_id),
@@ -399,6 +432,8 @@ export const getTransactionById = async (req, res) => {
     const items = details.map((d) => ({
       ...d,
       workers: progressByDetail[d.id] || [],
+      bag_history: Object.values(bagsByDetail[d.id] || {}),
+      kg_items: kgByDetail[d.id] || [],
     }));
 
     let cashierName = null;

@@ -756,7 +756,7 @@ export const getAttendanceDetail = async (req, res) => {
       const workDate = toISODate(att.work_date);
       if (att.outlet_id && roleCode && workDate) {
         const [cps] = await safeMyWaschenQuery(
-          `SELECT cleanliness_photo_id, uploaded_by_name, photo_path, photo_name, taken_at, role_code
+          `SELECT cleanliness_photo_id, uploaded_by_name, photo_path, photo_name, taken_at, photo_session, role_code
            FROM tr_attendance_cleanliness_photo
            WHERE outlet_id = ? AND role_code = ? AND work_date = ?
            ORDER BY taken_at DESC`,
@@ -766,6 +766,7 @@ export const getAttendanceDetail = async (req, res) => {
           id: p.cleanliness_photo_id,
           url: buildAttendancePhotoUrl(req, p.photo_path, p.photo_name),
           taken_at: p.taken_at,
+          photo_session: p.photo_session,
           uploaded_by_name: p.uploaded_by_name,
           role_code: p.role_code,
         }));
@@ -821,7 +822,7 @@ export const getCleanlinessList = async (req, res) => {
       const [r] = await safeMyWaschenQuery(
         `SELECT c.cleanliness_photo_id, c.outlet_id, c.work_date, c.role_code,
                 c.uploaded_by_employee_id, c.uploaded_by_name,
-                c.photo_path, c.photo_name, c.taken_at, c.attendance_id
+                c.photo_path, c.photo_name, c.taken_at, c.photo_session, c.attendance_id
          FROM tr_attendance_cleanliness_photo c
          ${where}
          ORDER BY c.work_date DESC, c.taken_at DESC
@@ -844,6 +845,7 @@ export const getCleanlinessList = async (req, res) => {
       uploaded_by_employee_id: p.uploaded_by_employee_id,
       uploaded_by_name: p.uploaded_by_name,
       taken_at: p.taken_at,
+      photo_session: p.photo_session,
       attendance_id: p.attendance_id,
       photo_url: buildAttendancePhotoUrl(req, p.photo_path, p.photo_name),
     }));
