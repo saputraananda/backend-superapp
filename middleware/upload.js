@@ -62,6 +62,38 @@ if (CLEANOX_BASE) {
 }
 
 // =========================
+// Alora Mobile uploads (single env base + subfolders)
+// Mirror Mobile UPLOAD_BASE_DIR → .../storage/assets + leave|attendance|attendance-sessions
+// =========================
+function resolveAloraMobileUploadRoot(rawDir) {
+  const resolved = path.resolve(rawDir);
+  const leaf = path.basename(resolved).toLowerCase();
+  if (leaf === "assets") return resolved;
+  if (leaf === "storage") return path.join(resolved, "assets");
+  return resolved;
+}
+
+export const ALORA_MOBILE_BASE = process.env.ALORA_MOBILE_UPLOAD_DIR
+  ? resolveAloraMobileUploadRoot(process.env.ALORA_MOBILE_UPLOAD_DIR.trim())
+  : null;
+
+export const ALORA_MOBILE_LEAVE_DIR = ALORA_MOBILE_BASE
+  ? path.join(ALORA_MOBILE_BASE, "leave")
+  : null;
+export const ALORA_MOBILE_ATT_DIR = ALORA_MOBILE_BASE
+  ? path.join(ALORA_MOBILE_BASE, "attendance")
+  : null;
+export const ALORA_MOBILE_SESSION_DIR = ALORA_MOBILE_BASE
+  ? path.join(ALORA_MOBILE_BASE, "attendance-sessions")
+  : null;
+
+if (ALORA_MOBILE_BASE) {
+  [ALORA_MOBILE_LEAVE_DIR, ALORA_MOBILE_ATT_DIR, ALORA_MOBILE_SESSION_DIR].forEach((dir) => {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  });
+}
+
+// =========================
 // Folder upload
 // =========================
 
