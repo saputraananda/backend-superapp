@@ -113,28 +113,17 @@ export const getCustomers = async (req, res) => {
     const limit = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
 
-    // Customer baru di periode cutoff (created_at)
-    const periodCond = [];
-    const periodParams = [];
-    if (/^\d{4}-\d{2}-\d{2}$/.test(dateFrom)) { periodCond.push("c.created_at >= ?"); periodParams.push(`${dateFrom} 00:00:00`); }
-    if (/^\d{4}-\d{2}-\d{2}$/.test(dateTo)) { periodCond.push("c.created_at <= ?"); periodParams.push(`${dateTo} 23:59:59`); }
-    const newExpr = periodCond.length ? `SUM(${periodCond.join(" AND ")})` : "0";
-
-    // Statistik dihitung di DB (bukan kirim semua baris ke browser).
-    // Churn = 46–60 hari sejak order terakhir (band My Waschen POS); belum pernah transaksi = Lost, bukan Churn.
-    // ponytail: c.last_transaction_at (diisi POS tiap transaksi + migrasi Smartlink) tidak mundur bila nota dihapus;
-    // bila perlu akurat, hitung ulang dari tr_transaction saat approval hapus nota.
     const [[stats]] = await safeMyWaschenQuery(
       `SELECT COUNT(*) AS total,
               COALESCE(SUM(c.is_active = 1), 0) AS active,
               COALESCE(SUM(ct.code = 'VIP'), 0) AS vip,
-              COALESCE(SUM(c.deposit_balance), 0) AS totalDeposit,
-              COALESCE(${newExpr}, 0) AS newCustomers,
-              COALESCE(SUM(TIMESTAMPDIFF(DAY, c.last_transaction_at, NOW()) BETWEEN 46 AND 60), 0) AS churnCount
+              COALESCE(SUM(ct.code = 'GOLD'), 0) AS gold,
+              COALESCE(SUM(ct.code = 'REGULER'), 0) AS reguler,
+              COALESCE(SUM(ct.code = 'ONE_TIME'), 0) AS one_time
        FROM mst_customer c
        LEFT JOIN mst_customer_tier ct ON ct.id = c.spending_tier_id
        ${whereSql}`,
-      [...periodParams, ...params]
+      params
     );
 
     const [rows] = await safeMyWaschenQuery(
@@ -151,9 +140,9 @@ export const getCustomers = async (req, res) => {
         limit,
         active: Number(stats.active) || 0,
         vip: Number(stats.vip) || 0,
-        totalDeposit: Number(stats.totalDeposit) || 0,
-        newCustomers: Number(stats.newCustomers) || 0,
-        churnCount: Number(stats.churnCount) || 0,
+        gold: Number(stats.gold) || 0,
+        reguler: Number(stats.reguler) || 0,
+        oneTime: Number(stats.one_time) || 0,
         dateFrom: dateFrom || null,
         dateTo: dateTo || null,
       },
