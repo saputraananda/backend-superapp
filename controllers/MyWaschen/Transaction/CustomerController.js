@@ -2,7 +2,7 @@ import { safeMyWaschenQuery } from "../../../db/pool.js";
 
 const SORT_COLUMNS = [
   "id", "customer_code", "name", "phone", "email", "city",
-  "total_orders", "total_spent", "deposit_balance", "monthly_spending", "created_at",
+  "total_orders", "total_spent", "deposit_balance", "monthly_spending", "spending_value_year", "created_at",
   "last_transaction_at",
 ];
 
