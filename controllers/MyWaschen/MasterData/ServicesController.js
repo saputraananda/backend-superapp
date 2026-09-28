@@ -51,19 +51,20 @@ async function syncServiceInventory(serviceId, rawLines) {
   }
 }
 
-// ── Helper: Generate kode otomatis (WS-KG-### untuk Kiloan, WS-SAT-### untuk Satuan) ──
-export const generateNextServiceCode = async (categoryId) => {
-  const prefix = Number(categoryId) === 1 ? "WS-KG-" : "WS-SAT-";
-  const [rows] = await safeMyWaschenQuery(
-    `SELECT code FROM mst_service WHERE code LIKE ? ORDER BY code DESC LIMIT 1`,
-    [`${prefix}%`]
+// ── Helper: kode otomatis, sama dengan seed agent/addLayanan.js ──
+// WS-KG (kategori KILOAN) · WS-ADD (kategori non-produksi) · WS-MTR (unit m², id 10) · WS-SAT (lainnya)
+const generateNextServiceCode = async (categoryId, unitId) => {
+  const [cat] = await safeMyWaschenQuery(
+    "SELECT code, is_production FROM mst_service_category WHERE id = ? LIMIT 1",
+    [categoryId]
   );
-  let nextNum = 1;
-  if (rows.length) {
-    const numPart = String(rows[0].code).split("-").pop();
-    nextNum = (parseInt(numPart, 10) || 0) + 1;
-  }
-  return `${prefix}${String(nextNum).padStart(3, "0")}`;
+  const c = cat[0] || {};
+  const prefix = c.code === "KILOAN" ? "KG" : Number(c.is_production) === 0 ? "ADD" : Number(unitId) === 10 ? "MTR" : "SAT";
+  const [rows] = await safeMyWaschenQuery(
+    `SELECT MAX(CAST(SUBSTRING_INDEX(code, '-', -1) AS UNSIGNED)) AS n FROM mst_service WHERE code LIKE ?`,
+    [`WS-${prefix}-%`]
+  );
+  return `WS-${prefix}-${String((Number(rows[0]?.n) || 0) + 1).padStart(3, "0")}`;
 };
 
 // ── 1. GET LIST ──
@@ -74,9 +75,9 @@ export const getServices = async (req, res) => {
     const unitId = req.query.unitId ? Number(req.query.unitId) : null;
     const isActive = req.query.isActive;
     const isFeatured = req.query.isFeatured;
-    const sortBy = ["code", "name", "price", "category_id", "regular_duration_days", "created_at"].includes(req.query.sortBy)
+    const sortBy = ["s.id", "code", "name", "price", "category_id", "regular_duration_days", "created_at"].includes(req.query.sortBy)
       ? req.query.sortBy
-      : "s.name";
+      : "s.id";
     const sortDir = String(req.query.sortDir || "asc").toLowerCase() === "desc" ? "DESC" : "ASC";
 
     const where = [];
@@ -154,21 +155,6 @@ export const getServiceById = async (req, res) => {
   }
 };
 
-// ── 2b. GET NEXT CODE (kode otomatis berdasarkan kategori) ──
-export const getNextServiceCode = async (req, res) => {
-  try {
-    const categoryId = req.query.categoryId ? Number(req.query.categoryId) : null;
-    if (!categoryId) {
-      return res.status(400).json({ success: false, message: "categoryId wajib diisi" });
-    }
-    const code = await generateNextServiceCode(categoryId);
-    res.json({ success: true, data: { code } });
-  } catch (err) {
-    console.error("getNextServiceCode error:", err);
-    res.status(500).json({ success: false, message: err.message });
-  }
-};
-
 // ── 3. CREATE ──
 export const createService = async (req, res) => {
   try {
@@ -178,10 +164,9 @@ export const createService = async (req, res) => {
       return res.status(400).json({ success: false, message: "Kategori dan Nama Layanan wajib diisi" });
     }
 
-    // Kode otomatis bila tidak diisi: WS-KG-### (Kiloan) / WS-SAT-### (Satuan)
     const formattedCode = code?.trim()
       ? code.trim().toUpperCase()
-      : await generateNextServiceCode(category_id);
+      : await generateNextServiceCode(category_id, unit_id || 8);
 
     // Check duplicate code
     const [exist] = await safeMyWaschenQuery("SELECT id FROM mst_service WHERE code = ?", [formattedCode]);

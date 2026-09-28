@@ -633,6 +633,27 @@ export const rejectKasbon = async (req, res) => {
 
 };
 
+export const deleteKasbon = async (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return res.status(422).json({ success: false, message: "ID tidak valid" });
+  const conn = await myWaschenPool.getConnection();
+  try {
+    const [rows] = await conn.query(`SELECT employee_id FROM tr_kasbon WHERE id = ? LIMIT 1`, [id]);
+    if (!rows.length) return res.status(404).json({ success: false, message: "Pengajuan tidak ditemukan" });
+    await conn.beginTransaction();
+    await conn.query(`DELETE FROM tr_kasbon_payment WHERE kasbon_id = ?`, [id]);
+    await conn.query(`DELETE FROM tr_kasbon WHERE id = ?`, [id]);
+    await conn.commit();
+    await notifyWaschenRealtime({ domain: "kasbon", employeeId: rows[0].employee_id, action: "delete" });
+    return res.json({ success: true, message: "Pengajuan dihapus" });
+  } catch (err) {
+    try { await conn.rollback(); } catch { /* belum ada transaksi */ }
+    return res.status(500).json({ success: false, message: err.message });
+  } finally {
+    conn.release();
+  }
+};
+
 
 
 export const addKasbonPayment = async (_req, res) => {
@@ -749,7 +770,8 @@ export const createOpeningBalance = async (req, res) => {
 
     const paymentMethod = String(req.body.payment_method || "").trim();
 
-    const purpose = String(req.body.purpose || "Saldo awal sebelum sistem").trim();
+    const purpose = String(req.body.purpose || "").trim().slice(0, 500);
+    const submissionDate = String(req.body.submission_date || "").trim();
 
     if (!employeeId || (type !== "kasbon" && type !== "pinjaman")) {
 
@@ -765,7 +787,7 @@ export const createOpeningBalance = async (req, res) => {
 
     if (!amount || amount <= 0) {
 
-      return res.status(422).json({ success: false, message: "Sisa pokok harus lebih dari 0" });
+      return res.status(422).json({ success: false, message: "Saldo terakhir harus lebih dari 0" });
 
     }
 
@@ -799,13 +821,15 @@ export const createOpeningBalance = async (req, res) => {
 
     if (amount > summary.sisa) {
 
-      return res.status(422).json({ success: false, message: `Sisa pokok melebihi sisa limit (Rp ${summary.sisa.toLocaleString("id-ID")}).` });
+      return res.status(422).json({ success: false, message: `Saldo terakhir melebihi sisa limit (Rp ${summary.sisa.toLocaleString("id-ID")}).` });
 
     }
 
     const amounts = splitInstallments(amount, tenor);
 
-    const today = summary.cutoffEnd;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(submissionDate)) {
+      return res.status(422).json({ success: false, message: "Tanggal wajib diisi" });
+    }
 
     const conn = await myWaschenPool.getConnection();
 
@@ -837,7 +861,7 @@ export const createOpeningBalance = async (req, res) => {
 
           type,
 
-          today,
+          submissionDate,
 
           amount,
 
@@ -849,11 +873,11 @@ export const createOpeningBalance = async (req, res) => {
 
           amounts[0],
 
-          purpose.slice(0, 500),
+          purpose || null,
 
           actor.name,
 
-          "Saldo awal",
+          purpose || null,
 
         ],
 
@@ -872,6 +896,8 @@ export const createOpeningBalance = async (req, res) => {
         paymentMethod,
 
         actorName: actor.name,
+
+        paidNote: purpose || null,
 
       }, q);
 

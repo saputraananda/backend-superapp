@@ -10,6 +10,7 @@ import {
   processKasbon,
   approveKasbon,
   rejectKasbon,
+  deleteKasbon,
   addKasbonPayment,
   markKasbonInstallmentPaid,
   createOpeningBalance,
@@ -52,6 +53,7 @@ router.get("/:id", getKasbonById);
 router.patch("/:id/process", processKasbon);
 router.patch("/:id/approve", approveKasbon);
 router.patch("/:id/reject", rejectKasbon);
+router.delete("/:id", deleteKasbon);
 router.post("/:id/payments", addKasbonPayment);
 router.patch("/:id/payments/:paymentId/paid", uploadPaymentProof, markKasbonInstallmentPaid);
 export default router;

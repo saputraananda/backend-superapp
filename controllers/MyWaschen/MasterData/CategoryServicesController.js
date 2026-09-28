@@ -10,6 +10,7 @@ async function ensureTable() {
         \`icon\` varchar(100) DEFAULT NULL,
         \`description\` text,
         \`is_active\` tinyint(1) NOT NULL DEFAULT '1',
+        \`is_production\` tinyint(1) NOT NULL DEFAULT '1',
         \`created_at\` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
         \`updated_at\` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         PRIMARY KEY (\`id\`),
@@ -90,7 +91,7 @@ export const getCategoryServiceById = async (req, res) => {
 // ── 3. CREATE ──
 export const createCategoryService = async (req, res) => {
   try {
-    const { code, name, icon, description, is_active } = req.body;
+    const { code, name, icon, description, is_active, is_production } = req.body;
 
     if (!code?.trim() || !name?.trim()) {
       return res.status(400).json({ success: false, message: "Kode dan Nama Kategori wajib diisi" });
@@ -105,14 +106,15 @@ export const createCategoryService = async (req, res) => {
     }
 
     const [result] = await safeMyWaschenQuery(
-      `INSERT INTO mst_service_category (code, name, icon, description, is_active)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO mst_service_category (code, name, icon, description, is_active, is_production)
+       VALUES (?, ?, ?, ?, ?, ?)`,
       [
         formattedCode,
         name.trim(),
         icon?.trim() || null,
         description?.trim() || null,
-        is_active !== undefined ? Number(is_active) : 1
+        is_active !== undefined ? Number(is_active) : 1,
+        Number(is_production) === 0 ? 0 : 1
       ]
     );
 
@@ -131,7 +133,7 @@ export const createCategoryService = async (req, res) => {
 export const updateCategoryService = async (req, res) => {
   try {
     const { id } = req.params;
-    const { code, name, icon, description, is_active } = req.body;
+    const { code, name, icon, description, is_active, is_production } = req.body;
 
     if (!name?.trim()) {
       return res.status(400).json({ success: false, message: "Nama Kategori wajib diisi" });
@@ -158,6 +160,7 @@ export const updateCategoryService = async (req, res) => {
            icon = ?,
            description = ?,
            is_active = ?,
+           is_production = COALESCE(?, is_production),
            updated_at = NOW()
        WHERE id = ?`,
       [
@@ -166,6 +169,7 @@ export const updateCategoryService = async (req, res) => {
         icon?.trim() || null,
         description?.trim() || null,
         is_active !== undefined ? Number(is_active) : 1,
+        is_production === undefined ? null : (Number(is_production) === 0 ? 0 : 1),
         id
       ]
     );

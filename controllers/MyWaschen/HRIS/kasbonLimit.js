@@ -130,7 +130,7 @@ export async function buildKasbonSummary(employeeId, excludeId = null) {
   };
 }
 
-export async function insertSchedule({ kasbonId, amounts, currentIndex, paymentMethod, actorName }, query = safeMyWaschenQuery) {
+export async function insertSchedule({ kasbonId, amounts, currentIndex, paymentMethod, actorName, paidNote = null }, query = safeMyWaschenQuery) {
   for (let i = 0; i < amounts.length; i++) {
     const due = cutoffEndOffset(i - currentIndex);
     const alreadyPaid = i < currentIndex;
@@ -148,7 +148,7 @@ export async function insertSchedule({ kasbonId, amounts, currentIndex, paymentM
         alreadyPaid ? "terbayar" : "belum",
         alreadyPaid ? new Date() : null,
         alreadyPaid ? actorName : null,
-        alreadyPaid ? "Saldo awal — termin sudah lunas sebelum sistem" : null,
+        alreadyPaid ? (paidNote || null) : null,
       ]
     );
   }
