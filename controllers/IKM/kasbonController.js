@@ -387,8 +387,10 @@ export const createKasbon = async (req, res) => {
 export const updateKasbon = async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const { employee_id, employee_name, type, submission_date, amount_requested, purpose, notes, remove_proof } =
-      req.body;
+    const {
+      employee_id, employee_name, type, submission_date,
+      amount_requested, amount_approved, purpose, notes, remove_proof,
+    } = req.body;
 
     const [[existing]] = await safeIKMQuery(`SELECT * FROM tr_kasbon WHERE id = ?`, [id]);
     if (!existing) return res.status(404).json({ message: "Data tidak ditemukan" });
@@ -410,10 +412,41 @@ export const updateKasbon = async (req, res) => {
       proof_path = null;
     }
 
+    // Jumlah disetujui: boleh diubah lewat Edit Pengajuan
+    let nextApproved = existing.amount_approved;
+    if (amount_approved !== undefined) {
+      const raw = String(amount_approved).trim();
+      if (raw === "" || raw === "null") {
+        if (existing.status === "disetujui") {
+          return res.status(400).json({ message: "Jumlah yang disetujui wajib diisi untuk status Disetujui" });
+        }
+        nextApproved = null;
+      } else {
+        const n = Number(raw);
+        if (!Number.isFinite(n) || n <= 0) {
+          return res.status(400).json({ message: "Jumlah yang disetujui harus lebih dari 0" });
+        }
+        // Pinjaman: jangan turunkan di bawah total cicilan yang sudah dibayar
+        if (existing.type === "pinjaman") {
+          const [[pay]] = await safeIKMQuery(
+            `SELECT COALESCE(SUM(amount), 0) AS total_paid FROM tr_kasbon_payment WHERE kasbon_id = ?`,
+            [id]
+          );
+          const totalPaid = Number(pay?.total_paid || 0);
+          if (n < totalPaid) {
+            return res.status(400).json({
+              message: `Jumlah disetujui tidak boleh kurang dari total pembayaran (${totalPaid})`,
+            });
+          }
+        }
+        nextApproved = n;
+      }
+    }
+
     await safeIKMQuery(
       `UPDATE tr_kasbon
        SET employee_id=?, employee_name=?, type=?, submission_date=?,
-           amount_requested=?, purpose=?, notes=?, proof_path=?
+           amount_requested=?, amount_approved=?, purpose=?, notes=?, proof_path=?
        WHERE id=?`,
       [
         Number(employee_id || existing.employee_id),
@@ -421,6 +454,7 @@ export const updateKasbon = async (req, res) => {
         type || existing.type,
         submission_date || existing.submission_date,
         Number(amount_requested || existing.amount_requested),
+        nextApproved,
         purpose || existing.purpose,
         notes !== undefined ? notes || null : existing.notes,
         proof_path,

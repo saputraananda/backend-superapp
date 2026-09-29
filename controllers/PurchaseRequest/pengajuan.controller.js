@@ -380,6 +380,20 @@ const SCOPE_OUTLET_SELECT = `COALESCE((SELECT GROUP_CONCAT(DISTINCT mo.full_name
                       JOIN mst_outlet mo ON mo.id = prs.outlet_id
                       WHERE prs.pr_id = pr.pr_id), o.full_name) AS outlet_name`;
 
+// Filter kategori: cocokkan kolom lama pr.company_id ATAU baris di scope (multi-kategori)
+const applyCompanyFilter = (conditions, params, req) => {
+    const companyId = req.query.company_id ? Number(req.query.company_id) : null;
+    if (!companyId) return;
+    conditions.push(`(
+        pr.company_id = ?
+        OR EXISTS (
+            SELECT 1 FROM tr_purchase_request_scope prs
+            WHERE prs.pr_id = pr.pr_id AND prs.company_id = ?
+        )
+    )`);
+    params.push(companyId, companyId);
+};
+
 const scopeLabel = ({ companies, outlets }) => {
     const c = companies.map(x => x.company_name).filter(Boolean).join(", ") || "—";
     const o = outlets.map(x => x.outlet_name || x.full_name).filter(Boolean).join(", ");
@@ -754,6 +768,7 @@ export const listMy = async (req, res) => {
         if (search) { conditions.push("(pr.nama_barang LIKE ? OR pr.pr_code LIKE ?)"); params.push(`%${search}%`, `%${search}%`); }
         if (status) { conditions.push("pr.status = ?"); params.push(status); }
         if (type)   { conditions.push("pr.type = ?");   params.push(type); }
+        applyCompanyFilter(conditions, params, req);
 
         // ── filter tanggal (cutoff 26-25) ─────────────────────────────────
         const dateFrom = req.query.date_from?.trim() || "";
@@ -863,6 +878,7 @@ export const listDepartment = async (req, res) => {
         }
         if (status) { conditions.push("pr.status = ?"); params.push(status); }
         if (type)   { conditions.push("pr.type = ?");   params.push(type); }
+        applyCompanyFilter(conditions, params, req);
 
         // ── filter tanggal (cutoff 26-25) ─────────────────────────────────
         const dateFrom = req.query.date_from?.trim() || "";
@@ -949,6 +965,7 @@ export const listApproval = async (req, res) => {
             // Direktur (1): status 2, hanya pengajuan biasa (reimburse tidak ke Direktur manual)
             conditions.push("pr.status = 2", "pr.type = 'pengajuan'");
         }
+        applyCompanyFilter(conditions, params, req);
 
         // ── filter tanggal (cutoff 26-25) ─────────────────────────────────
         const dateFrom = req.query.date_from?.trim() || "";
@@ -1972,6 +1989,7 @@ export const listAll = async (req, res) => {
             conditions.push("pr.department_id = ?");
             params.push(deptId);
         }
+        applyCompanyFilter(conditions, params, req);
 
         const where = `WHERE ${conditions.join(" AND ")}`;
 
@@ -2044,6 +2062,7 @@ export const listGaReview = async (req, res) => {
             conditions.push("(pr.nama_barang LIKE ? OR pr.pr_code LIKE ? OR e.full_name LIKE ?)");
             params.push(`%${search}%`, `%${search}%`, `%${search}%`);
         }
+        applyCompanyFilter(conditions, params, req);
 
         // ── filter tanggal (cutoff 26-25) ─────────────────────────────────
         const dateFrom = req.query.date_from?.trim() || "";
@@ -2325,6 +2344,7 @@ export const listFinanceReview = async (req, res) => {
             params.push(`%${search}%`, `%${search}%`, `%${search}%`);
         }
         if (type) { conditions.push("pr.type = ?"); params.push(type); }
+        applyCompanyFilter(conditions, params, req);
 
         // ── filter tanggal (cutoff 26-25) ─────────────────────────────────
         const dateFrom = req.query.date_from?.trim() || "";
@@ -2509,6 +2529,7 @@ export const listPaymentPending = async (req, res) => {
             params.push(`%${search}%`, `%${search}%`, `%${search}%`);
         }
         if (type) { conditions.push("pr.type = ?"); params.push(type); }
+        applyCompanyFilter(conditions, params, req);
 
         // ── filter tanggal (cutoff 26-25) ─────────────────────────────────
         const dateFrom = req.query.date_from?.trim() || "";

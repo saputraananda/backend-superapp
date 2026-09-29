@@ -917,7 +917,7 @@ export const updateFulfillment = async (req, res) => {
       `SELECT AVG(COALESCE(ws.percentage, 10)) AS avg_pct
        FROM tr_transaction_detail td
        LEFT JOIN mst_work_status ws ON ws.name = td.item_work_status OR ws.label = td.item_work_status
-       WHERE td.transaction_id = ?`,
+       WHERE td.transaction_id = ? AND td.is_production = 1`,
       [order.id]
     );
     const avgPct = Math.round(num(avgRows[0]?.avg_pct, 10) * 100) / 100;
@@ -1010,11 +1010,14 @@ export const updateItemWorkStatus = async (req, res) => {
     const txnId = txRows[0].id;
 
     const [itemRows] = await safeMyWaschenQuery(
-      "SELECT id FROM tr_transaction_detail WHERE id = ? AND transaction_id = ? LIMIT 1",
+      "SELECT id, is_production FROM tr_transaction_detail WHERE id = ? AND transaction_id = ? LIMIT 1",
       [itemId, txnId]
     );
     if (!itemRows.length) {
       return res.status(404).json({ success: false, message: "Item tidak ditemukan" });
+    }
+    if (Number(itemRows[0].is_production) === 0) {
+      return res.status(422).json({ success: false, message: "Biaya tambahan tidak memiliki status pengerjaan" });
     }
 
     try {
@@ -1047,7 +1050,7 @@ export const updateItemWorkStatus = async (req, res) => {
       `SELECT AVG(COALESCE(ws.percentage, 10)) AS avg_pct
        FROM tr_transaction_detail td
        LEFT JOIN mst_work_status ws ON ws.name = td.item_work_status OR ws.label = td.item_work_status
-       WHERE td.transaction_id = ?`,
+       WHERE td.transaction_id = ? AND td.is_production = 1`,
       [txnId]
     );
     const avgPct = Math.round(num(avgRows[0]?.avg_pct, 10) * 100) / 100;

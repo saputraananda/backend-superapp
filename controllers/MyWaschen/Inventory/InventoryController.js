@@ -82,7 +82,6 @@ export const createInventoryItem = async (req, res) => {
     const unitId = Number(req.body?.unit_id);
     const description = String(req.body?.description || "").trim() || null;
     const isActive = req.body?.is_active !== undefined ? Number(req.body.is_active) : 1;
-    let code = String(req.body?.code || "").trim().toUpperCase().replace(/\s+/g, "-");
 
     if (!name) {
       return res.status(400).json({ success: false, message: "Nama item wajib diisi" });
@@ -91,15 +90,24 @@ export const createInventoryItem = async (req, res) => {
     if (!unit) {
       return res.status(400).json({ success: false, message: "Satuan (unit_id) wajib dipilih dari mst_unit" });
     }
-    if (!code) code = `INV-${slugCode(name).slice(0, 20)}`;
 
-    const [dupCode] = await safeMyWaschenQuery("SELECT id FROM mst_inventory_item WHERE code = ?", [code]);
-    if (dupCode.length) {
-      return res.status(400).json({ success: false, message: `Kode "${code}" sudah dipakai` });
-    }
     const [dupName] = await safeMyWaschenQuery("SELECT id FROM mst_inventory_item WHERE name = ?", [name]);
     if (dupName.length) {
       return res.status(400).json({ success: false, message: `Nama "${name}" sudah ada` });
+    }
+
+    // Kode selalu auto dari nama (abaikan body.code)
+    const base = `INV-${slugCode(name).slice(0, 40)}`.slice(0, 50);
+    let code = base;
+    let n = 2;
+    for (;;) {
+      const [dupCode] = await safeMyWaschenQuery("SELECT id FROM mst_inventory_item WHERE code = ?", [code]);
+      if (!dupCode.length) break;
+      code = `${base.slice(0, 46)}-${n}`.slice(0, 50);
+      n += 1;
+      if (n > 999) {
+        return res.status(400).json({ success: false, message: "Gagal generate kode unik" });
+      }
     }
 
     const [result] = await safeMyWaschenQuery(
@@ -386,12 +394,19 @@ export const adjustOutletStock = async (req, res) => {
     const { id } = req.params;
     const movementType = String(req.body?.movementType || "Adjust").trim();
     const qtyRaw = num(req.body?.qty, NaN);
-    const employeeId = req.body?.employeeId ? Number(req.body.employeeId) : null;
+    const employeeId = req.body?.employeeId
+      ? Number(req.body.employeeId)
+      : req.session?.employeeId
+        ? Number(req.session.employeeId)
+        : null;
     const notes = String(req.body?.notes || "").trim() || null;
     const setQty = req.body?.setQty !== undefined && req.body?.setQty !== null ? num(req.body.setQty) : null;
 
     if (!["In", "Out", "Adjust"].includes(movementType)) {
       return res.status(400).json({ success: false, message: "movementType harus In / Out / Adjust" });
+    }
+    if (!employeeId) {
+      return res.status(400).json({ success: false, message: "Petugas wajib dipilih" });
     }
 
     const [rows] = await safeMyWaschenQuery("SELECT * FROM tr_inventory_stock WHERE id = ?", [id]);
@@ -439,11 +454,9 @@ export const adjustOutletStock = async (req, res) => {
       }
     }
 
-    if (employeeId) {
-      const emp = await assertEmployee(employeeId);
-      if (!emp) {
-        return res.status(404).json({ success: false, message: "Karyawan (mst_employee) tidak ditemukan" });
-      }
+    const emp = await assertEmployee(employeeId);
+    if (!emp) {
+      return res.status(404).json({ success: false, message: "Karyawan (mst_employee) tidak ditemukan" });
     }
 
     await safeMyWaschenQuery(

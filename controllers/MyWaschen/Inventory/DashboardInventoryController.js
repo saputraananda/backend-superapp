@@ -68,9 +68,66 @@ export const getInventoryDashboard = async (req, res) => {
        JOIN mst_outlet o ON o.id = s.outlet_id
        WHERE ${lowWhere.join(" AND ")}
        ORDER BY (s.min_stock - s.qty_current) DESC, o.outlet_code ASC, i.name ASC
-       LIMIT 100`,
+       LIMIT 500`,
       lowParams
     );
+
+    const [zeroStock] = await safeMyWaschenQuery(
+      `SELECT
+         s.id AS stock_id,
+         s.outlet_id, o.outlet_code, o.name AS outlet_name,
+         s.item_id, i.code AS item_code, i.name AS item_name,
+         u.symbol AS unit,
+         s.qty_current, s.min_stock, s.par_stock
+       FROM tr_inventory_stock s
+       JOIN mst_inventory_item i ON i.id = s.item_id
+       LEFT JOIN mst_unit u ON u.id = i.unit_id
+       JOIN mst_outlet o ON o.id = s.outlet_id
+       WHERE s.is_active = 1 AND s.qty_current <= 0
+       ORDER BY o.outlet_code ASC, i.name ASC
+       LIMIT 500`
+    );
+
+    const [catalog] = await safeMyWaschenQuery(
+      `SELECT i.id, i.code, i.name, u.symbol AS unit, i.is_active,
+              (SELECT COUNT(*) FROM tr_inventory_stock s WHERE s.item_id = i.id AND s.is_active = 1) AS stock_rows
+       FROM mst_inventory_item i
+       LEFT JOIN mst_unit u ON u.id = i.unit_id
+       WHERE i.is_active = 1
+       ORDER BY i.name ASC`
+    );
+
+    const [stockRows] = await safeMyWaschenQuery(
+      `SELECT
+         s.id AS stock_id,
+         s.outlet_id, o.outlet_code, o.name AS outlet_name,
+         s.item_id, i.code AS item_code, i.name AS item_name,
+         u.symbol AS unit,
+         s.qty_opening, s.qty_current, s.min_stock, s.par_stock,
+         CASE WHEN s.min_stock > 0 AND s.qty_current <= s.min_stock THEN 1 ELSE 0 END AS is_low
+       FROM tr_inventory_stock s
+       JOIN mst_inventory_item i ON i.id = s.item_id
+       LEFT JOIN mst_unit u ON u.id = i.unit_id
+       JOIN mst_outlet o ON o.id = s.outlet_id
+       WHERE s.is_active = 1
+       ORDER BY o.outlet_code ASC, i.name ASC
+       LIMIT 1000`
+    );
+
+    const [movements7d] = await safeMyWaschenQuery(`
+      SELECT l.id, l.outlet_id, o.outlet_code, o.name AS outlet_name,
+             l.item_id, i.code AS item_code, i.name AS item_name,
+             u.symbol AS unit,
+             l.movement_type, l.qty, l.qty_before, l.qty_after,
+             l.employee_id, l.notes, l.created_at
+      FROM tr_inventory_log l
+      LEFT JOIN mst_outlet o ON o.id = l.outlet_id
+      LEFT JOIN mst_inventory_item i ON i.id = l.item_id
+      LEFT JOIN mst_unit u ON u.id = i.unit_id
+      WHERE l.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+      ORDER BY l.id DESC
+      LIMIT 500
+    `);
 
     const [outletCols] = await safeMyWaschenQuery(
       `SELECT id, outlet_code, name FROM mst_outlet ORDER BY id ASC`
@@ -158,7 +215,11 @@ export const getInventoryDashboard = async (req, res) => {
       LIMIT 25
     `);
 
-    const employeeIds = [...new Set(recentLogs.map((r) => r.employee_id).filter(Boolean))];
+    const employeeIds = [
+      ...new Set(
+        [...recentLogs, ...movements7d].map((r) => r.employee_id).filter(Boolean)
+      ),
+    ];
     let empMap = {};
     if (employeeIds.length) {
       const [emps] = await safeQuery(
@@ -168,6 +229,12 @@ export const getInventoryDashboard = async (req, res) => {
       );
       empMap = Object.fromEntries(emps.map((e) => [e.employee_id, e.full_name]));
     }
+
+    const withEmp = (rows) =>
+      rows.map((r) => ({
+        ...r,
+        employee_name: r.employee_id ? empMap[r.employee_id] || null : null,
+      }));
 
     res.json({
       success: true,
@@ -187,15 +254,16 @@ export const getInventoryDashboard = async (req, res) => {
           zero_stock_count: Number(o.zero_stock_count) || 0,
           total_qty: Number(o.total_qty) || 0,
         })),
+        catalog,
+        stockRows,
         lowStock,
+        zeroStock,
+        movements7d: withEmp(movements7d),
         matrix: {
           outlets: outletCols,
           items: matrixItems,
         },
-        recentLogs: recentLogs.map((r) => ({
-          ...r,
-          employee_name: r.employee_id ? empMap[r.employee_id] || null : null,
-        })),
+        recentLogs: withEmp(recentLogs),
       },
     });
   } catch (err) {

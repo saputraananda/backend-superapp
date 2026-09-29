@@ -188,7 +188,7 @@ export const getDashboard = async (req, res) => {
                 COALESCE(SUM(td.subtotal), 0) AS revenue
          FROM tr_transaction_detail td
          JOIN tr_transaction t ON t.id = td.transaction_id
-         WHERE ${orderF.whereSql}
+         WHERE ${orderF.whereSql} AND td.is_production = 1
          GROUP BY td.item_work_status
          ORDER BY item_count DESC`,
         orderF.params

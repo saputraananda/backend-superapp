@@ -2,7 +2,7 @@ import { safeMyWaschenQuery } from "../../../db/pool.js";
 
 const SORT_COLUMNS = [
   "id", "customer_code", "name", "phone", "email", "city",
-  "total_orders", "total_spent", "deposit_balance", "monthly_spending", "created_at",
+  "total_orders", "total_spent", "deposit_balance", "monthly_spending", "spending_value_year", "created_at",
   "last_transaction_at",
 ];
 
@@ -16,13 +16,7 @@ const CUSTOMER_SELECT = `
          ct.label AS spending_tier_label,
          cs.code AS customer_source_code,
          cs.name AS customer_source_name,
-         cs.label AS customer_source_label,
-         (
-           SELECT MAX(t.order_date)
-           FROM tr_transaction t
-           WHERE t.customer_id = c.id
-             AND COALESCE(t.is_delete_requested, 0) = 0
-         ) AS last_transaction_at
+         cs.label AS customer_source_label
   FROM mst_customer c
   LEFT JOIN mst_outlet o ON o.id = c.preferred_outlet_id
   LEFT JOIN mst_customer_tier ct ON ct.id = c.spending_tier_id
@@ -114,55 +108,64 @@ export const getCustomers = async (req, res) => {
       params.push(Number(preferredOutletId));
     }
 
-    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
-    const orderExpr = sortBy === "last_transaction_at"
-      ? `last_transaction_at`
-      : `c.${sortBy}`;
+    // Filter tanggal = tanggal terdaftar (created_at). Kosong = tampilkan semua.
+    if (dateFrom) {
+      where.push("DATE(c.created_at) >= ?");
+      params.push(dateFrom);
+    }
+    if (dateTo) {
+      where.push("DATE(c.created_at) <= ?");
+      params.push(dateTo);
+    }
 
-    const [rows] = await safeMyWaschenQuery(
-      `${CUSTOMER_SELECT} ${whereSql} ORDER BY ${orderExpr} ${sortDir}`,
+    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    const orderExpr = `c.${sortBy}`;
+    const limit = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+
+    const [[stats]] = await safeMyWaschenQuery(
+      `SELECT COUNT(*) AS total,
+              COALESCE(SUM(c.is_active = 1), 0) AS active,
+              COALESCE(SUM(ct.code = 'VIP'), 0) AS vip,
+              COALESCE(SUM(ct.code = 'GOLD'), 0) AS gold,
+              COALESCE(SUM(ct.code = 'REGULER'), 0) AS reguler,
+              COALESCE(SUM(ct.code = 'ONE_TIME'), 0) AS one_time
+       FROM mst_customer c
+       LEFT JOIN mst_customer_tier ct ON ct.id = c.spending_tier_id
+       ${whereSql}`,
       params
     );
 
-    const fromTs = /^\d{4}-\d{2}-\d{2}$/.test(dateFrom)
-      ? new Date(`${dateFrom}T00:00:00`).getTime()
-      : null;
-    const toTs = /^\d{4}-\d{2}-\d{2}$/.test(dateTo)
-      ? new Date(`${dateTo}T23:59:59`).getTime()
-      : null;
-    const now = Date.now();
-    let churnCount = 0;
-    let newCustomers = 0;
-    const hasPeriod = fromTs != null || toTs != null;
-    for (const row of rows) {
-      if (hasPeriod) {
-        const created = row.created_at ? new Date(row.created_at).getTime() : NaN;
-        if (Number.isFinite(created)) {
-          const inFrom = fromTs == null || created >= fromTs;
-          const inTo = toTs == null || created <= toTs;
-          if (inFrom && inTo) newCustomers += 1;
-        }
-      }
+    const [rows] = await safeMyWaschenQuery(
+      `${CUSTOMER_SELECT} ${whereSql} ORDER BY ${orderExpr} ${sortDir}, c.id ${sortDir} LIMIT ? OFFSET ?`,
+      [...params, limit, (page - 1) * limit]
+    );
 
-      const last = row.last_transaction_at ? new Date(row.last_transaction_at) : null;
-      if (!last || Number.isNaN(last.getTime())) {
-        // Belum pernah transaksi → Lost di POS, bukan Churn
-        continue;
-      }
-      const days = Math.max(0, Math.floor((now - last.getTime()) / (1000 * 60 * 60 * 24)));
-      // Samakan band My Waschen POS: Churn = 46–60 hari sejak order terakhir
-      if (days > 45 && days <= 60) churnCount += 1;
-    }
+    const [yearRows] = await safeMyWaschenQuery(
+      `SELECT DISTINCT YEAR(created_at) AS year
+       FROM mst_customer
+       WHERE created_at IS NOT NULL
+       ORDER BY year DESC`
+    );
+    const years = yearRows
+      .map((r) => Number(r.year))
+      .filter((y) => Number.isFinite(y) && y > 0);
 
     res.json({
       success: true,
       data: rows,
       meta: {
-        total: rows.length,
-        newCustomers,
-        churnCount,
+        total: Number(stats.total) || 0,
+        page,
+        limit,
+        active: Number(stats.active) || 0,
+        vip: Number(stats.vip) || 0,
+        gold: Number(stats.gold) || 0,
+        reguler: Number(stats.reguler) || 0,
+        oneTime: Number(stats.one_time) || 0,
         dateFrom: dateFrom || null,
         dateTo: dateTo || null,
+        years,
       },
     });
   } catch (err) {
