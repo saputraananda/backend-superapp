@@ -59,9 +59,21 @@ export const setOpeningStock = async (req, res) => {
     let periodStart = req.body?.period_start
       ? String(req.body.period_start).slice(0, 10)
       : new Date().toISOString().slice(0, 10);
+    const employeeId = req.body?.employeeId
+      ? Number(req.body.employeeId)
+      : req.session?.employeeId
+        ? Number(req.session.employeeId)
+        : null;
 
     if (!Number.isFinite(qtyOpening) || qtyOpening < 0) {
       return res.status(400).json({ success: false, message: "qty_opening wajib angka ≥ 0" });
+    }
+    if (!employeeId) {
+      return res.status(400).json({ success: false, message: "Petugas wajib dipilih" });
+    }
+    const emp = await assertEmployee(employeeId);
+    if (!emp) {
+      return res.status(404).json({ success: false, message: "Petugas tidak ditemukan" });
     }
 
     const [rows] = await safeMyWaschenQuery("SELECT * FROM tr_inventory_stock WHERE id = ?", [id]);
@@ -87,8 +99,8 @@ export const setOpeningStock = async (req, res) => {
 
     await safeMyWaschenQuery(
       `INSERT INTO tr_inventory_log
-         (outlet_id, item_id, stock_id, movement_type, qty, qty_before, qty_after, reference_type, notes)
-       VALUES (?, ?, ?, 'Adjust', ?, ?, ?, 'opening', ?)`,
+         (outlet_id, item_id, stock_id, movement_type, qty, qty_before, qty_after, employee_id, reference_type, notes)
+       VALUES (?, ?, ?, 'Adjust', ?, ?, ?, ?, 'opening', ?)`,
       [
         rows[0].outlet_id,
         rows[0].item_id,
@@ -96,6 +108,7 @@ export const setOpeningStock = async (req, res) => {
         qtyOpening,
         num(rows[0].qty_current),
         calc?.remaining ?? qtyOpening,
+        employeeId,
         `Set stok awal periode ${periodStart}`,
       ]
     );
@@ -143,7 +156,11 @@ export const postDailyOpname = async (req, res) => {
   try {
     const outletId = Number(req.body?.outletId);
     const usageDate = String(req.body?.usageDate || new Date().toISOString().slice(0, 10)).slice(0, 10);
-    const employeeId = req.body?.employeeId ? Number(req.body.employeeId) : null;
+    const employeeId = req.body?.employeeId
+      ? Number(req.body.employeeId)
+      : req.session?.employeeId
+        ? Number(req.session.employeeId)
+        : null;
     const lines = Array.isArray(req.body?.lines) ? req.body.lines : [];
 
     if (!outletId) {
@@ -152,12 +169,13 @@ export const postDailyOpname = async (req, res) => {
     if (!lines.length) {
       return res.status(400).json({ success: false, message: "Minimal 1 baris pemakaian" });
     }
+    if (!employeeId) {
+      return res.status(400).json({ success: false, message: "Petugas wajib dipilih" });
+    }
 
-    if (employeeId) {
-      const emp = await assertEmployee(employeeId);
-      if (!emp) {
-        return res.status(404).json({ success: false, message: "Petugas tidak ditemukan" });
-      }
+    const emp = await assertEmployee(employeeId);
+    if (!emp) {
+      return res.status(404).json({ success: false, message: "Petugas tidak ditemukan" });
     }
 
     let saved = 0;
