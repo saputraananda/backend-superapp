@@ -108,6 +108,16 @@ export const getCustomers = async (req, res) => {
       params.push(Number(preferredOutletId));
     }
 
+    // Filter tanggal = tanggal terdaftar (created_at). Kosong = tampilkan semua.
+    if (dateFrom) {
+      where.push("DATE(c.created_at) >= ?");
+      params.push(dateFrom);
+    }
+    if (dateTo) {
+      where.push("DATE(c.created_at) <= ?");
+      params.push(dateTo);
+    }
+
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
     const orderExpr = `c.${sortBy}`;
     const limit = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
@@ -131,6 +141,16 @@ export const getCustomers = async (req, res) => {
       [...params, limit, (page - 1) * limit]
     );
 
+    const [yearRows] = await safeMyWaschenQuery(
+      `SELECT DISTINCT YEAR(created_at) AS year
+       FROM mst_customer
+       WHERE created_at IS NOT NULL
+       ORDER BY year DESC`
+    );
+    const years = yearRows
+      .map((r) => Number(r.year))
+      .filter((y) => Number.isFinite(y) && y > 0);
+
     res.json({
       success: true,
       data: rows,
@@ -145,6 +165,7 @@ export const getCustomers = async (req, res) => {
         oneTime: Number(stats.one_time) || 0,
         dateFrom: dateFrom || null,
         dateTo: dateTo || null,
+        years,
       },
     });
   } catch (err) {
