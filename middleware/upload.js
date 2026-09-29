@@ -86,7 +86,6 @@ export const ALORA_MOBILE_ATT_DIR = ALORA_MOBILE_BASE
 export const ALORA_MOBILE_SESSION_DIR = ALORA_MOBILE_BASE
   ? path.join(ALORA_MOBILE_BASE, "attendance-sessions")
   : null;
-
 if (ALORA_MOBILE_BASE) {
   [ALORA_MOBILE_LEAVE_DIR, ALORA_MOBILE_ATT_DIR, ALORA_MOBILE_SESSION_DIR].forEach((dir) => {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -566,4 +565,22 @@ export const uploadPayslip = multer({
   storage: payslipStorage,
   fileFilter: documentFilter,
   limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB per file
+});
+
+// =========================
+// Upload Alora Payslip (diteruskan ke API Alora Mobile)
+// =========================
+const pdfOnlyFilter = (_req, file, cb) => {
+  const ext = path.extname(file.originalname).toLowerCase();
+  if (ext === ".pdf" && file.mimetype === "application/pdf") {
+    cb(null, true);
+  } else {
+    cb(new Error("Slip gaji harus berupa file PDF."));
+  }
+};
+
+export const uploadAloraPayslip = multer({
+  storage: multer.memoryStorage(),
+  fileFilter: pdfOnlyFilter,
+  limits: { fileSize: 10 * 1024 * 1024 },
 });
