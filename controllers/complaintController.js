@@ -1,4 +1,7 @@
-import { safeQuery, safeSmartlinkQuery } from "../db/pool.js";
+import { safeQuery, safeSmartlinkQuery, safeMyWaschenQuery } from "../db/pool.js";
+
+/** Komplain tinggal di myWaschen. Karyawan PIC kantor tetap di DB waschen. */
+const complaintQuery = safeMyWaschenQuery;
 import fs from "fs";
 import path from "path";
 
@@ -37,7 +40,7 @@ function getLastCutoffPeriods(count = 6) {
 }
 
 const syncComplaintProgress = async (complaintId) => {
-  const [latestLog] = await safeQuery(
+  const [latestLog] = await complaintQuery(
     `SELECT progress FROM tr_complaint_progress_log 
      WHERE complaint_id = ? 
      ORDER BY logged_at DESC, log_id DESC 
@@ -48,7 +51,7 @@ const syncComplaintProgress = async (complaintId) => {
   if (latestLog && latestLog.length > 0) {
     const newProgress = latestLog[0].progress;
 
-    const [datesResult] = await safeQuery(
+    const [datesResult] = await complaintQuery(
       `SELECT 
          MIN(IF(progress = 'Open', logged_at, NULL)) as open_at,
          MIN(IF(progress = 'On Progress', logged_at, NULL)) as in_progress_at,
@@ -98,13 +101,13 @@ const syncComplaintProgress = async (complaintId) => {
       updateFields.push("duration_to_close = NULL");
     }
 
-    await safeQuery(
+    await complaintQuery(
       `UPDATE tr_complaint SET ${updateFields.join(", ")} WHERE complaint_id = ?`,
       [...updateValues, complaintId]
     );
   } else {
     // If no logs left, set progress back to Open
-    await safeQuery(
+    await complaintQuery(
       `UPDATE tr_complaint 
        SET progress = 'Open', 
            in_progress_at = NULL, 
@@ -127,7 +130,7 @@ export const getComplaintPeriods = async (_req, res) => {
     // Period is bucketed by the cutoff used on the frontend (cutoff day = 26):
     // a complaint submitted on/after the 26th belongs to the NEXT month's period.
     // e.g. submitted_at 2026-05-28 → "Juni 2026" (cutoff 2026-05-26 s/d 2026-06-25).
-    const [rows] = await safeQuery(
+    const [rows] = await complaintQuery(
       `SELECT DISTINCT
          YEAR(DATE_ADD(submitted_at,  INTERVAL IF(DAY(submitted_at) >= 26, 1, 0) MONTH)) AS year,
          MONTH(DATE_ADD(submitted_at, INTERVAL IF(DAY(submitted_at) >= 26, 1, 0) MONTH)) AS month
@@ -147,10 +150,10 @@ export const getComplaintPeriods = async (_req, res) => {
 export const getComplaintMeta = async (_req, res) => {
   try {
     const [[types], [categories], [topics], [outlets]] = await Promise.all([
-      safeQuery("SELECT type_id, type_name FROM mst_complaint_type WHERE is_active=1 ORDER BY sort_order", []),
-      safeQuery("SELECT category_id, category_name FROM mst_complaint_category WHERE is_active=1 ORDER BY sort_order", []),
-      safeQuery("SELECT topic_id, topic_name FROM mst_complaint_topic WHERE is_active=1 ORDER BY sort_order", []),
-      safeQuery("SELECT id, name, full_name FROM mst_outlet ORDER BY name ASC", []),
+      complaintQuery("SELECT type_id, type_name FROM mst_complaint_type WHERE is_active=1 ORDER BY sort_order", []),
+      complaintQuery("SELECT category_id, category_name FROM mst_complaint_category WHERE is_active=1 ORDER BY sort_order", []),
+      complaintQuery("SELECT topic_id, topic_name FROM mst_complaint_topic WHERE is_active=1 ORDER BY sort_order", []),
+      complaintQuery("SELECT id, name, full_name FROM mst_outlet ORDER BY name ASC", []),
     ]);
     res.json({ types, categories, topics, outlets });
   } catch (err) {
@@ -162,8 +165,9 @@ export const getComplaintMeta = async (_req, res) => {
 
 export const getComplaintNota = async (req, res) => {
   try {
-    const search = req.query.q ? `%${req.query.q}%` : "%";
-    const [rows] = await safeSmartlinkQuery(
+    const q = String(req.query.q || "").trim();
+    const search = q ? `%${q}%` : "%";
+    const [legacy] = await safeSmartlinkQuery(
       `SELECT no_nota, customer_nama
        FROM rekap_transaksi_reguler
        WHERE no_nota LIKE ?
@@ -172,6 +176,24 @@ export const getComplaintNota = async (req, res) => {
        LIMIT 30`,
       [search]
     );
+    const [pos] = await complaintQuery(
+      `SELECT t.order_no AS no_nota, c.name AS customer_nama
+       FROM tr_transaction t
+       LEFT JOIN mst_customer c ON c.id = t.customer_id
+       WHERE t.order_no LIKE ? OR c.name LIKE ?
+       ORDER BY t.id DESC
+       LIMIT 30`,
+      [search, search]
+    );
+    const seen = new Set();
+    const rows = [];
+    for (const row of [...(pos || []), ...(legacy || [])]) {
+      const key = String(row.no_nota || "").trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      rows.push({ no_nota: key, customer_nama: row.customer_nama || "" });
+      if (rows.length >= 30) break;
+    }
     res.json(rows);
   } catch (err) {
     console.error("[getComplaintNota] ERROR:", err.message);
@@ -208,21 +230,23 @@ export const getComplaintSummary = async (req, res) => {
       ? `WHERE ${dateWhere.map(s => s.replace("submitted_at", "c.submitted_at")).join(" AND ")}`
       : "";
 
-    const [[totals]] = await safeQuery(
+    const [[totals]] = await complaintQuery(
       `SELECT
         COUNT(*) AS total,
+        SUM(progress = 'Request') AS request_count,
         SUM(progress = 'Open') AS open_count,
         SUM(progress = 'On Progress') AS on_progress_count,
         SUM(progress = 'Waiting Customer') AS waiting_count,
         SUM(progress = 'Resolved') AS resolved_count,
-        SUM(progress = 'Closed') AS closed_count
+        SUM(progress = 'Closed') AS closed_count,
+        SUM(progress = 'Archive') AS archive_count
        FROM tr_complaint ${dw}`,
       dateParams
     );
 
-    const [byOutlet] = await safeQuery(
+    const [byOutlet] = await complaintQuery(
       `SELECT c.outlet_id, o.name AS outlet_name, COUNT(*) AS total,
-              SUM(c.progress NOT IN ('Resolved','Closed')) AS open_total
+              SUM(c.progress NOT IN ('Resolved','Closed','Archive')) AS open_total
        FROM tr_complaint c
        LEFT JOIN mst_outlet o ON o.id = c.outlet_id
        ${cJoinWhere}
@@ -232,7 +256,7 @@ export const getComplaintSummary = async (req, res) => {
       dateParams
     );
 
-    const [byTopic] = await safeQuery(
+    const [byTopic] = await complaintQuery(
       `SELECT c.topic_id, t.topic_name, COUNT(*) AS total
        FROM tr_complaint c
        JOIN mst_complaint_topic t ON t.topic_id = c.topic_id
@@ -242,7 +266,7 @@ export const getComplaintSummary = async (req, res) => {
       dateParams
     );
 
-    const [byType] = await safeQuery(
+    const [byType] = await complaintQuery(
       `SELECT c.type_id, t.type_name, COUNT(*) AS total
        FROM tr_complaint c
        JOIN mst_complaint_type t ON t.type_id = c.type_id
@@ -252,7 +276,7 @@ export const getComplaintSummary = async (req, res) => {
       dateParams
     );
 
-    const [byCategory] = await safeQuery(
+    const [byCategory] = await complaintQuery(
       `SELECT c.category_id, cat.category_name, COUNT(*) AS total
        FROM tr_complaint c
        JOIN mst_complaint_category cat ON cat.category_id = c.category_id
@@ -263,7 +287,7 @@ export const getComplaintSummary = async (req, res) => {
     );
 
     const cutoffPeriods = getLastCutoffPeriods(6);
-    const [recentTrendRows] = await safeQuery(
+    const [recentTrendRows] = await complaintQuery(
       `SELECT
          DATE_FORMAT(DATE_ADD(submitted_at, INTERVAL IF(DAY(submitted_at) >= 26, 1, 0) MONTH), '%Y-%m') AS month,
          COUNT(*) AS total
@@ -320,7 +344,7 @@ export const getComplaintSameDayComparison = async (req, res) => {
 
     // Parallel queries — each range separately (avoids complex CASE WHEN binding issues)
     const queries = ranges.map((r) =>
-      safeQuery(
+      complaintQuery(
         `SELECT COUNT(*) AS total FROM tr_complaint WHERE DATE(submitted_at) >= ? AND DATE(submitted_at) <= ?`,
         [r.start, r.end]
       )
@@ -365,7 +389,7 @@ export const getComplaints = async (req, res) => {
     const limit = req.query.limit === "all" ? 99999 : Math.min(Math.max(Number(req.query.limit || 25), 1), 99999);
     const offset = Math.max(Number(req.query.offset || 0), 0);
 
-    const [rows] = await safeQuery(
+    const [rows] = await complaintQuery(
       `SELECT
          c.complaint_id, c.outlet_id, o.name AS outlet_name,
          c.type_id, ct.type_name,
@@ -385,7 +409,7 @@ export const getComplaints = async (req, res) => {
       [...params, limit, offset]
     );
 
-    const [[{ total }]] = await safeQuery(
+    const [[{ total }]] = await complaintQuery(
       `SELECT COUNT(*) AS total FROM tr_complaint c ${whereClause}`,
       params
     );
@@ -403,7 +427,7 @@ export const getComplaintById = async (req, res) => {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ message: "ID tidak valid." });
 
-    const [complaintRows] = await safeQuery(
+    const [complaintRows] = await complaintQuery(
       `SELECT c.*,
          o.name AS outlet_name,
          ct.type_name, cc.category_name, cp.topic_name
@@ -417,12 +441,12 @@ export const getComplaintById = async (req, res) => {
     );
     if (!complaintRows.length) return res.status(404).json({ message: "Komplain tidak ditemukan." });
 
-    const [docs] = await safeQuery(
+    const [docs] = await complaintQuery(
       "SELECT * FROM tr_complaint_document WHERE complaint_id = ? ORDER BY uploaded_at ASC",
       [id]
     );
 
-    const [logs] = await safeQuery(
+    const [logs] = await complaintQuery(
       `SELECT * FROM tr_complaint_progress_log WHERE complaint_id = ? ORDER BY logged_at ASC`,
       [id]
     );
@@ -431,7 +455,7 @@ export const getComplaintById = async (req, res) => {
     let progressDocs = [];
     if (logIds.length) {
       const placeholders = logIds.map(() => "?").join(",");
-      [progressDocs] = await safeQuery(
+      [progressDocs] = await complaintQuery(
         `SELECT * FROM tr_complaint_progress_document WHERE log_id IN (${placeholders}) ORDER BY uploaded_at ASC`,
         logIds
       );
@@ -472,7 +496,7 @@ export const createComplaint = async (req, res) => {
       return res.status(400).json({ message: "Semua field wajib diisi." });
     }
 
-    const [insertResult] = await safeQuery(
+    const [insertResult] = await complaintQuery(
       `INSERT INTO tr_complaint
          (type_id, category_id, topic_id, outlet_id, complaint_name, nota_number,
           qty, description, deduction, pic_employee_id, pic_name, progress,
@@ -490,15 +514,15 @@ export const createComplaint = async (req, res) => {
     // Save documents
     const files = req.files || [];
     for (const file of files) {
-      await safeQuery(
+      await complaintQuery(
         `INSERT INTO tr_complaint_document (complaint_id, file_path, original_name, mime_type, file_size_kb)
          VALUES (?,?,?,?,?)`,
-        [complaintId, `complaint_docs/${file.filename}`, file.originalname, file.mimetype, Math.round(file.size / 1024)]
+        [complaintId, `assets/complaint_docs/${file.filename}`, file.originalname, file.mimetype, Math.round(file.size / 1024)]
       );
     }
 
     // Auto-create first progress log
-    await safeQuery(
+    await complaintQuery(
       `INSERT INTO tr_complaint_progress_log
          (complaint_id, progress, note, pic_employee_id, pic_name, logged_by_user_id, logged_by_employee_id, logged_at)
        VALUES (?,?,?,?,?,?,?,COALESCE(?, NOW()))`,
@@ -522,7 +546,7 @@ export const updateComplaint = async (req, res) => {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ message: "ID tidak valid." });
 
-    const [existing] = await safeQuery(
+    const [existing] = await complaintQuery(
       "SELECT complaint_id FROM tr_complaint WHERE complaint_id = ?", [id]
     );
     if (!existing.length) return res.status(404).json({ message: "Komplain tidak ditemukan." });
@@ -544,7 +568,7 @@ export const updateComplaint = async (req, res) => {
       return res.status(400).json({ message: "Semua field wajib diisi." });
     }
 
-    await safeQuery(
+    await complaintQuery(
       `UPDATE tr_complaint SET
          type_id=?, category_id=?, topic_id=?, outlet_id=?,
          complaint_name=?, nota_number=?, qty=?, description=?,
@@ -561,7 +585,7 @@ export const updateComplaint = async (req, res) => {
     );
 
     if (submittedAt) {
-      await safeQuery(
+      await complaintQuery(
         `UPDATE tr_complaint_progress_log 
          SET logged_at = ? 
          WHERE complaint_id = ? AND progress = 'Open' 
@@ -575,10 +599,10 @@ export const updateComplaint = async (req, res) => {
     // Handle new file uploads
     const files = req.files || [];
     for (const file of files) {
-      await safeQuery(
+      await complaintQuery(
         `INSERT INTO tr_complaint_document (complaint_id, file_path, original_name, mime_type, file_size_kb)
          VALUES (?,?,?,?,?)`,
-        [id, `complaint_docs/${file.filename}`, file.originalname, file.mimetype, Math.round(file.size / 1024)]
+        [id, `assets/complaint_docs/${file.filename}`, file.originalname, file.mimetype, Math.round(file.size / 1024)]
       );
     }
 
@@ -586,12 +610,12 @@ export const updateComplaint = async (req, res) => {
     let deletedDocIds = [];
     try { deletedDocIds = JSON.parse(req.body.deleted_doc_ids || "[]"); } catch (_) { }
     if (deletedDocIds.length) {
-      const [delDocs] = await safeQuery(
+      const [delDocs] = await complaintQuery(
         `SELECT file_path FROM tr_complaint_document WHERE doc_id IN (${deletedDocIds.map(() => "?").join(",")}) AND complaint_id=?`,
         [...deletedDocIds.map(Number), id]
       );
       delDocs.forEach((d) => removeFile(d.file_path));
-      await safeQuery(
+      await complaintQuery(
         `DELETE FROM tr_complaint_document WHERE doc_id IN (${deletedDocIds.map(() => "?").join(",")}) AND complaint_id=?`,
         [...deletedDocIds.map(Number), id]
       );
@@ -613,15 +637,15 @@ export const deleteComplaint = async (req, res) => {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ message: "ID tidak valid." });
 
-    const [docs] = await safeQuery("SELECT file_path FROM tr_complaint_document WHERE complaint_id=?", [id]);
-    const [pdocs] = await safeQuery(
+    const [docs] = await complaintQuery("SELECT file_path FROM tr_complaint_document WHERE complaint_id=?", [id]);
+    const [pdocs] = await complaintQuery(
       `SELECT pd.file_path FROM tr_complaint_progress_document pd
        JOIN tr_complaint_progress_log pl ON pl.log_id = pd.log_id
        WHERE pl.complaint_id = ?`, [id]
     );
     [...docs, ...pdocs].forEach((d) => removeFile(d.file_path));
 
-    await safeQuery("DELETE FROM tr_complaint WHERE complaint_id=?", [id]);
+    await complaintQuery("DELETE FROM tr_complaint WHERE complaint_id=?", [id]);
     res.json({ message: "Komplain berhasil dihapus." });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -638,7 +662,7 @@ export const addProgressLog = async (req, res) => {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ message: "ID tidak valid." });
 
-    const [existing] = await safeQuery("SELECT complaint_id FROM tr_complaint WHERE complaint_id=?", [id]);
+    const [existing] = await complaintQuery("SELECT complaint_id FROM tr_complaint WHERE complaint_id=?", [id]);
     if (!existing.length) return res.status(404).json({ message: "Komplain tidak ditemukan." });
 
     const progress = req.body.progress;
@@ -652,7 +676,7 @@ export const addProgressLog = async (req, res) => {
     const picName = String(req.body.pic_name || "").trim() || null;
     const loggedAt = (req.body.logged_at && req.body.logged_at !== "null" && req.body.logged_at !== "") ? req.body.logged_at : null;
 
-    const [logResult] = await safeQuery(
+    const [logResult] = await complaintQuery(
       `INSERT INTO tr_complaint_progress_log
          (complaint_id, progress, note, pic_employee_id, pic_name, logged_by_user_id, logged_by_employee_id, logged_at)
        VALUES (?,?,?,?,?,?,?,COALESCE(?, NOW()))`,
@@ -665,10 +689,10 @@ export const addProgressLog = async (req, res) => {
     // Save progress documents
     const files = req.files || [];
     for (const file of files) {
-      await safeQuery(
+      await complaintQuery(
         `INSERT INTO tr_complaint_progress_document (log_id, file_path, original_name, mime_type, file_size_kb)
          VALUES (?,?,?,?,?)`,
-        [logId, `complaint_docs/${file.filename}`, file.originalname, file.mimetype, Math.round(file.size / 1024)]
+        [logId, `assets/complaint_docs/${file.filename}`, file.originalname, file.mimetype, Math.round(file.size / 1024)]
       );
     }
 
@@ -691,7 +715,7 @@ export const updateProgressLog = async (req, res) => {
     const logId = Number(req.params.logId);
     if (!logId) return res.status(400).json({ message: "Log ID tidak valid." });
 
-    const [existing] = await safeQuery(
+    const [existing] = await complaintQuery(
       "SELECT complaint_id FROM tr_complaint_progress_log WHERE log_id = ?",
       [logId]
     );
@@ -709,7 +733,7 @@ export const updateProgressLog = async (req, res) => {
     const picName = String(req.body.pic_name || "").trim() || null;
     const loggedAt = (req.body.logged_at && req.body.logged_at !== "null" && req.body.logged_at !== "") ? req.body.logged_at : null;
 
-    await safeQuery(
+    await complaintQuery(
       `UPDATE tr_complaint_progress_log 
        SET progress = ?, note = ?, pic_name = ?, logged_at = COALESCE(?, logged_at)
        WHERE log_id = ?`,
@@ -735,7 +759,7 @@ export const deleteProgressLog = async (req, res) => {
     const logId = Number(req.params.logId);
     if (!logId) return res.status(400).json({ message: "Log ID tidak valid." });
 
-    const [existing] = await safeQuery(
+    const [existing] = await complaintQuery(
       "SELECT complaint_id FROM tr_complaint_progress_log WHERE log_id = ?",
       [logId]
     );
@@ -744,19 +768,71 @@ export const deleteProgressLog = async (req, res) => {
     const complaintId = existing[0].complaint_id;
 
     // Delete associated files
-    const [pdocs] = await safeQuery(
+    const [pdocs] = await complaintQuery(
       "SELECT file_path FROM tr_complaint_progress_document WHERE log_id = ?",
       [logId]
     );
     pdocs.forEach((d) => removeFile(d.file_path));
 
     // Delete database records
-    await safeQuery("DELETE FROM tr_complaint_progress_log WHERE log_id = ?", [logId]);
+    await complaintQuery("DELETE FROM tr_complaint_progress_log WHERE log_id = ?", [logId]);
 
     // Sync complaint progress
     await syncComplaintProgress(complaintId);
 
     res.json({ message: "Progress log berhasil dihapus." });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+/** Setujui Request → Open, atau tolak → Archive (catatan wajib). */
+export const reviewComplaint = async (req, res) => {
+  try {
+    const userId = req.session?.userId;
+    if (!userId) return res.status(401).json({ message: "Unauthorized" });
+
+    const id = Number(req.params.id);
+    const decision = req.body?.decision === "reject" ? "reject" : req.body?.decision === "approve" ? "approve" : "";
+    const note = String(req.body?.note || "").trim();
+    if (!id || !decision) return res.status(400).json({ message: "Keputusan tidak valid." });
+    if (decision === "reject" && !note) {
+      return res.status(400).json({ message: "Catatan penolakan wajib diisi." });
+    }
+
+    const [rows] = await complaintQuery(
+      "SELECT complaint_id, progress, pic_employee_id, pic_name FROM tr_complaint WHERE complaint_id = ?",
+      [id]
+    );
+    if (!rows.length) return res.status(404).json({ message: "Komplain tidak ditemukan." });
+    if (rows[0].progress !== "Request") {
+      return res.status(400).json({ message: "Hanya pengajuan berstatus Request yang bisa ditinjau." });
+    }
+
+    const next = decision === "approve" ? "Open" : "Archive";
+    const logNote = decision === "approve"
+      ? (note || "Pengajuan disetujui. Komplain resmi dibuka.")
+      : note;
+
+    await complaintQuery(
+      `INSERT INTO tr_complaint_progress_log
+         (complaint_id, progress, note, pic_employee_id, pic_name, logged_by_user_id, logged_by_employee_id)
+       VALUES (?,?,?,?,?,?,?)`,
+      [
+        id,
+        next,
+        logNote,
+        rows[0].pic_employee_id,
+        rows[0].pic_name,
+        Number(userId),
+        req.session?.employeeId ? Number(req.session.employeeId) : null
+      ]
+    );
+    await syncComplaintProgress(id);
+    res.json({
+      message: decision === "approve" ? "Pengajuan disetujui." : "Pengajuan diarsipkan.",
+      progress: next
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
