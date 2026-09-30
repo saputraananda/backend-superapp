@@ -12,7 +12,7 @@ import {
 	setReplaceOffUsableHours,
 } from "../../utils/otRoBalanceService.js";
 import { todayDateStringJakarta } from "../../utils/workScheduleRules.js";
-import { ALORA_ACTIVE_EMPLOYEE_CONDITION } from "../../utils/aloraEmployeeAccess.js";
+import { ALORA_ACTIVE_EMPLOYEE_CONDITION, ALORA_COMPANY_CONDITION } from "../../utils/aloraEmployeeAccess.js";
 
 const HRD_POSITION_IDS = [1, 8, 17, 18, 19];
 
@@ -75,7 +75,7 @@ export const listEmployeeBalances = async (req, res) => {
 		if (![20, 50, 100].includes(limit)) limit = 20;
 		const offset = (page - 1) * limit;
 
-		const where = ["e.is_deleted = 0", "e.company_id = 1", ALORA_ACTIVE_EMPLOYEE_CONDITION];
+		const where = ["e.is_deleted = 0", ALORA_COMPANY_CONDITION, ALORA_ACTIVE_EMPLOYEE_CONDITION];
 		const params = [];
 		if (search) {
 			where.push(

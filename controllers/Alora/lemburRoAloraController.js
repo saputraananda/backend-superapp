@@ -95,6 +95,7 @@ async function getEmployeeMap(employeeIds) {
 	const map = new Map();
 	for (const row of rows) {
 		map.set(Number(row.employee_id), {
+			employee_code: row.employee_code || null,
 			employee_name: row.full_name || null,
 			jabatan: row.job_level_name || row.position_name || "-",
 			department_name: row.department_name || "-",
@@ -102,6 +103,28 @@ async function getEmployeeMap(employeeIds) {
 		});
 	}
 	return map;
+}
+
+async function getMatchedEmployeeIdsBySearch(search) {
+	if (!search) return [];
+	const kw = `%${search}%`;
+	const [rows] = await safeQuery(
+		`
+			SELECT e.employee_id
+			FROM mst_employee e
+			WHERE e.is_deleted = 0
+				AND (
+					e.full_name LIKE ?
+					OR e.employee_code LIKE ?
+					OR CAST(e.employee_id AS CHAR) LIKE ?
+				)
+			LIMIT 2000
+		`,
+		[kw, kw, kw]
+	);
+	return (rows || [])
+		.map((row) => Number(row.employee_id))
+		.filter((id) => Number.isInteger(id) && id > 0);
 }
 
 function formatTimeFromDate(value) {
@@ -147,16 +170,36 @@ export const getLemburRoList = async (req, res) => {
 		const offset = (page - 1) * limit;
 		const search = String(req.query.search || "").trim().slice(0, 100);
 
-		const where = ["l.work_date >= ?", "l.work_date <= ?", "l.request_type = ?"];
-		const params = [startDate, endDate, "lembur"];
+		const emptyStatusCounts = {
+			Pending_Supervisor: 0,
+			Pending_HRD: 0,
+			Rejected_Supervisor: 0,
+			Rejected_HRD: 0,
+			disetujui: 0,
+		};
 
+		const baseWhere = ["l.work_date >= ?", "l.work_date <= ?", "l.request_type = ?"];
+		const baseParams = [startDate, endDate, "lembur"];
+
+		if (search) {
+			const matchedIds = await getMatchedEmployeeIdsBySearch(search);
+			if (matchedIds.length === 0) {
+				return res.json({
+					records: [],
+					pagination: { page, limit, total: 0, totalPages: 1 },
+					statusCounts: emptyStatusCounts,
+					period: { startDate, endDate },
+				});
+			}
+			baseWhere.push(`l.employee_id IN (${matchedIds.map(() => "?").join(",")})`);
+			baseParams.push(...matchedIds);
+		}
+
+		const where = [...baseWhere];
+		const params = [...baseParams];
 		if (statusFilter) {
 			where.push("l.status = ?");
 			params.push(statusFilter);
-		}
-		if (search) {
-			where.push("CAST(l.employee_id AS CHAR) LIKE ?");
-			params.push(`%${search}%`);
 		}
 
 		const whereSql = where.join(" AND ");
@@ -241,16 +284,10 @@ export const getLemburRoList = async (req, res) => {
 		});
 
 		const [summaryRows] = await safeAloraMobileQuery(
-			`SELECT status, COUNT(*) AS cnt FROM tr_worker_lembur_ro GROUP BY status`,
-			[]
+			`SELECT l.status, COUNT(*) AS cnt FROM tr_worker_lembur_ro l WHERE ${baseWhere.join(" AND ")} GROUP BY l.status`,
+			baseParams
 		);
-		const statusCounts = {
-			Pending_Supervisor: 0,
-			Pending_HRD: 0,
-			Rejected_Supervisor: 0,
-			Rejected_HRD: 0,
-			disetujui: 0,
-		};
+		const statusCounts = { ...emptyStatusCounts };
 		for (const r of summaryRows) {
 			if (r.status in statusCounts) statusCounts[r.status] = Number(r.cnt);
 		}
