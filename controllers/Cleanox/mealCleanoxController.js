@@ -6,13 +6,12 @@ import {
 	getCleanoxProduksiEmployeeIds,
 	getCleanoxProduksiRoleMap,
 } from "../../utils/cleanoxProduksiEmployees.js";
+import { getCleanoxMealRates } from "../../utils/cleanoxMealRates.js";
+import { getOffDayMap, getApprovedLeaveMap } from "../../utils/cleanoxMealCalendar.js";
 
 const CLEANOX_COMPANY_ID = 3;
 const ALLOWED_TYPES = new Set(["half_day", "full_day"]);
 const ALLOWED_STATUSES = new Set(["menunggu_tf", "selesai"]);
-const OFFICE_AMOUNT = 10000;
-const HALF_TOTAL = 25000;
-const FULL_TOTAL = 30000;
 
 function toISODateString(value) {
 	return /^\d{4}-\d{2}-\d{2}$/.test(value || "") ? value : null;
@@ -83,9 +82,10 @@ function todayDateStringWib() {
 	return jakarta.toISOString().slice(0, 10);
 }
 
-function amountForType(type) {
-	if (type === "half_day") return HALF_TOTAL;
-	if (type === "full_day") return FULL_TOTAL;
+async function amountForType(type) {
+	const rates = await getCleanoxMealRates();
+	if (type === "half_day") return rates.half_day;
+	if (type === "full_day") return rates.full_day;
 	return null;
 }
 
@@ -193,6 +193,7 @@ function mapRecord(row, emp = {}) {
 	return {
 		id: row.id,
 		worker_id: row.worker_id,
+		request_id: row.request_id ?? null,
 		employee_id: row.worker_id,
 		full_name: emp.employee_name || `ID ${row.worker_id}`,
 		employee_name: emp.employee_name || `ID ${row.worker_id}`,
@@ -353,6 +354,7 @@ export const getMealRekap = async (req, res) => {
 		const dates = eachDateInclusive(startDate, endDate);
 		const days = dates.length;
 
+		const rates = await getCleanoxMealRates();
 		const assignedIds = await getCleanoxProduksiEmployeeIds();
 		const roleMap = await getCleanoxProduksiRoleMap();
 		if (assignedIds.length === 0) {
@@ -360,6 +362,7 @@ export const getMealRekap = async (req, res) => {
 				startDate,
 				endDate,
 				days,
+				rates,
 				rows: [],
 				grand_total: 0,
 			});
@@ -399,30 +402,39 @@ export const getMealRekap = async (req, res) => {
 			mealMap.get(wid).set(d, row);
 		}
 
+		const offMap = await getOffDayMap(assignedIds, startDate, endDate);
+		const leaveMap = await getApprovedLeaveMap(assignedIds, startDate, endDate);
+
 		let grandTotal = 0;
 		const rows = (employees || []).map((e) => {
 			const workerId = Number(e.employee_id);
 			const empMeta = employeeMap.get(workerId) || {};
 			const byDate = mealMap.get(workerId) || new Map();
+			const offDates = offMap.get(workerId) || new Set();
+			const leaveDates = leaveMap.get(workerId) || new Map();
 			let officeDays = 0;
 			let halfDays = 0;
 			let fullDays = 0;
+			let offDays = 0;
+			let leaveDays = 0;
 			let totalAmount = 0;
 
 			for (const d of dates) {
 				const sub = byDate.get(d);
-				if (!sub) {
-					officeDays += 1;
-					totalAmount += OFFICE_AMOUNT;
-				} else if (sub.type === "half_day") {
+				const storedAmount = sub?.amount != null ? Number(sub.amount) : null;
+				if (sub?.type === "half_day") {
 					halfDays += 1;
-					totalAmount += HALF_TOTAL;
-				} else if (sub.type === "full_day") {
+					totalAmount += storedAmount ?? rates.half_day;
+				} else if (sub?.type === "full_day") {
 					fullDays += 1;
-					totalAmount += FULL_TOTAL;
+					totalAmount += storedAmount ?? rates.full_day;
+				} else if (offDates.has(d)) {
+					offDays += 1;
+				} else if (leaveDates.has(d)) {
+					leaveDays += 1;
 				} else {
 					officeDays += 1;
-					totalAmount += OFFICE_AMOUNT;
+					totalAmount += rates.office;
 				}
 			}
 
@@ -439,6 +451,8 @@ export const getMealRekap = async (req, res) => {
 				office_days: officeDays,
 				half_days: halfDays,
 				full_days: fullDays,
+				off_days: offDays,
+				leave_days: leaveDays,
 				total_amount: totalAmount,
 			};
 		});
@@ -447,6 +461,7 @@ export const getMealRekap = async (req, res) => {
 			startDate,
 			endDate,
 			days,
+			rates,
 			rows,
 			grand_total: grandTotal,
 		});
@@ -484,7 +499,7 @@ export const createMeal = async (req, res) => {
 		}
 
 		const notes = String(req.body?.notes || "").trim().slice(0, 1000) || null;
-		const amount = amountForType(type);
+		const amount = await amountForType(type);
 
 		const [result] = await safeCleanoxQuery(
 			`
@@ -547,7 +562,7 @@ export const updateMeal = async (req, res) => {
 				? String(req.body.notes || "").trim().slice(0, 1000) || null
 				: existing.notes;
 
-		const amount = amountForType(type);
+		const amount = await amountForType(type);
 
 		await safeCleanoxQuery(
 			`

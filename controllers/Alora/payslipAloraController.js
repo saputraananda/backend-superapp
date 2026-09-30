@@ -1,7 +1,7 @@
 import { safeAloraMobileQuery, safeQuery } from "../../db/pool.js";
 import {
 	ALORA_ACTIVE_EMPLOYEE_CONDITION,
-	ALORA_COMPANY_ID,
+	ALORA_COMPANY_CONDITION,
 	assertAloraHrd,
 } from "../../utils/aloraEmployeeAccess.js";
 import {
@@ -31,9 +31,9 @@ async function findActiveAloraEmployee(employeeId) {
 	const [rows] = await safeQuery(
 		`SELECT e.employee_id, e.full_name
      FROM mst_employee e
-     WHERE e.employee_id = ? AND e.is_deleted = 0 AND e.company_id = ? AND ${ALORA_ACTIVE_EMPLOYEE_CONDITION}
+     WHERE e.employee_id = ? AND e.is_deleted = 0 AND ${ALORA_COMPANY_CONDITION} AND ${ALORA_ACTIVE_EMPLOYEE_CONDITION}
      LIMIT 1`,
-		[employeeId, ALORA_COMPANY_ID]
+		[employeeId]
 	);
 	return rows[0] || null;
 }
@@ -54,8 +54,8 @@ export const listPayslipEmployees = async (req, res) => {
 		if (![20, 50, 100].includes(limit)) limit = 20;
 		const offset = (page - 1) * limit;
 
-		const where = ["e.is_deleted = 0", "e.company_id = ?", ALORA_ACTIVE_EMPLOYEE_CONDITION];
-		const params = [ALORA_COMPANY_ID];
+		const where = ["e.is_deleted = 0", ALORA_COMPANY_CONDITION, ALORA_ACTIVE_EMPLOYEE_CONDITION];
+		const params = [];
 		if (search) {
 			where.push(
 				`(e.full_name LIKE ? OR e.employee_code LIKE ? OR CAST(e.employee_id AS CHAR) LIKE ?)`
