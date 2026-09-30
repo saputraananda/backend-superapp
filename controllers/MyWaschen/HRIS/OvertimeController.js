@@ -161,6 +161,7 @@ export const getOvertimeDetail = async (req, res) => {
          p.status AS progress_status,
          p.work_time_flag,
          p.overtime_id,
+         DATE(p.completed_at) AS work_date,
          p.completed_at,
          p.notes,
          t.order_no,
