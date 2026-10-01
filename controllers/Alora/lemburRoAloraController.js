@@ -1,4 +1,5 @@
 import { safeAloraMobileQuery, safeQuery } from "../../db/pool.js";
+import { creditOvertimeFromLemburRo } from "../../utils/otRoBalanceService.js";
 
 const HRD_POSITION_IDS = [1, 8, 17, 18, 19];
 const ALLOWED_STATUSES = new Set([
@@ -340,6 +341,7 @@ export const approveSupervisor = async (req, res) => {
 			 WHERE id = ?`,
 			[currentEmpId, currentEmpId, currentEmp.full_name || null, id]
 		);
+		await creditOvertimeFromLemburRo(id);
 
 		return res.json({ message: "Pengajuan lembur/RO berhasil disetujui." });
 	} catch (err) {
@@ -427,6 +429,7 @@ export const approveHRD = async (req, res) => {
 			 WHERE id = ?`,
 			[currentEmpId, currentEmpId, currentEmp.full_name || null, id]
 		);
+		await creditOvertimeFromLemburRo(id);
 
 		return res.json({ message: "Pengajuan berhasil disetujui HRD" });
 	} catch (err) {
