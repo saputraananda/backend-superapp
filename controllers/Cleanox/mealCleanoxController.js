@@ -10,7 +10,7 @@ import { getCleanoxMealRates } from "../../utils/cleanoxMealRates.js";
 import { getOffDayMap, getApprovedLeaveMap } from "../../utils/cleanoxMealCalendar.js";
 
 const CLEANOX_COMPANY_ID = 3;
-const ALLOWED_TYPES = new Set(["half_day", "full_day"]);
+const ALLOWED_TYPES = new Set(["half_day", "full_day", "office"]);
 const ALLOWED_STATUSES = new Set(["menunggu_tf", "selesai"]);
 
 function toISODateString(value) {
@@ -86,6 +86,7 @@ async function amountForType(type) {
 	const rates = await getCleanoxMealRates();
 	if (type === "half_day") return rates.half_day;
 	if (type === "full_day") return rates.full_day;
+	if (type === "office") return rates.office;
 	return null;
 }
 
@@ -224,7 +225,7 @@ export const listMeals = async (req, res) => {
 
 		const typeFilter = String(req.query.type || "").toLowerCase();
 		if (typeFilter && !ALLOWED_TYPES.has(typeFilter)) {
-			return res.status(400).json({ message: "Tipe tidak valid. Gunakan: half_day, full_day" });
+			return res.status(400).json({ message: "Tipe tidak valid. Gunakan: half_day, full_day, office" });
 		}
 
 		const statusFilter = String(req.query.status || "").toLowerCase();
@@ -495,7 +496,7 @@ export const createMeal = async (req, res) => {
 
 		const type = String(req.body?.type || "").trim().toLowerCase();
 		if (!ALLOWED_TYPES.has(type)) {
-			return res.status(400).json({ message: "Tipe tidak valid. Gunakan: half_day, full_day" });
+			return res.status(400).json({ message: "Tipe tidak valid. Gunakan: half_day, full_day, office" });
 		}
 
 		const notes = String(req.body?.notes || "").trim().slice(0, 1000) || null;
@@ -554,7 +555,7 @@ export const updateMeal = async (req, res) => {
 		const type =
 			req.body?.type != null ? String(req.body.type).trim().toLowerCase() : existing.type;
 		if (!ALLOWED_TYPES.has(type)) {
-			return res.status(400).json({ message: "Tipe tidak valid. Gunakan: half_day, full_day" });
+			return res.status(400).json({ message: "Tipe tidak valid. Gunakan: half_day, full_day, office" });
 		}
 
 		const notes =
