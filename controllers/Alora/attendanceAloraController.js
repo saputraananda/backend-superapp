@@ -704,6 +704,8 @@ export const getAttendanceReport = async (req, res) => {
 					clock_out_longitude,
 					clock_in_location_name,
 					clock_out_location_name,
+					clock_in_outside_note,
+					clock_out_outside_note,
 					late_category,
 					late_reason,
 					late_minutes,
@@ -885,6 +887,8 @@ export const getAttendanceReport = async (req, res) => {
 				clock_out_longitude: row.clock_out_longitude ?? null,
 				clock_in_location_name: row.clock_in_location_name || null,
 				clock_out_location_name: row.clock_out_location_name || null,
+				clock_in_outside_note: row.clock_in_outside_note || null,
+				clock_out_outside_note: row.clock_out_outside_note || null,
 				status_label: getRecordStatus(row),
 				late_category: row.late_category || null,
 				late_category_label:
