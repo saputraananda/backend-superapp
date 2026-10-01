@@ -85,10 +85,11 @@ export async function getOvertimeUsableBalance(employeeId, asOfDate) {
 		`SELECT COALESCE(SUM(l.hours), 0) AS total
      FROM tr_overtime_ledger l
      LEFT JOIN tr_attendance_sessions s ON s.id = l.session_id
+     LEFT JOIN tr_worker_lembur_ro r ON r.id = l.lembur_ro_id
      WHERE l.employee_id = ?
        AND l.mutation_type = 'earned'
-       AND COALESCE(DATE(s.work_date), DATE(l.created_at)) >= ?
-       AND COALESCE(DATE(s.work_date), DATE(l.created_at)) <= ?`,
+       AND COALESCE(DATE(s.work_date), DATE(r.work_date), DATE(l.created_at)) >= ?
+       AND COALESCE(DATE(s.work_date), DATE(r.work_date), DATE(l.created_at)) <= ?`,
 		[employeeId, period.periodStart, period.periodEnd]
 	);
 	const [usedRows] = await safeAloraMobileQuery(
@@ -173,10 +174,11 @@ export async function getOvertimeUsableBalancesMap(employeeIds, asOfDate) {
 		`SELECT l.employee_id, COALESCE(SUM(l.hours), 0) AS total
      FROM tr_overtime_ledger l
      LEFT JOIN tr_attendance_sessions s ON s.id = l.session_id
+     LEFT JOIN tr_worker_lembur_ro r ON r.id = l.lembur_ro_id
      WHERE l.employee_id IN (${placeholders})
        AND l.mutation_type = 'earned'
-       AND COALESCE(DATE(s.work_date), DATE(l.created_at)) >= ?
-       AND COALESCE(DATE(s.work_date), DATE(l.created_at)) <= ?
+       AND COALESCE(DATE(s.work_date), DATE(r.work_date), DATE(l.created_at)) >= ?
+       AND COALESCE(DATE(s.work_date), DATE(r.work_date), DATE(l.created_at)) <= ?
      GROUP BY l.employee_id`,
 		[...ids, period.periodStart, period.periodEnd]
 	);
@@ -280,6 +282,7 @@ export async function getReplaceOffUsableBalancesMap(employeeIds, asOfDate) {
 export async function appendOvertimeLedger({
 	employeeId,
 	sessionId = null,
+	lemburRoId = null,
 	leaveId = null,
 	mutationType,
 	hours,
@@ -291,11 +294,38 @@ export async function appendOvertimeLedger({
 	const balanceAfter = roundHours(current + delta);
 	const [result] = await safeAloraMobileQuery(
 		`INSERT INTO tr_overtime_ledger
-       (employee_id, session_id, leave_id, mutation_type, hours, balance_after, note)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		[employeeId, sessionId, leaveId, mutationType, amount, balanceAfter, note]
+       (employee_id, session_id, lembur_ro_id, leave_id, mutation_type, hours, balance_after, note)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		[employeeId, sessionId, lemburRoId, leaveId, mutationType, amount, balanceAfter, note]
 	);
 	return { id: result.insertId, balanceAfter };
+}
+
+export async function creditOvertimeFromLemburRo(lemburRoId) {
+	const [rows] = await safeAloraMobileQuery(
+		`SELECT id, employee_id, request_type, work_date, duration_hours, status
+     FROM tr_worker_lembur_ro WHERE id = ? LIMIT 1`,
+		[lemburRoId]
+	);
+	const row = rows[0];
+	if (!row || row.request_type !== "lembur" || row.status !== "disetujui") return null;
+	const hours = Number(row.duration_hours) || 0;
+	if (hours <= 0) return null;
+
+	const [existing] = await safeAloraMobileQuery(
+		`SELECT id FROM tr_overtime_ledger
+     WHERE lembur_ro_id = ? AND mutation_type = 'earned' LIMIT 1`,
+		[row.id]
+	);
+	if (existing.length > 0) return null;
+
+	return appendOvertimeLedger({
+		employeeId: row.employee_id,
+		lemburRoId: row.id,
+		mutationType: "earned",
+		hours,
+		note: `Lembur disetujui ${toDateOnlyJakarta(row.work_date)}`,
+	});
 }
 
 export async function appendReplaceOffLedger({

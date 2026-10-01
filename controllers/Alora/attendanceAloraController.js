@@ -400,10 +400,11 @@ async function fetchOvertimeBalances(employeeIds) {
 		`SELECT l.employee_id, COALESCE(SUM(l.hours), 0) AS total
 		 FROM tr_overtime_ledger l
 		 LEFT JOIN tr_attendance_sessions s ON s.id = l.session_id
+		 LEFT JOIN tr_worker_lembur_ro r ON r.id = l.lembur_ro_id
 		 WHERE l.employee_id IN (${placeholders})
 		   AND l.mutation_type = 'earned'
-		   AND COALESCE(DATE(s.work_date), DATE(l.created_at)) >= ?
-		   AND COALESCE(DATE(s.work_date), DATE(l.created_at)) <= ?
+		   AND COALESCE(DATE(s.work_date), DATE(r.work_date), DATE(l.created_at)) >= ?
+		   AND COALESCE(DATE(s.work_date), DATE(r.work_date), DATE(l.created_at)) <= ?
 		 GROUP BY l.employee_id`,
 		[...ids, period.periodStart, period.periodEnd]
 	);

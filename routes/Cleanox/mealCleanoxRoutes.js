@@ -19,6 +19,8 @@ import {
 	getMealRequestById,
 	deleteMealRequest,
 	completeMealTransfer,
+	listBanks,
+	upsertWorkerBankAccount,
 } from "../../controllers/Cleanox/mealRapelCleanoxController.js";
 import { uploadCleanoxMeal } from "../../middleware/upload.js";
 
@@ -45,6 +47,8 @@ router.post("/requests", requireAuth, createMealRequest);
 router.get("/requests/:id", requireAuth, getMealRequestById);
 router.delete("/requests/:id", requireAuth, deleteMealRequest);
 router.put("/transfers/:id/complete", requireAuth, handleProofUpload, completeMealTransfer);
+router.get("/banks", requireAuth, listBanks);
+router.put("/bank-accounts/:employeeId", requireAuth, upsertWorkerBankAccount);
 router.get("/", requireAuth, listMeals);
 router.post("/", requireAuth, createMeal);
 router.get("/:id", requireAuth, getMealById);

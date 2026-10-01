@@ -135,14 +135,52 @@ async function getProduksiWorkers(ids) {
 		[CLEANOX_COMPANY_ID, ...filterIds]
 	);
 
-	return (rows || []).map((row) => ({
-		employee_id: Number(row.employee_id),
-		employee_code: row.employee_code || null,
-		full_name: row.full_name || `ID ${row.employee_id}`,
-		jabatan: row.job_level_name || row.position_name || "-",
-		bank_name: row.bank_name || null,
-		bank_account_number: row.bank_account_number || null,
-	}));
+	const bankAccountMap = await getWorkerBankAccountMap(filterIds);
+
+	return (rows || []).map((row) => {
+		const acc = bankAccountMap.get(Number(row.employee_id));
+		const base = {
+			employee_id: Number(row.employee_id),
+			employee_code: row.employee_code || null,
+			full_name: row.full_name || `ID ${row.employee_id}`,
+			jabatan: row.job_level_name || row.position_name || "-",
+		};
+		if (acc) {
+			return {
+				...base,
+				bank_name: acc.bank_name,
+				bank_account_number: acc.bank_account_number,
+				bank_source: "cleanox",
+				bank_updated_by_name: acc.updated_by_name || null,
+				bank_updated_at: acc.updated_at || null,
+			};
+		}
+		return {
+			...base,
+			bank_name: row.bank_name || null,
+			bank_account_number: row.bank_account_number || null,
+			bank_source: row.bank_name || row.bank_account_number ? "superapp" : null,
+			bank_updated_by_name: null,
+			bank_updated_at: null,
+		};
+	});
+}
+
+async function getWorkerBankAccountMap(employeeIds) {
+	const map = new Map();
+	if (!employeeIds || employeeIds.length === 0) return map;
+	const [rows] = await safeCleanoxQuery(
+		`
+			SELECT employee_id, bank_name, bank_account_number, updated_by_name, updated_at
+			FROM mst_worker_bank_account
+			WHERE employee_id IN (${employeeIds.map(() => "?").join(",")})
+		`,
+		employeeIds
+	);
+	for (const row of rows || []) {
+		map.set(Number(row.employee_id), row);
+	}
+	return map;
 }
 
 async function getEmployeeBasicMap(workerIds) {
@@ -274,6 +312,68 @@ export const updateMealRate = async (req, res) => {
 	} catch (err) {
 		console.error("[updateMealRate Cleanox] Error:", err);
 		return res.status(500).json({ message: "Gagal memperbarui tarif" });
+	}
+};
+
+export const listBanks = async (_req, res) => {
+	try {
+		const [rows] = await safeQuery(
+			`SELECT bank_id, bank_name FROM mst_bank WHERE is_active = 1 ORDER BY bank_name ASC`
+		);
+		return res.json({ rows: rows || [] });
+	} catch (err) {
+		console.error("[listBanks Cleanox] Error:", err);
+		return res.status(500).json({ message: "Gagal memuat daftar bank" });
+	}
+};
+
+export const upsertWorkerBankAccount = async (req, res) => {
+	try {
+		const employeeId = toPositiveInt(req.params.employeeId);
+		if (!employeeId) {
+			return res.status(400).json({ message: "ID karyawan tidak valid" });
+		}
+		const bankName = String(req.body?.bank_name || "").trim();
+		const accountNumber = String(req.body?.bank_account_number || "").replace(/\s+/g, "");
+		if (!bankName) {
+			return res.status(400).json({ message: "Bank wajib dipilih" });
+		}
+		if (!/^\d{5,30}$/.test(accountNumber)) {
+			return res.status(400).json({ message: "No. rekening harus 5–30 digit angka" });
+		}
+
+		const [bankRows] = await safeQuery(
+			`SELECT 1 FROM mst_bank WHERE is_active = 1 AND TRIM(bank_name) = ? LIMIT 1`,
+			[bankName]
+		);
+		if (!bankRows || bankRows.length === 0) {
+			return res.status(400).json({ message: "Bank tidak terdaftar" });
+		}
+
+		const workers = await getProduksiWorkers([employeeId]);
+		if (workers.length !== 1) {
+			return res.status(404).json({ message: "Karyawan produksi tidak ditemukan" });
+		}
+
+		await safeCleanoxQuery(
+			`
+				INSERT INTO mst_worker_bank_account (employee_id, bank_name, bank_account_number, updated_by, updated_by_name)
+				VALUES (?, ?, ?, ?, ?)
+				ON DUPLICATE KEY UPDATE
+					bank_name = VALUES(bank_name),
+					bank_account_number = VALUES(bank_account_number),
+					updated_by = VALUES(updated_by),
+					updated_by_name = VALUES(updated_by_name),
+					updated_at = NOW()
+			`,
+			[employeeId, bankName, accountNumber, resolveActorId(req), resolveActorName(req)]
+		);
+
+		const [worker] = await getProduksiWorkers([employeeId]);
+		return res.json({ message: "Rekening diperbarui", worker });
+	} catch (err) {
+		console.error("[upsertWorkerBankAccount Cleanox] Error:", err);
+		return res.status(500).json({ message: "Gagal menyimpan rekening" });
 	}
 };
 
