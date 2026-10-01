@@ -6,8 +6,9 @@ import { getOffDayMap, getApprovedLeaveMap } from "../../utils/cleanoxMealCalend
 
 const CLEANOX_COMPANY_ID = 3;
 const MAX_RANGE_DAYS = 31;
-const ALLOWED_TYPES = new Set(["half_day", "full_day"]);
+const ALLOWED_TYPES = new Set(["half_day", "full_day", "office"]);
 const REQUEST_STATUSES = new Set(["diajukan", "sebagian_tf", "selesai"]);
+const TRANSFER_MODES = new Set(["individual", "combined"]);
 const RATE_CODES = new Set(["office", "half_day", "full_day"]);
 const RATE_LABELS = { office: "Kantor", half_day: "Half Day", full_day: "Full Day" };
 const MAX_RATE_AMOUNT = 10000000;
@@ -237,6 +238,7 @@ function mapRequest(row) {
 		period_start: toDateOnly(row.period_start),
 		period_end: toDateOnly(row.period_end),
 		status: row.status,
+		transfer_mode: row.transfer_mode || "individual",
 		total_workers: Number(row.total_workers || 0),
 		total_days: Number(row.total_days || 0),
 		total_amount: Number(row.total_amount || 0),
@@ -253,11 +255,14 @@ function mapTransfer(row, emp = {}) {
 		id: row.id,
 		request_id: row.request_id,
 		worker_id: row.worker_id,
+		recipient_worker_id: Number(row.recipient_worker_id || row.worker_id),
+		is_combined: row.recipient_worker_id != null,
 		employee_code: emp.employee_code || null,
 		full_name: emp.full_name || row.account_name || `ID ${row.worker_id}`,
 		jabatan: emp.jabatan || "-",
 		half_days: Number(row.half_days || 0),
 		full_days: Number(row.full_days || 0),
+		office_days: Number(row.office_days || 0),
 		amount: Number(row.amount || 0),
 		bank_name: row.bank_name,
 		bank_account_number: row.bank_account_number,
@@ -474,8 +479,8 @@ export const listMealRequests = async (req, res) => {
 			`
 				SELECT
 					r.*,
-					(SELECT COUNT(*) FROM tr_worker_meal_transfer t WHERE t.request_id = r.id) AS transfers_total,
-					(SELECT COUNT(*) FROM tr_worker_meal_transfer t WHERE t.request_id = r.id AND t.status = 'selesai') AS transfers_done
+					(SELECT COUNT(DISTINCT COALESCE(t.recipient_worker_id, t.worker_id)) FROM tr_worker_meal_transfer t WHERE t.request_id = r.id) AS transfers_total,
+					(SELECT COUNT(DISTINCT CASE WHEN t.status = 'selesai' THEN COALESCE(t.recipient_worker_id, t.worker_id) END) FROM tr_worker_meal_transfer t WHERE t.request_id = r.id) AS transfers_done
 				FROM tr_worker_meal_request r
 				WHERE ${whereSql}
 				ORDER BY r.period_start DESC, r.id DESC
@@ -574,6 +579,12 @@ export const createMealRequest = async (req, res) => {
 		return res.status(400).json({ message: "Belum ada hari yang diplot" });
 	}
 
+	const transferMode = String(req.body?.transfer_mode || "individual").trim().toLowerCase();
+	if (!TRANSFER_MODES.has(transferMode)) {
+		return res.status(400).json({ message: "Mode transfer tidak valid. Gunakan: individual, combined" });
+	}
+	const isCombined = transferMode === "combined";
+
 	let connection;
 	try {
 		const workers = await getProduksiWorkers();
@@ -596,7 +607,7 @@ export const createMealRequest = async (req, res) => {
 				return res.status(400).json({ message: `Tanggal ${item?.meal_date ?? "-"} di luar periode` });
 			}
 			if (!ALLOWED_TYPES.has(type)) {
-				return res.status(400).json({ message: "Tipe tidak valid. Gunakan: half_day, full_day" });
+				return res.status(400).json({ message: "Tipe tidak valid. Gunakan: half_day, full_day, office" });
 			}
 			const key = `${workerId}|${mealDate}`;
 			if (seen.has(key)) {
@@ -640,16 +651,29 @@ export const createMealRequest = async (req, res) => {
 		const perWorker = new Map();
 		let totalAmount = 0;
 		for (const item of normalized) {
-			const amount = item.type === "half_day" ? rates.half_day : rates.full_day;
+			const amount =
+				item.type === "half_day" ? rates.half_day : item.type === "full_day" ? rates.full_day : rates.office;
 			item.amount = amount;
 			totalAmount += amount;
 			if (!perWorker.has(item.worker_id)) {
-				perWorker.set(item.worker_id, { half_days: 0, full_days: 0, amount: 0 });
+				perWorker.set(item.worker_id, { half_days: 0, full_days: 0, office_days: 0, amount: 0 });
 			}
 			const agg = perWorker.get(item.worker_id);
 			if (item.type === "half_day") agg.half_days += 1;
-			else agg.full_days += 1;
+			else if (item.type === "full_day") agg.full_days += 1;
+			else agg.office_days += 1;
 			agg.amount += amount;
+		}
+
+		let recipientId = null;
+		if (isCombined) {
+			recipientId = toPositiveInt(req.body?.recipient_worker_id);
+			if (!recipientId || !perWorker.has(recipientId)) {
+				return res.status(400).json({ message: "Penerima transfer harus salah satu karyawan di pengajuan" });
+			}
+			if (perWorker.size < 2) {
+				return res.status(400).json({ message: "Gabung rekening butuh minimal 2 karyawan" });
+			}
 		}
 
 		const notes = String(req.body?.notes || "").trim().slice(0, 1000) || null;
@@ -662,10 +686,10 @@ export const createMealRequest = async (req, res) => {
 		const [insertResult] = await connection.query(
 			`
 				INSERT INTO tr_worker_meal_request
-					(period_start, period_end, status, total_workers, total_days, total_amount, notes, created_by, created_by_name, created_at, updated_at)
-				VALUES (?, ?, 'diajukan', ?, ?, ?, ?, ?, ?, NOW(), NOW())
+					(period_start, period_end, status, transfer_mode, total_workers, total_days, total_amount, notes, created_by, created_by_name, created_at, updated_at)
+				VALUES (?, ?, 'diajukan', ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
 			`,
-			[periodStart, periodEnd, perWorker.size, normalized.length, totalAmount, notes, actorId, actorName]
+			[periodStart, periodEnd, transferMode, perWorker.size, normalized.length, totalAmount, notes, actorId, actorName]
 		);
 		const requestId = insertResult.insertId;
 
@@ -702,21 +726,23 @@ export const createMealRequest = async (req, res) => {
 		await connection.query(
 			`
 				INSERT INTO tr_worker_meal_transfer
-					(request_id, worker_id, half_days, full_days, amount, bank_name, bank_account_number, account_name, status, created_at, updated_at)
+					(request_id, worker_id, recipient_worker_id, half_days, full_days, office_days, amount, bank_name, bank_account_number, account_name, status, created_at, updated_at)
 				VALUES ?
 			`,
 			[
 				[...perWorker.entries()].map(([workerId, agg]) => {
-					const w = workerMap.get(workerId);
+					const recipient = workerMap.get(isCombined ? recipientId : workerId);
 					return [
 						requestId,
 						workerId,
+						isCombined ? recipientId : null,
 						agg.half_days,
 						agg.full_days,
+						agg.office_days,
 						agg.amount,
-						w.bank_name,
-						w.bank_account_number,
-						w.full_name,
+						recipient.bank_name,
+						recipient.bank_account_number,
+						recipient.full_name,
 						"menunggu_tf",
 						new Date(),
 						new Date(),
@@ -796,6 +822,7 @@ export const deleteMealRequest = async (req, res) => {
 };
 
 export const completeMealTransfer = async (req, res) => {
+	let connection;
 	try {
 		const id = toPositiveInt(req.params.id);
 		if (!id) return res.status(400).json({ message: "ID tidak valid" });
@@ -818,7 +845,25 @@ export const completeMealTransfer = async (req, res) => {
 		const actorId = resolveActorId(req);
 		const actorName = resolveActorName(req);
 
-		await safeCleanoxQuery(
+		let group = [{ id: transfer.id, worker_id: transfer.worker_id }];
+		if (transfer.recipient_worker_id != null) {
+			const [groupRows] = await safeCleanoxQuery(
+				`
+					SELECT id, worker_id
+					FROM tr_worker_meal_transfer
+					WHERE request_id = ? AND recipient_worker_id = ? AND status = 'menunggu_tf'
+				`,
+				[transfer.request_id, transfer.recipient_worker_id]
+			);
+			group = groupRows || [];
+		}
+		const groupIds = group.map((g) => Number(g.id));
+		const groupWorkerIds = group.map((g) => Number(g.worker_id));
+
+		connection = await cleanoxPool.getConnection();
+		await connection.beginTransaction();
+
+		await connection.query(
 			`
 				UPDATE tr_worker_meal_transfer
 				SET status = 'selesai',
@@ -829,12 +874,12 @@ export const completeMealTransfer = async (req, res) => {
 					processed_by_name = ?,
 					processed_at = NOW(),
 					updated_at = NOW()
-				WHERE id = ? AND status = 'menunggu_tf'
+				WHERE id IN (${groupIds.map(() => "?").join(",")}) AND status = 'menunggu_tf'
 			`,
-			[proofFile, proofPath, processNote, actorId, actorName, id]
+			[proofFile, proofPath, processNote, actorId, actorName, ...groupIds]
 		);
 
-		await safeCleanoxQuery(
+		await connection.query(
 			`
 				UPDATE tr_worker_meal
 				SET status = 'selesai',
@@ -845,12 +890,13 @@ export const completeMealTransfer = async (req, res) => {
 					processed_by_name = ?,
 					processed_at = NOW(),
 					updated_at = NOW()
-				WHERE request_id = ? AND worker_id = ?
+				WHERE request_id = ? AND worker_id IN (${groupWorkerIds.map(() => "?").join(",")})
 			`,
-			[proofFile, proofPath, processNote, actorId, actorName, transfer.request_id, transfer.worker_id]
+			[proofFile, proofPath, processNote, actorId, actorName, transfer.request_id, ...groupWorkerIds]
 		);
 
-		await recomputeRequestStatus(null, transfer.request_id);
+		await recomputeRequestStatus(connection, transfer.request_id);
+		await connection.commit();
 
 		const [[updated]] = await safeCleanoxQuery(
 			`SELECT * FROM tr_worker_meal_transfer WHERE id = ? LIMIT 1`,
@@ -860,9 +906,19 @@ export const completeMealTransfer = async (req, res) => {
 		return res.json({
 			message: "Transfer ditandai selesai",
 			transfer: mapTransfer(updated, empMap.get(Number(updated.worker_id))),
+			updated_count: group.length,
 		});
 	} catch (err) {
+		if (connection) {
+			try {
+				await connection.rollback();
+			} catch {
+				// ignore
+			}
+		}
 		console.error("[completeMealTransfer Cleanox] Error:", err);
 		return res.status(500).json({ message: "Gagal menyelesaikan transfer" });
+	} finally {
+		if (connection) connection.release();
 	}
 };
