@@ -67,6 +67,7 @@ export async function listRiwayatTransaksi(req, res) {
 		const dateBy = normalizeDateBy(req.query.date_by);
 		const source = normalizeSource(req.query.source);
 		const serviceMode = normalizeServiceMode(req.query.service_mode);
+		const splitPayment = String(req.query.split_payment || "").trim() === "1";
 
 		if (!startDate || !endDate) {
 			return res.status(400).json({
@@ -89,6 +90,7 @@ export async function listRiwayatTransaksi(req, res) {
 				paymentStatus,
 				dateBy,
 				serviceMode,
+				splitPayment,
 			});
 		}
 
@@ -207,6 +209,7 @@ async function listUnifiedRiwayat({
 	paymentStatus,
 	dateBy,
 	serviceMode,
+	splitPayment = false,
 }) {
 	const omzetExpr = buildOmzetDateExpr("v");
 	let dateFilterSql;
@@ -243,9 +246,15 @@ async function listUnifiedRiwayat({
         v.created_at,
         v.is_history_entry,
         v.payment_method_label,
-        pm.\`group\` AS payment_method_group
+        pm.\`group\` AS payment_method_group,
+        tx.epayment_amount,
+        pm2.\`group\` AS secondary_payment_method_group,
+        pm2.label AS secondary_payment_method_label
       FROM v_transactions_unified v
       LEFT JOIN mst_payment_method pm ON pm.id = v.payment_method_id
+      LEFT JOIN tr_transactions tx
+        ON v.source_system = 'pos' AND tx.id = v.pos_transaction_id
+      LEFT JOIN mst_payment_method pm2 ON pm2.id = tx.secondary_payment_method_id
       WHERE ${dateFilterSql}`;
 	const params = [startDate, endDate];
 
@@ -291,7 +300,9 @@ async function listUnifiedRiwayat({
 
 	const proofsByTx = await loadProofsByTransactionIds(posIds);
 
-	return res.json(buildListResponse(rows || [], proofsByTx, { defaultSource: null }));
+	return res.json(
+		buildListResponse(rows || [], proofsByTx, { defaultSource: null, splitPayment }),
+	);
 }
 
 async function loadProofsByTransactionIds(ids) {
@@ -322,7 +333,21 @@ async function loadProofsByTransactionIds(ids) {
 	return proofsByTx;
 }
 
-function buildListResponse(rows, proofsByTx, { defaultSource }) {
+/** @returns {{ epayment: number, remainder: number, secondaryKategori: string } | null} */
+function resolveEpaymentSplit(row, amount, kategori, sourceSystem) {
+	if (sourceSystem !== "pos") return null;
+	if (kategori !== "E-PAYMENT") return null;
+	if (!row.secondary_payment_method_group) return null;
+	const epayment = Number(row.epayment_amount);
+	if (!Number.isFinite(epayment) || epayment <= 0 || epayment >= amount) return null;
+	return {
+		epayment,
+		remainder: amount - epayment,
+		secondaryKategori: mapKategori(row.secondary_payment_method_group),
+	};
+}
+
+function buildListResponse(rows, proofsByTx, { defaultSource, splitPayment = false }) {
 	let totalAmount = 0;
 	let lunasCount = 0;
 	let belumLunasCount = 0;
@@ -330,7 +355,14 @@ function buildListResponse(rows, proofsByTx, { defaultSource }) {
 	let nonTunaiAmount = 0;
 	let smartlinkAmount = 0;
 
-	const data = (rows || []).map((row) => {
+	const addCategoryAmount = (kategori, amount) => {
+		if (isTunaiKategori(kategori)) tunaiAmount += amount;
+		else if (isNonTunaiSummaryKategori(kategori)) nonTunaiAmount += amount;
+		else if (kategori === "SMARTLINK") smartlinkAmount += amount;
+	};
+
+	const data = [];
+	for (const row of rows || []) {
 		const amount = Number(row.final_amount || 0);
 		const sourceSystem = row.source_system || defaultSource || "pos";
 		const kategori = mapKategoriUnified(row.payment_method_group, sourceSystem);
@@ -342,14 +374,10 @@ function buildListResponse(rows, proofsByTx, { defaultSource }) {
 		if (payStatus === "lunas") lunasCount += 1;
 		else belumLunasCount += 1;
 
-		if (isTunaiKategori(kategori)) tunaiAmount += amount;
-		else if (isNonTunaiSummaryKategori(kategori)) nonTunaiAmount += amount;
-		else if (kategori === "SMARTLINK") smartlinkAmount += amount;
-
 		const proofs =
 			sourceSystem === "pos" && txId ? proofsByTx.get(txId) || [] : [];
 
-		return {
+		const base = {
 			id: txId,
 			transaction_no: row.transaction_no,
 			customer_name: row.customer_name || "-",
@@ -370,13 +398,45 @@ function buildListResponse(rows, proofsByTx, { defaultSource }) {
 			is_history_entry: isHistory,
 			kategori,
 			payment_proofs: proofs,
+			split_index: null,
+			split_total: null,
 		};
-	});
+
+		const split = splitPayment
+			? resolveEpaymentSplit(row, amount, kategori, sourceSystem)
+			: null;
+
+		if (split) {
+			data.push({
+				...base,
+				final_amount: split.epayment,
+				kategori: "E-PAYMENT",
+				split_index: 1,
+				split_total: 2,
+			});
+			data.push({
+				...base,
+				final_amount: split.remainder,
+				kategori: split.secondaryKategori,
+				payment_method_group: row.secondary_payment_method_group,
+				payment_method_label: row.secondary_payment_method_label || null,
+				payment_proofs: [],
+				split_index: 2,
+				split_total: 2,
+			});
+			addCategoryAmount("E-PAYMENT", split.epayment);
+			addCategoryAmount(split.secondaryKategori, split.remainder);
+		} else {
+			data.push(base);
+			addCategoryAmount(kategori, amount);
+		}
+	}
 
 	return {
 		data,
 		summary: {
-			total_transactions: data.length,
+			total_transactions: (rows || []).length,
+			total_rows: data.length,
 			total_amount: totalAmount,
 			lunas_count: lunasCount,
 			belum_lunas_count: belumLunasCount,
