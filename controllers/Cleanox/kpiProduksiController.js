@@ -868,6 +868,214 @@ const latestAt = (values) => {
   return best;
 };
 
+/* ── Cleanox Only — Home Service per Layanan ────────────── */
+const HOME_SERVICE_TOP_SERVICES_PER_WORKER = 3;
+
+async function loadHomeServiceDoneData(dateStart, dateEnd) {
+  const [rows] = await cleanoxPool.query(
+    `SELECT a.transaction_id, a.employee_name, a.completed_at,
+            t.transaction_no, t.customer_name, t.service_date, t.status
+     FROM tr_worker_assignments a
+     INNER JOIN tr_transactions t ON t.id = a.transaction_id
+     WHERE DATE(t.service_date) BETWEEN DATE(?) AND DATE(?)
+       AND t.status <> 'Cancelled'
+       AND (t.service_mode = 'home_service' OR t.service_mode IS NULL OR t.service_mode = '')
+       AND a.assignment_status = 'Done'`,
+    [dateStart, dateEnd]
+  );
+
+  const seen = new Set();
+  const assignments = [];
+  const txById = new Map();
+  for (const row of rows) {
+    const name = String(row.employee_name || "").trim();
+    if (!name || name === "Admin") continue;
+    const tid = Number(row.transaction_id);
+    const key = `${name}::${tid}`;
+    if (!txById.has(tid)) {
+      txById.set(tid, {
+        transaction_no: row.transaction_no,
+        customer_name: row.customer_name,
+        service_date: row.service_date,
+        status: row.status,
+        team: [],
+        _completedAts: [],
+        completed_at: null,
+      });
+    }
+    const tx = txById.get(tid);
+    if (row.completed_at) tx._completedAts.push(row.completed_at);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    tx.team.push(name);
+    assignments.push({ transaction_id: tid, employee_name: name });
+  }
+
+  for (const tx of txById.values()) {
+    tx.completed_at = latestAt(tx._completedAts);
+    delete tx._completedAts;
+  }
+
+  if (txById.size === 0) {
+    return { assignments: [], items: [], txById: new Map() };
+  }
+
+  const [items] = await cleanoxPool.query(
+    `SELECT i.id, i.transaction_id, i.line_total,
+            COALESCE(s.name, 'Tanpa Nama Item') AS service_name
+     FROM tr_transaction_items i
+     LEFT JOIN mst_services s ON s.id = i.service_id
+     WHERE i.transaction_id IN (?)`,
+    [Array.from(txById.keys())]
+  );
+
+  return { assignments, items, txById };
+}
+
+function buildHomeServiceLayananSummary({ assignments, items, txById }) {
+  const itemsByTx = new Map();
+  for (const item of items) {
+    const tid = Number(item.transaction_id);
+    if (!itemsByTx.has(tid)) itemsByTx.set(tid, []);
+    itemsByTx.get(tid).push(item);
+  }
+
+  const empMap = new Map();
+  for (const a of assignments) {
+    if (!empMap.has(a.employee_name)) {
+      empMap.set(a.employee_name, {
+        name: a.employee_name,
+        total_layanan: 0,
+        notaSet: new Set(),
+        serviceCounts: new Map(),
+      });
+    }
+    const emp = empMap.get(a.employee_name);
+    const txItems = itemsByTx.get(a.transaction_id) || [];
+    for (const item of txItems) {
+      const serviceName = normalizeServiceName(item.service_name);
+      emp.total_layanan += 1;
+      emp.serviceCounts.set(serviceName, (emp.serviceCounts.get(serviceName) || 0) + 1);
+      emp.notaSet.add(a.transaction_id);
+    }
+  }
+
+  const summary = Array.from(empMap.values())
+    .map((e) => {
+      const totalNota = e.notaSet.size;
+      const topServices = Array.from(e.serviceCounts.entries())
+        .map(([service_name, count]) => ({ service_name, count }))
+        .sort((x, y) => y.count - x.count || x.service_name.localeCompare(y.service_name))
+        .slice(0, HOME_SERVICE_TOP_SERVICES_PER_WORKER);
+      return {
+        name: e.name,
+        total: e.total_layanan,
+        total_layanan: e.total_layanan,
+        total_nota: totalNota,
+        avg_layanan_per_nota: totalNota > 0 ? Number((e.total_layanan / totalNota).toFixed(1)) : 0,
+        top_services: topServices,
+      };
+    })
+    .sort((x, y) => y.total_layanan - x.total_layanan || x.name.localeCompare(y.name));
+  summary.forEach((e, i) => {
+    e.rank = i + 1;
+  });
+
+  const sumLayanan = summary.reduce((s, e) => s + e.total_layanan, 0);
+  const overall = {
+    total_layanan: items.length,
+    total_nota: txById.size,
+    active_workers: summary.length,
+    avg_layanan_per_worker: summary.length > 0 ? Number((sumLayanan / summary.length).toFixed(1)) : 0,
+  };
+
+  const dailyMap = new Map();
+  for (const [tid, tx] of txById.entries()) {
+    const dateKey = toLocalDateKey(tx.service_date);
+    if (!dateKey) continue;
+    if (!dailyMap.has(dateKey)) {
+      dailyMap.set(dateKey, { date: dateKey, total_layanan: 0, total_nota: 0 });
+    }
+    const d = dailyMap.get(dateKey);
+    d.total_layanan += (itemsByTx.get(tid) || []).length;
+    d.total_nota += 1;
+  }
+  const dailyLayanan = Array.from(dailyMap.values()).sort((a, b) => a.date.localeCompare(b.date));
+
+  const serviceMap = new Map();
+  for (const item of items) {
+    const serviceName = normalizeServiceName(item.service_name);
+    if (!serviceMap.has(serviceName)) {
+      serviceMap.set(serviceName, { service_name: serviceName, volume: 0, revenue: 0 });
+    }
+    const svc = serviceMap.get(serviceName);
+    svc.volume += 1;
+    const rev = Number(item.line_total || 0);
+    if (Number.isFinite(rev)) svc.revenue += rev;
+  }
+  const topServices = Array.from(serviceMap.values())
+    .map((s) => ({
+      service_name: s.service_name,
+      volume: s.volume,
+      revenue: Math.round(s.revenue),
+      avg_cycle_hours: null,
+      cycle_sample_count: 0,
+    }))
+    .sort((a, b) => b.volume - a.volume || b.revenue - a.revenue)
+    .slice(0, 5);
+
+  return {
+    metric: "layanan",
+    summary,
+    overall,
+    insights: {
+      daily_stage: [],
+      daily_layanan: dailyLayanan,
+      aging_processing_hours: [],
+      top_services: topServices,
+      sla: null,
+    },
+  };
+}
+
+function buildHomeServiceLayananDetail(employeeName, { assignments, items, txById }) {
+  const itemsByTx = new Map();
+  for (const item of items) {
+    const tid = Number(item.transaction_id);
+    if (!itemsByTx.has(tid)) itemsByTx.set(tid, []);
+    itemsByTx.get(tid).push(item);
+  }
+
+  const result = [];
+  for (const a of assignments) {
+    if (a.employee_name !== employeeName) continue;
+    const tx = txById.get(a.transaction_id);
+    if (!tx) continue;
+    for (const item of itemsByTx.get(a.transaction_id) || []) {
+      result.push({
+        transaction_item_id: item.id,
+        transaction_id: a.transaction_id,
+        invoice: tx.transaction_no,
+        customer_name: tx.customer_name,
+        service_name: normalizeServiceName(item.service_name),
+        service_date: tx.service_date,
+        completed_at: tx.completed_at,
+        status: tx.status,
+        team: tx.team,
+      });
+    }
+  }
+
+  result.sort((x, y) => {
+    const dx = parseDate(x.service_date)?.getTime() || 0;
+    const dy = parseDate(y.service_date)?.getTime() || 0;
+    if (dy !== dx) return dy - dx;
+    return String(x.invoice || "").localeCompare(String(y.invoice || ""));
+  });
+
+  return { employee_name: employeeName, metric: "layanan", items: result };
+}
+
 /* ── Cleanox Only — Available Periods ───────────────────── */
 export const getKpiOnlyAvailablePeriods = async (_req, res) => {
   try {
@@ -942,6 +1150,11 @@ export const getKpiOnlySummary = async (req, res) => {
   const modeFilter = onlyServiceModeSql(serviceMode);
 
   try {
+    if (serviceMode === "home_service") {
+      const data = await loadHomeServiceDoneData(date_start, date_end);
+      return res.json(buildHomeServiceLayananSummary(data));
+    }
+
     const [txRows] = await cleanoxPool.query(
       `SELECT t.id, t.transaction_no, t.customer_name, t.service_date, t.service_mode,
               t.status, t.final_amount
@@ -1214,6 +1427,11 @@ export const getKpiOnlyDetail = async (req, res) => {
   const modeFilter = onlyServiceModeSql(serviceMode);
 
   try {
+    if (serviceMode === "home_service") {
+      const data = await loadHomeServiceDoneData(date_start, date_end);
+      return res.json(buildHomeServiceLayananDetail(employee_name, data));
+    }
+
     const [txRows] = await cleanoxPool.query(
       `SELECT t.id, t.transaction_no, t.customer_name, t.service_date, t.service_mode, t.status
        FROM tr_transactions t

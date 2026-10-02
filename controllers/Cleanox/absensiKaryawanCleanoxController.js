@@ -20,6 +20,62 @@ const PHOTO_FILE_FIELDS = {
   hand: "hand_photo_file",
 };
 
+const WORK_START_MINUTE = 8 * 60;
+const LATE_REASON_MAX_LENGTH = 500;
+const KEHADIRAN_HADIR = "Hadir";
+const KEHADIRAN_TERLAMBAT = "Hadir - Terlambat";
+
+function isLateCheckIn(checkInAt) {
+  if (!checkInAt) return false;
+  let minute = null;
+  if (typeof checkInAt === "string") {
+    const match = checkInAt.match(/[ T](\d{2}):(\d{2})/);
+    if (match) minute = Number(match[1]) * 60 + Number(match[2]);
+  } else if (checkInAt instanceof Date && !Number.isNaN(checkInAt.getTime())) {
+    minute = checkInAt.getHours() * 60 + checkInAt.getMinutes();
+  }
+  return minute !== null && minute > WORK_START_MINUTE;
+}
+
+function buildKehadiranFields(row) {
+  if (!row?.check_in_at) {
+    return { is_late: false, kehadiran_label: null, late_reason: null };
+  }
+  if (isLateCheckIn(row.check_in_at)) {
+    return {
+      is_late: true,
+      kehadiran_label: KEHADIRAN_TERLAMBAT,
+      late_reason: String(row.late_reason || "").trim() || null,
+    };
+  }
+  return { is_late: false, kehadiran_label: KEHADIRAN_HADIR, late_reason: null };
+}
+
+function parseOutsideServices(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function buildCheckOutLocationFields(row) {
+  const type = row?.check_out_outside_type || null;
+  return {
+    check_out_location_name: row?.check_out_at ? row.check_out_location_name || null : null,
+    check_out_outside_type: type,
+    check_out_outside_label:
+      type === "layanan" ? "Tugas luar · Layanan" : type === "lainnya" ? "Di luar HO · Alasan lain" : null,
+    check_out_outside_note: row?.check_out_outside_note || null,
+    check_out_outside_services: parseOutsideServices(row?.check_out_outside_services),
+  };
+}
+
 function toDateOnly(value) {
   if (!value) return null;
   if (value instanceof Date) {
@@ -507,6 +563,8 @@ export const listAttendanceRecords = async (req, res) => {
         reviewed_count: reviewedCount,
         review_status: reviewStatusFromCount(reviewedCount),
         status_label: getRecordStatus(row),
+        ...buildKehadiranFields(row),
+        ...buildCheckOutLocationFields(row),
         is_off_day: false,
       };
     });
@@ -552,6 +610,14 @@ export const listAttendanceRecords = async (req, res) => {
         reviewed_count: 0,
         review_status: "belum",
         status_label: "Libur",
+        is_late: false,
+        kehadiran_label: null,
+        late_reason: null,
+        check_out_location_name: null,
+        check_out_outside_type: null,
+        check_out_outside_label: null,
+        check_out_outside_note: null,
+        check_out_outside_services: [],
         off_note: off.note || null,
         created_by_name: off.created_by_name || null,
       });
@@ -665,6 +731,8 @@ export const listEmployeeAttendanceRecords = async (req, res) => {
         reviewed_count: reviewedCount,
         review_status: reviewStatusFromCount(reviewedCount),
         status_label: getRecordStatus(row),
+        ...buildKehadiranFields(row),
+        ...buildCheckOutLocationFields(row),
         is_off_day: false,
       };
     });
@@ -700,6 +768,14 @@ export const listEmployeeAttendanceRecords = async (req, res) => {
         reviewed_count: 0,
         review_status: "belum",
         status_label: "Libur",
+        is_late: false,
+        kehadiran_label: null,
+        late_reason: null,
+        check_out_location_name: null,
+        check_out_outside_type: null,
+        check_out_outside_label: null,
+        check_out_outside_note: null,
+        check_out_outside_services: [],
         off_note: off.note || null,
         created_by_name: off.created_by_name || null,
       });
@@ -866,10 +942,11 @@ export const updateAttendanceRecord = async (req, res) => {
 
     const hasCheckIn = "check_in_at" in req.body;
     const hasCheckOut = "check_out_at" in req.body;
-    if (!hasCheckIn && !hasCheckOut) {
+    const hasLateReason = "late_reason" in req.body;
+    if (!hasCheckIn && !hasCheckOut && !hasLateReason) {
       return res.status(400).json({
         success: false,
-        message: "Tidak ada field yang diubah. Sediakan check_in_at dan/atau check_out_at.",
+        message: "Tidak ada field yang diubah. Sediakan check_in_at, check_out_at, dan/atau late_reason.",
       });
     }
 
@@ -928,6 +1005,13 @@ export const updateAttendanceRecord = async (req, res) => {
       setClauses.push("check_out_at = ?");
       params.push(checkOutParsed);
     }
+    const nextLate = isLateCheckIn(nextCheckIn);
+    if (!nextLate) {
+      setClauses.push("late_reason = NULL");
+    } else if (hasLateReason) {
+      setClauses.push("late_reason = ?");
+      params.push(String(req.body.late_reason ?? "").trim().slice(0, LATE_REASON_MAX_LENGTH) || null);
+    }
     params.push(attendanceId);
 
     await safeCleanoxQuery(
@@ -949,6 +1033,7 @@ export const updateAttendanceRecord = async (req, res) => {
         check_in_at: updated.check_in_at,
         check_out_at: updated.check_out_at,
         status_label: getRecordStatus(updated),
+        ...buildKehadiranFields(updated),
       },
     });
   } catch (error) {
