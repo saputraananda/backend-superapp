@@ -334,3 +334,61 @@ export const updateEmployeeRole = async (req, res) => {
     });
   }
 };
+
+export const getWaschenEmployee = async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ success: false, message: "Karyawan tidak valid" });
+
+    const [rows] = await safeQuery(
+      `
+        SELECT
+          e.employee_id, e.employee_code, e.full_name, e.gender,
+          e.birth_place, e.birth_date, e.address, e.phone_number, e.email,
+          e.join_date, e.contract_end_date, e.marital_status, e.school_name, e.major_name,
+          e.company_id, e.position_id, e.job_level_id, e.created_at,
+          u.username, c.company_name, p.position_name, j.job_level_name,
+          es.employment_status_name, r.religion_name
+        FROM mst_employee e
+        LEFT JOIN users u ON u.email = e.email
+        LEFT JOIN mst_company c ON c.company_id = e.company_id
+        LEFT JOIN mst_position p ON p.position_id = e.position_id
+        LEFT JOIN mst_job_level j ON j.job_level_id = e.job_level_id
+        LEFT JOIN mst_employment_status es ON es.employment_status_id = e.employment_status_id
+        LEFT JOIN mst_religion r ON r.religion_id = e.religion_id
+        WHERE e.employee_id = ? AND e.company_id = 5 AND e.is_deleted = 0
+        LIMIT 1
+      `,
+      [id],
+    );
+    if (!rows.length) {
+      return res.status(404).json({ success: false, message: "Karyawan Waschen tidak ditemukan" });
+    }
+
+    const [roleRows] = await safeMyWaschenQuery(
+      "SELECT role, is_leader, outlet_id, code_pin FROM mst_role WHERE employee_id = ? LIMIT 1",
+      [id],
+    );
+    const role = roleRows[0] || null;
+    let outlet_name = null;
+    if (role?.outlet_id) {
+      const [outlets] = await safeQuery("SELECT name FROM mst_outlet WHERE id = ? LIMIT 1", [role.outlet_id]);
+      outlet_name = outlets[0]?.name || null;
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        ...rows[0],
+        waschen_role: role?.role ?? null,
+        is_leader: role?.is_leader ?? null,
+        outlet_id: role?.outlet_id ?? null,
+        outlet_name,
+        code_pin: role?.code_pin ?? null,
+      },
+    });
+  } catch (error) {
+    console.error("[getWaschenEmployee] Error:", error);
+    return res.status(500).json({ success: false, message: "Gagal mengambil data karyawan" });
+  }
+};

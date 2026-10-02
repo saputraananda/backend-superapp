@@ -5,6 +5,17 @@ function num(v, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+const OWNER_ROLES = ["Frontliner", "Washing Staff", "Ironing Staff", "Packing Staff", "Delivery Staff"];
+
+function normalizeOwnerRole(raw) {
+  if (raw == null || String(raw).trim() === "") return { value: null };
+  const parts = String(raw).split(",").map((s) => s.trim()).filter(Boolean);
+  const bad = parts.filter((p) => !OWNER_ROLES.includes(p));
+  if (bad.length) return { error: `Role tidak dikenal: ${bad.join(", ")}` };
+  const value = OWNER_ROLES.filter((r) => parts.includes(r)).join(",");
+  return { value: value || null };
+}
+
 function slugCode(name) {
   return String(name || "")
     .trim()
@@ -110,9 +121,14 @@ export const createInventoryItem = async (req, res) => {
       }
     }
 
+    const owner = normalizeOwnerRole(req.body?.owner_role);
+    if (owner.error) {
+      return res.status(400).json({ success: false, message: owner.error });
+    }
+
     const [result] = await safeMyWaschenQuery(
-      `INSERT INTO mst_inventory_item (code, name, unit_id, description, is_active) VALUES (?, ?, ?, ?, ?)`,
-      [code, name, unit.id, description, isActive]
+      `INSERT INTO mst_inventory_item (code, name, unit_id, description, is_active, owner_role) VALUES (?, ?, ?, ?, ?, ?)`,
+      [code, name, unit.id, description, isActive, owner.value]
     );
     res.status(201).json({ success: true, message: "Item inventory ditambahkan", id: result.insertId });
   } catch (err) {
@@ -159,11 +175,16 @@ export const updateInventoryItem = async (req, res) => {
       return res.status(400).json({ success: false, message: `Nama "${name}" sudah ada` });
     }
 
+    const owner = normalizeOwnerRole(req.body?.owner_role);
+    if (owner.error) {
+      return res.status(400).json({ success: false, message: owner.error });
+    }
+
     await safeMyWaschenQuery(
       `UPDATE mst_inventory_item
-       SET code = ?, name = ?, unit_id = ?, description = ?, is_active = ?, updated_at = NOW()
+       SET code = ?, name = ?, unit_id = ?, description = ?, is_active = ?, owner_role = ?, updated_at = NOW()
        WHERE id = ?`,
-      [code, name, unit.id, description, isActive, id]
+      [code, name, unit.id, description, isActive, owner.value, id]
     );
     res.json({ success: true, message: "Item inventory diperbarui" });
   } catch (err) {
@@ -228,7 +249,7 @@ export const getOutletStock = async (req, res) => {
       `SELECT s.*,
               i.code AS item_code, i.name AS item_name, i.unit_id AS item_unit_id,
               u.symbol AS item_unit, u.name AS item_unit_name,
-              i.description AS item_description, i.is_active AS item_is_active,
+              i.description AS item_description, i.is_active AS item_is_active, i.owner_role,
               o.name AS outlet_name, o.full_name AS outlet_full_name, o.outlet_code,
               (SELECT COALESCE(SUM(o2.qty_used), 0)
                FROM tr_stock_opname o2
