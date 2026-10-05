@@ -1,4 +1,4 @@
-import { safeCleanoxQuery } from "../db/pool.js";
+import { safeCleanoxQuery } from "../../../db/pool.js";
 
 /**
  * Cleanox workers for Superapp operasional: mst_role.role = produksi only.

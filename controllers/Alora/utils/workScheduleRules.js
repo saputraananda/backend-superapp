@@ -1,4 +1,4 @@
-import { safeAloraMobileQuery } from "../db/pool.js";
+import { safeAloraMobileQuery } from "../../../db/pool.js";
 
 const JAKARTA_OFFSET_MS = 7 * 60 * 60 * 1000;
 

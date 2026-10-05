@@ -1,4 +1,4 @@
-import { safeQuery } from "../db/pool.js";
+import { safeQuery } from "../../../db/pool.js";
 // update
 export const ALORA_COMPANY_ID = 1;
 // Karyawan company lain yang ikut dikelola Alora (188 = Angel, IKM)

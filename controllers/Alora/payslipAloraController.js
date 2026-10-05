@@ -3,12 +3,12 @@ import {
 	ALORA_ACTIVE_EMPLOYEE_CONDITION,
 	ALORA_COMPANY_CONDITION,
 	assertAloraHrd,
-} from "../../utils/aloraEmployeeAccess.js";
+} from "./utils/aloraEmployeeAccess.js";
 import {
 	deleteAloraMobilePayslipFile,
 	proxyAloraMobileFile,
 	uploadAloraMobilePayslipFile,
-} from "../../utils/aloraMobileApiAssets.js";
+} from "./utils/aloraMobileApiAssets.js";
 
 function toPositiveInt(value) {
 	const n = Number(value);

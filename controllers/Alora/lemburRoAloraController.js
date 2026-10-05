@@ -1,5 +1,5 @@
 import { safeAloraMobileQuery, safeQuery } from "../../db/pool.js";
-import { creditOvertimeFromLemburRo } from "../../utils/otRoBalanceService.js";
+import { creditOvertimeFromLemburRo } from "./utils/otRoBalanceService.js";
 
 const HRD_POSITION_IDS = [1, 8, 17, 18, 19];
 const ALLOWED_STATUSES = new Set([

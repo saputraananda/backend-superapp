@@ -1,4 +1,4 @@
-import { safeCleanoxQuery } from "../db/pool.js";
+import { safeCleanoxQuery } from "../../../db/pool.js";
 
 function toDateOnly(value) {
   if (!value) return null;

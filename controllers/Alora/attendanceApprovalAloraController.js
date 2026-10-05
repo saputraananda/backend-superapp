@@ -3,7 +3,7 @@ import path from "path";
 import multer from "multer";
 import { fileURLToPath } from "url";
 import { safeAloraMobileQuery, safeQuery } from "../../db/pool.js";
-import { applyWodLedgerOnApprove } from "../../utils/attendanceApprovalService.js";
+import { applyWodLedgerOnApprove } from "./utils/attendanceApprovalService.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BOD_DIR = process.env.ALORA_MOBILE_ATTENDANCE_DIR || path.join(__dirname, "../../uploads/alora-bod");

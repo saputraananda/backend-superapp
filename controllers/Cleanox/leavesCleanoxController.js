@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 import { safeQuery, safeCleanoxQuery } from "../../db/pool.js";
 import { CLEANOX_LEAVE_DIR } from "../../middleware/upload.js";
-import { getCleanoxProduksiRoleMap } from "../../utils/cleanoxProduksiEmployees.js";
+import { getCleanoxProduksiRoleMap } from "./utils/cleanoxProduksiEmployees.js";
 
 const ALLOWED_STATUSES = new Set(["pengajuan", "disetujui", "ditolak"]);
 const ALLOWED_LEAVE_TYPES = new Set(["izin", "sakit", "cuti"]);

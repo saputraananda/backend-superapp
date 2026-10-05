@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 import { pool, cleanoxPool, safeQuery, safeCleanoxQuery } from "../../db/pool.js";
 import { CLEANOX_ATTENDANCE_DIR } from "../../middleware/upload.js";
-import { getCleanoxProduksiRoleMapObject } from "../../utils/cleanoxProduksiEmployees.js";
+import { getCleanoxProduksiRoleMapObject } from "./utils/cleanoxProduksiEmployees.js";
 
 const PHOTO_TYPES = ["full_body", "side", "back", "hand"];
 

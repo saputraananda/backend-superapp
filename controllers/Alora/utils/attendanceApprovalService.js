@@ -1,4 +1,4 @@
-import { safeAloraMobileQuery } from "../db/pool.js";
+import { safeAloraMobileQuery } from "../../../db/pool.js";
 
 async function getReplaceOffBalance(employeeId) {
 	const [rows] = await safeAloraMobileQuery(

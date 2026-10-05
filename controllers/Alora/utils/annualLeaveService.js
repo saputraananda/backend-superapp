@@ -1,4 +1,4 @@
-import { safeAloraMobileQuery, safeQuery } from "../db/pool.js";
+import { safeAloraMobileQuery, safeQuery } from "../../../db/pool.js";
 import { addDaysDateString, isOffDay, todayDateStringJakarta } from "./workScheduleRules.js";
 
 const ANNUAL_GRANT_DAYS = 12;

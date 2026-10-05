@@ -5,7 +5,7 @@ import { CLEANOX_KASBON_DIR } from "../../middleware/upload.js";
 import {
 	getCleanoxProduksiEmployeeIds,
 	getCleanoxProduksiRoleMap,
-} from "../../utils/cleanoxProduksiEmployees.js";
+} from "./utils/cleanoxProduksiEmployees.js";
 
 const CLEANOX_COMPANY_ID = 3;
 const ALLOWED_TYPES = new Set(["kasbon", "pinjaman"]);

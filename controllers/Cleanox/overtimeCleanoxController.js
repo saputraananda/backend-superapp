@@ -1,5 +1,5 @@
 import { safeQuery, safeCleanoxQuery } from "../../db/pool.js";
-import { getCleanoxProduksiRoleMap } from "../../utils/cleanoxProduksiEmployees.js";
+import { getCleanoxProduksiRoleMap } from "./utils/cleanoxProduksiEmployees.js";
 
 const CLEANOX_COMPANY_ID = 3;
 const ALLOWED_TYPES = new Set(["checkout", "pengajuan"]);

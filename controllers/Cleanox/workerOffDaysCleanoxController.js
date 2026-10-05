@@ -1,5 +1,5 @@
 import { safeQuery, safeCleanoxQuery } from "../../db/pool.js";
-import { getCleanoxProduksiRoleMap } from "../../utils/cleanoxProduksiEmployees.js";
+import { getCleanoxProduksiRoleMap } from "./utils/cleanoxProduksiEmployees.js";
 
 const CLEANOX_COMPANY_ID = 3;
 const MAX_RANGE_DAYS = 31;

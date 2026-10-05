@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { pool, cleanoxPool, safeQuery, safeCleanoxQuery } from "../../db/pool.js";
-import { getCleanoxProduksiRoleMapObject } from "../../utils/cleanoxProduksiEmployees.js";
+import { getCleanoxProduksiRoleMapObject } from "./utils/cleanoxProduksiEmployees.js";
 import { CLEANOX_KEBERSIHAN_DIR } from "../../middleware/upload.js";
 
 const VALID_SCORES = [0, 0.5, 1];

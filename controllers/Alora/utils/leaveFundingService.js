@@ -1,4 +1,4 @@
-import { safeAloraMobileQuery } from "../db/pool.js";
+import { safeAloraMobileQuery } from "../../../db/pool.js";
 
 async function getOvertimeBalance(employeeId) {
 	const [rows] = await safeAloraMobileQuery(

@@ -1,4 +1,4 @@
-import { safeCleanoxQuery } from "../db/pool.js";
+import { safeCleanoxQuery } from "../../../db/pool.js";
 
 export const MEAL_RATE_DEFAULTS = { office: 10000, half_day: 25000, full_day: 30000 };
 

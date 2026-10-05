@@ -1,6 +1,6 @@
 import { pool, safeQuery, safeCleanoxQuery } from "../../db/pool.js";
 import bcrypt from "bcrypt";
-import { getCleanoxProduksiEmployeeIds, getCleanoxProduksiRoleMapObject } from "../../utils/cleanoxProduksiEmployees.js";
+import { getCleanoxProduksiEmployeeIds, getCleanoxProduksiRoleMapObject } from "./utils/cleanoxProduksiEmployees.js";
 
 const SORT_COLUMNS = {
   full_name: "e.full_name",

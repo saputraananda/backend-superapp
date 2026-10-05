@@ -2,8 +2,8 @@ import fs from "fs";
 import path from "path";
 import { safeAloraMobileQuery, safeQuery } from "../../db/pool.js";
 import { ALORA_MOBILE_ATT_DIR, ALORA_MOBILE_BASE } from "../../middleware/upload.js";
-import { getAloraMobileApiBaseUrl, proxyAloraMobileFile } from "../../utils/aloraMobileApiAssets.js";
-import { resolveFinalStatus } from "../../utils/attendanceStatusResolver.js";
+import { getAloraMobileApiBaseUrl, proxyAloraMobileFile } from "./utils/aloraMobileApiAssets.js";
+import { resolveFinalStatus } from "./utils/attendanceStatusResolver.js";
 
 const ALLOWED_STATUS_LABELS = new Set([
 	"Belum check-in",
