@@ -19,6 +19,7 @@ import {
   setOpeningStock,
   getDailyOpname,
   postDailyOpname,
+  postItemMove,
 } from "../../../controllers/MyWaschen/Inventory/StockOpnameController.js";
 
 const router = express.Router();
@@ -41,6 +42,7 @@ router.delete("/stock/:id", removeOutletStock);
 
 router.get("/opname/daily", requireAuth, getDailyOpname);
 router.post("/opname/daily", requireAuth, postDailyOpname);
+router.post("/opname/item", requireAuth, postItemMove);
 
 router.get("/logs", getInventoryLogs);
 

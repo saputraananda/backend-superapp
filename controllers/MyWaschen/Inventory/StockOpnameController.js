@@ -30,15 +30,6 @@ async function recalcStockQty(stockId) {
   return { opening, actualQty, remaining };
 }
 
-async function recalcStockByOutletItem(outletId, itemId) {
-  const [rows] = await safeMyWaschenQuery(
-    "SELECT id FROM tr_inventory_stock WHERE outlet_id = ? AND item_id = ? AND is_active = 1 LIMIT 1",
-    [outletId, itemId]
-  );
-  if (!rows.length) return null;
-  return recalcStockQty(rows[0].id);
-}
-
 async function assertEmployee(employeeId) {
   const id = Number(employeeId);
   if (!Number.isFinite(id) || id <= 0) return null;
@@ -179,7 +170,6 @@ export const postDailyOpname = async (req, res) => {
     }
 
     let saved = 0;
-    const touched = new Set();
 
     for (const line of lines) {
       const itemId = Number(line.itemId);
@@ -189,12 +179,18 @@ export const postDailyOpname = async (req, res) => {
       if (!itemId || !Number.isFinite(qtyUsed) || qtyUsed < 0) continue;
 
       const [stock] = await safeMyWaschenQuery(
-        "SELECT id FROM tr_inventory_stock WHERE outlet_id = ? AND item_id = ? AND is_active = 1 LIMIT 1",
+        "SELECT id, qty_current FROM tr_inventory_stock WHERE outlet_id = ? AND item_id = ? AND is_active = 1 LIMIT 1",
         [outletId, itemId]
       );
       if (!stock.length) continue;
 
       const stockId = stock[0].id;
+      const before = num(stock[0].qty_current);
+      const [prevRows] = await safeMyWaschenQuery(
+        "SELECT qty_used FROM tr_stock_opname WHERE outlet_id = ? AND item_id = ? AND usage_date = ? LIMIT 1",
+        [outletId, itemId, usageDate]
+      );
+      const prevUsed = num(prevRows[0]?.qty_used);
 
       if (qtyUsed === 0) {
         await safeMyWaschenQuery(
@@ -213,21 +209,14 @@ export const postDailyOpname = async (req, res) => {
              updated_at = NOW()`,
           [outletId, itemId, stockId, usageDate, qtyUsed, employeeId, notes]
         );
+      }
 
-        const [beforeCalc] = await safeMyWaschenQuery(
-          "SELECT qty_current FROM tr_inventory_stock WHERE id = ?",
-          [stockId]
-        );
-        const before = num(beforeCalc[0]?.qty_current);
-
-        await recalcStockQty(stockId);
-
-        const [afterCalc] = await safeMyWaschenQuery(
-          "SELECT qty_current FROM tr_inventory_stock WHERE id = ?",
-          [stockId]
-        );
-        const after = num(afterCalc[0]?.qty_current);
-
+      const after = before - (qtyUsed - prevUsed);
+      await safeMyWaschenQuery(
+        "UPDATE tr_inventory_stock SET qty_current = ?, updated_at = NOW() WHERE id = ?",
+        [after, stockId]
+      );
+      if (qtyUsed !== prevUsed) {
         await safeMyWaschenQuery(
           `INSERT INTO tr_inventory_log
              (outlet_id, item_id, stock_id, movement_type, qty, qty_before, qty_after, employee_id, reference_type, notes)
@@ -236,7 +225,7 @@ export const postDailyOpname = async (req, res) => {
             outletId,
             itemId,
             stockId,
-            qtyUsed,
+            Math.abs(qtyUsed - prevUsed),
             before,
             after,
             employeeId,
@@ -245,13 +234,7 @@ export const postDailyOpname = async (req, res) => {
         );
       }
 
-      touched.add(`${outletId}:${itemId}`);
       saved += 1;
-    }
-
-    for (const key of touched) {
-      const [oid, iid] = key.split(":").map(Number);
-      await recalcStockByOutletItem(oid, iid);
     }
 
     res.json({
@@ -262,5 +245,107 @@ export const postDailyOpname = async (req, res) => {
   } catch (err) {
     console.error("postDailyOpname error:", err);
     res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+function todayWibISO() {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jakarta" }).format(new Date());
+}
+
+/** POST /waschen/inventory/opname/item — tambah pemakaian hari ini, atau set sisa stok */
+export const postItemMove = async (req, res) => {
+  try {
+    const outletId = Number(req.body?.outletId);
+    const itemId = Number(req.body?.itemId);
+    const mode = req.body?.mode === "set" ? "set" : "add";
+    const qty = num(req.body?.qty, NaN);
+    const employeeId = req.body?.employeeId
+      ? Number(req.body.employeeId)
+      : req.session?.employeeId
+        ? Number(req.session.employeeId)
+        : null;
+
+    if (!outletId || !itemId) {
+      return res.status(400).json({ success: false, message: "Item dan outlet wajib" });
+    }
+    if (!Number.isFinite(qty) || qty < 0 || (mode === "add" && qty <= 0)) {
+      return res.status(400).json({ success: false, message: mode === "set" ? "Sisa stok tidak valid" : "Jumlah pemakaian tidak valid" });
+    }
+    if (!employeeId) {
+      return res.status(400).json({ success: false, message: "Petugas wajib dipilih" });
+    }
+    const emp = await assertEmployee(employeeId);
+    if (!emp) {
+      return res.status(404).json({ success: false, message: "Petugas tidak ditemukan" });
+    }
+
+    const [stockRows] = await safeMyWaschenQuery(
+      "SELECT * FROM tr_inventory_stock WHERE outlet_id = ? AND item_id = ? AND is_active = 1 LIMIT 1",
+      [outletId, itemId]
+    );
+    if (!stockRows.length) {
+      return res.status(404).json({ success: false, message: "Stok item tidak ditemukan di outlet ini" });
+    }
+    const stock = stockRows[0];
+    const before = num(stock.qty_current);
+    const today = todayWibISO();
+
+    if (mode === "add") {
+      await safeMyWaschenQuery(
+        `INSERT INTO tr_stock_opname (outlet_id, item_id, stock_id, usage_date, qty_used, employee_id, notes)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           stock_id = VALUES(stock_id),
+           qty_used = qty_used + VALUES(qty_used),
+           employee_id = VALUES(employee_id),
+           notes = VALUES(notes),
+           updated_at = NOW()`,
+        [outletId, itemId, stock.id, today, qty, employeeId, "SO My Waschen POS"]
+      );
+      const after = before - qty;
+      await safeMyWaschenQuery(
+        "UPDATE tr_inventory_stock SET qty_current = ?, updated_at = NOW() WHERE id = ?",
+        [after, stock.id]
+      );
+      await safeMyWaschenQuery(
+        `INSERT INTO tr_inventory_log
+           (outlet_id, item_id, stock_id, movement_type, qty, qty_before, qty_after, employee_id, reference_type, notes)
+         VALUES (?, ?, ?, 'Usage', ?, ?, ?, ?, 'opname', 'SO My Waschen POS')`,
+        [outletId, itemId, stock.id, qty, before, after, employeeId]
+      );
+      const [todayRows] = await safeMyWaschenQuery(
+        "SELECT qty_used FROM tr_stock_opname WHERE outlet_id = ? AND item_id = ? AND usage_date = ? LIMIT 1",
+        [outletId, itemId, today]
+      );
+      return res.json({
+        success: true,
+        message: "Pemakaian ditambahkan",
+        data: { qty_today: num(todayRows[0]?.qty_used), qty_current: after },
+      });
+    }
+
+    const after = qty;
+    await safeMyWaschenQuery(
+      "UPDATE tr_inventory_stock SET qty_current = ?, updated_at = NOW() WHERE id = ?",
+      [after, stock.id]
+    );
+    await safeMyWaschenQuery(
+      `INSERT INTO tr_inventory_log
+         (outlet_id, item_id, stock_id, movement_type, qty, qty_before, qty_after, employee_id, reference_type, notes)
+       VALUES (?, ?, ?, 'Adjust', ?, ?, ?, ?, 'opname', 'SO My Waschen POS')`,
+      [outletId, itemId, stock.id, Math.abs(after - before), before, after, employeeId]
+    );
+    const [todayRows] = await safeMyWaschenQuery(
+      "SELECT qty_used FROM tr_stock_opname WHERE outlet_id = ? AND item_id = ? AND usage_date = ? LIMIT 1",
+      [outletId, itemId, today]
+    );
+    return res.json({
+      success: true,
+      message: "Sisa stok diset",
+      data: { qty_today: num(todayRows[0]?.qty_used), qty_current: after },
+    });
+  } catch (err) {
+    console.error("postItemMove error:", err);
+    return res.status(500).json({ success: false, message: "Gagal menyimpan stok" });
   }
 };

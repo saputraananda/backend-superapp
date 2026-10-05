@@ -1,5 +1,9 @@
 import { safeMyWaschenQuery, safeQuery } from "../../../db/pool.js";
 
+function todayWibISO() {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jakarta" }).format(new Date());
+}
+
 function num(v, fallback = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
@@ -233,8 +237,9 @@ export const getOutletStock = async (req, res) => {
     const sortDir = String(req.query.sortDir || "asc").toLowerCase() === "desc" ? "DESC" : "ASC";
     const sortCol = sortBy === "name" || sortBy === "code" ? `i.${sortBy}` : `s.${sortBy}`;
 
+    const today = todayWibISO();
     const where = ["s.outlet_id = ?", "s.is_active = 1"];
-    const params = [outletId];
+    const params = [today, outletId];
 
     if (search) {
       where.push("(i.code LIKE ? OR i.name LIKE ? OR u.symbol LIKE ? OR u.name LIKE ?)");
@@ -266,7 +271,11 @@ export const getOutletStock = async (req, res) => {
                  AND (s.period_start IS NULL
                       OR DATE(COALESCE(td.item_completed_at, t.order_date)) >= s.period_start)
               ) AS qty_expected,
-              CASE WHEN s.min_stock > 0 AND s.qty_current <= s.min_stock THEN 1 ELSE 0 END AS is_low_stock
+              CASE WHEN s.min_stock > 0 AND s.qty_current <= s.min_stock THEN 1 ELSE 0 END AS is_low_stock,
+              (SELECT COALESCE(o3.qty_used, 0)
+               FROM tr_stock_opname o3
+               WHERE o3.outlet_id = s.outlet_id AND o3.item_id = s.item_id AND o3.usage_date = ?
+               LIMIT 1) AS qty_today
        FROM tr_inventory_stock s
        JOIN mst_inventory_item i ON i.id = s.item_id
        LEFT JOIN mst_unit u ON u.id = i.unit_id
