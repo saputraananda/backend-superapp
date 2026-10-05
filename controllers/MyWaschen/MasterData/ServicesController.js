@@ -14,6 +14,14 @@ async function fetchServiceInventory(serviceId) {
   return rows;
 }
 
+function parseDcPriceAdd(isRequired, raw) {
+  if (Number(isRequired) === 1) return null;
+  if (raw === undefined || raw === null || String(raw).trim() === "") return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n;
+}
+
 function normalizeInventoryLines(rawLines) {
   if (!Array.isArray(rawLines)) return [];
   const seen = new Set();
@@ -158,11 +166,12 @@ export const getServiceById = async (req, res) => {
 // ── 3. CREATE ──
 export const createService = async (req, res) => {
   try {
-    const { category_id, unit_id, code, name, unit, price, regular_duration_days, min_order_qty, description, is_cleanox, is_featured, is_active, inventory_items } = req.body;
+    const { category_id, unit_id, code, name, unit, price, regular_duration_days, min_order_qty, description, is_cleanox, is_featured, is_active, is_dc_required, dc_price_add, inventory_items } = req.body;
 
     if (!category_id || !name?.trim()) {
       return res.status(400).json({ success: false, message: "Kategori dan Nama Layanan wajib diisi" });
     }
+    const dcRequired = Number(is_dc_required) === 1 ? 1 : 0;
 
     const formattedCode = code?.trim()
       ? code.trim().toUpperCase()
@@ -175,8 +184,8 @@ export const createService = async (req, res) => {
     }
 
     const [result] = await safeMyWaschenQuery(
-      `INSERT INTO mst_service (category_id, unit_id, unit, code, name, price, regular_duration_days, min_order_qty, description, is_cleanox, is_featured, is_active)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO mst_service (category_id, unit_id, unit, code, name, price, regular_duration_days, min_order_qty, description, is_cleanox, is_featured, is_active, is_dc_required, dc_price_add)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         Number(category_id),
         unit_id ? Number(unit_id) : 8,
@@ -189,7 +198,9 @@ export const createService = async (req, res) => {
         description?.trim() || null,
         is_cleanox !== undefined ? Number(is_cleanox) : 0,
         is_featured !== undefined ? Number(is_featured) : 0,
-        is_active !== undefined ? Number(is_active) : 1
+        is_active !== undefined ? Number(is_active) : 1,
+        dcRequired,
+        parseDcPriceAdd(dcRequired, dc_price_add)
       ]
     );
 
@@ -211,7 +222,8 @@ export const createService = async (req, res) => {
 export const updateService = async (req, res) => {
   try {
     const { id } = req.params;
-    const { category_id, unit_id, code, name, unit, price, regular_duration_days, min_order_qty, description, is_cleanox, is_featured, is_active, inventory_items } = req.body;
+    const { category_id, unit_id, code, name, unit, price, regular_duration_days, min_order_qty, description, is_cleanox, is_featured, is_active, is_dc_required, dc_price_add, inventory_items } = req.body;
+    const dcRequired = Number(is_dc_required) === 1 ? 1 : 0;
 
     if (!name?.trim()) {
       return res.status(400).json({ success: false, message: "Nama Layanan wajib diisi" });
@@ -245,6 +257,8 @@ export const updateService = async (req, res) => {
            is_cleanox = ?,
            is_featured = ?,
            is_active = ?,
+           is_dc_required = ?,
+           dc_price_add = ?,
            updated_at = NOW()
        WHERE id = ?`,
       [
@@ -260,6 +274,8 @@ export const updateService = async (req, res) => {
         is_cleanox !== undefined ? Number(is_cleanox) : 0,
         is_featured !== undefined ? Number(is_featured) : 0,
         is_active !== undefined ? Number(is_active) : 1,
+        dcRequired,
+        parseDcPriceAdd(dcRequired, dc_price_add),
         id
       ]
     );
