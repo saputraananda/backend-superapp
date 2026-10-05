@@ -103,7 +103,7 @@ export const getInventoryDashboard = async (req, res) => {
          s.outlet_id, o.outlet_code, o.name AS outlet_name,
          s.item_id, i.code AS item_code, i.name AS item_name,
          u.symbol AS unit,
-         s.qty_opening, s.qty_current, s.min_stock, s.par_stock,
+         s.qty_current, s.min_stock, s.par_stock,
          CASE WHEN s.min_stock > 0 AND s.qty_current <= s.min_stock THEN 1 ELSE 0 END AS is_low
        FROM tr_inventory_stock s
        JOIN mst_inventory_item i ON i.id = s.item_id
@@ -111,7 +111,7 @@ export const getInventoryDashboard = async (req, res) => {
        JOIN mst_outlet o ON o.id = s.outlet_id
        WHERE s.is_active = 1
        ORDER BY o.outlet_code ASC, i.name ASC
-       LIMIT 1000`
+       LIMIT 5000`
     );
 
     const [movements7d] = await safeMyWaschenQuery(`
