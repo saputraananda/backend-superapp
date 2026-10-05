@@ -400,6 +400,162 @@ const scopeLabel = ({ companies, outlets }) => {
     return o ? `${c} (${o})` : c;
 };
 
+// Alokasi bayar: satu baris per klasifikasi × kategori.
+// Outlet hanya untuk Waschen (company 5). Kategori lain: outlet_id NULL.
+// Tabel tr_purchase_request_allocation dibuat manual di database.
+const scopePayTargets = ({ companies = [], outlets = [] }) => {
+    const targets = [];
+    for (const c of companies) {
+        const cid = Number(c.company_id);
+        if (cid === WASCHEN_COMPANY_ID && outlets.length) {
+            for (const o of outlets) {
+                targets.push({
+                    company_id: cid,
+                    outlet_id: Number(o.outlet_id),
+                    company_name: c.company_name,
+                    outlet_name: o.outlet_name,
+                });
+            }
+        } else {
+            targets.push({
+                company_id: cid,
+                outlet_id: null,
+                company_name: c.company_name,
+                outlet_name: null,
+            });
+        }
+    }
+    return targets;
+};
+
+const sameAlloc = (a, b) =>
+    Number(a.classification_id) === Number(b.classification_id)
+    && Number(a.company_id) === Number(b.company_id)
+    && Number(a.outlet_id || 0) === Number(b.outlet_id || 0);
+
+// Lebih dari 1 sel: nominal tiap sel wajib dijumlahkan = nominal bayar.
+// 1 sel: nominal otomatis = nominal bayar.
+// 1 kategori + banyak klasifikasi, tanpa payload alokasi: pakai classification_splits.
+const parseAllocations = (raw, classIds, targets, nominalBayar, classSplitsRaw) => {
+    if (!targets.length) return { rows: [], error: null };
+    const cells = [];
+    for (const cid of classIds) {
+        for (const t of targets) {
+            cells.push({
+                classification_id: cid,
+                company_id: t.company_id,
+                outlet_id: t.outlet_id,
+                company_name: t.company_name,
+                outlet_name: t.outlet_name,
+            });
+        }
+    }
+    if (cells.length === 1) {
+        return { rows: [{ ...cells[0], nominal: nominalBayar ?? null }], error: null };
+    }
+
+    let list = raw;
+    if (typeof raw === "string" && raw.trim()) {
+        try { list = JSON.parse(raw); } catch { list = null; }
+    }
+
+    if ((!Array.isArray(list) || !list.length) && targets.length === 1) {
+        const splits = parseClassificationSplits(classSplitsRaw, classIds, nominalBayar);
+        return {
+            rows: classIds.map(cid => ({
+                classification_id: cid,
+                company_id: targets[0].company_id,
+                outlet_id: targets[0].outlet_id,
+                company_name: targets[0].company_name,
+                outlet_name: targets[0].outlet_name,
+                nominal: splits[cid] ?? null,
+            })),
+            error: null,
+        };
+    }
+
+    if (!Array.isArray(list) || !list.length) {
+        return { rows: [], error: "Alokasi per kategori wajib diisi" };
+    }
+
+    const rows = cells.map(cell => {
+        const hit = list.find(r => sameAlloc(r, cell));
+        const n = hit == null ? NaN : Number(hit.nominal);
+        return { ...cell, nominal: Number.isFinite(n) && n > 0 ? Math.round(n) : null };
+    });
+
+    if (nominalBayar) {
+        const sum = rows.reduce((s, r) => s + (Number(r.nominal) || 0), 0);
+        if (sum !== Math.round(Number(nominalBayar))) {
+            return { rows: [], error: "Total alokasi harus sama dengan nominal bayar" };
+        }
+    }
+    return { rows, error: null };
+};
+
+const splitsFromAllocations = (classIds, rows) => {
+    const out = {};
+    for (const id of classIds) {
+        const sum = rows
+            .filter(r => Number(r.classification_id) === Number(id))
+            .reduce((s, r) => s + (Number(r.nominal) || 0), 0);
+        out[id] = sum || null;
+    }
+    return out;
+};
+
+const syncAllocations = async (prId, rows) => {
+    await safeQuery(`DELETE FROM tr_purchase_request_allocation WHERE pr_id = ?`, [prId]);
+    if (!rows.length) return;
+    await safeQuery(
+        `INSERT INTO tr_purchase_request_allocation
+            (pr_id, classification_id, company_id, outlet_id, nominal)
+         VALUES ${rows.map(() => "(?, ?, ?, ?, ?)").join(", ")}`,
+        rows.flatMap(r => [prId, r.classification_id, r.company_id, r.outlet_id, r.nominal])
+    );
+};
+
+const getAllocationsOfPr = async (prId) => {
+    try {
+        return await safeQuery(
+            `SELECT a.classification_id, c.classification_name, a.company_id, mc.company_name,
+                    a.outlet_id, o.full_name AS outlet_name, a.nominal
+             FROM tr_purchase_request_allocation a
+             JOIN mst_purchase_classification c ON c.id = a.classification_id
+             LEFT JOIN mst_company mc ON mc.company_id = a.company_id
+             LEFT JOIN mst_outlet o ON o.id = a.outlet_id
+             WHERE a.pr_id = ?
+             ORDER BY c.classification_name, mc.company_name, o.full_name`,
+            [prId]
+        );
+    } catch (err) {
+        if (err.code === "ER_NO_SUCH_TABLE" || err.errno === 1146) return [];
+        throw err;
+    }
+};
+
+const resolvePaymentAllocations = async (prId, classIds, classRows, nominalBayar, body) => {
+    const scope = await getScopesOfPr(prId);
+    const targets = scopePayTargets(scope);
+    const parsed = parseAllocations(
+        body.allocations, classIds, targets, nominalBayar, body.classification_splits
+    );
+    if (parsed.error) return parsed;
+    const classificationSplits = parsed.rows.length
+        ? splitsFromAllocations(classIds, parsed.rows)
+        : parseClassificationSplits(body.classification_splits, classIds, nominalBayar);
+    const nameById = new Map(classRows.map(c => [Number(c.id), c.classification_name]));
+    const fmt = (n) => `Rp ${new Intl.NumberFormat("id-ID").format(n)}`;
+    const classificationName = parsed.rows.length > 1 && targets.length > 1
+        ? parsed.rows.map(r => {
+            const where = r.outlet_name || r.company_name || "—";
+            const n = r.nominal ? ` (${fmt(r.nominal)})` : "";
+            return `${nameById.get(Number(r.classification_id)) || "—"} · ${where}${n}`;
+        }).join(", ")
+        : formatClassificationLabel(classRows, classificationSplits);
+    return { rows: parsed.rows, classificationSplits, classificationName, error: null };
+};
+
 const writeLog = async (prId, action, employeeId, name, note = null) => {
     await safeQuery(
         `INSERT INTO tr_purchase_request_log (pr_id, action, by_employee_id, by_name, note)
@@ -1034,6 +1190,7 @@ export const getDetail = async (req, res) => {
 
         const classifications = await getClassificationsOfPr(id);
         const scope = await getScopesOfPr(id);
+        const allocations = await getAllocationsOfPr(id);
 
         res.json({
             data: {
@@ -1042,6 +1199,7 @@ export const getDetail = async (req, res) => {
                 classification_names: classifications.map(c => c.classification_name).join(", "),
                 companies: scope.companies,
                 outlets: scope.outlets,
+                allocations,
             },
             attachments,
             logs,
@@ -2629,9 +2787,10 @@ export const processPayment = async (req, res) => {
         const adminFeeRaw    = req.body.admin_fee ? Number(req.body.admin_fee) : null;
         const adminFee       = adminFeeRaw || null;
 
-        const classificationSplits = parseClassificationSplits(
-            req.body.classification_splits, classificationIds, nominalBayar);
-        const classificationName = formatClassificationLabel(classRows, classificationSplits);
+        const alloc = await resolvePaymentAllocations(id, classificationIds, classRows, nominalBayar, req.body);
+        if (alloc.error) return res.status(400).json({ message: alloc.error });
+        const classificationSplits = alloc.classificationSplits;
+        const classificationName = alloc.classificationName;
 
         // Waktu pembayaran: gunakan yang dikirim frontend, fallback ke NOW() jika kosong
         const paidAtRaw = req.body.paid_at ? String(req.body.paid_at).trim() : null;
@@ -2674,6 +2833,7 @@ export const processPayment = async (req, res) => {
             );
 
             await syncClassifications(id, classificationIds, classificationSplits);
+            if (alloc.rows.length) await syncAllocations(id, alloc.rows);
 
             if (paymentMethod === "cash") {
                 await safeQuery(
@@ -2725,6 +2885,7 @@ export const processPayment = async (req, res) => {
         );
 
         await syncClassifications(id, classificationIds, classificationSplits);
+        if (alloc.rows.length) await syncAllocations(id, alloc.rows);
 
         if (paymentMethod === "cash") {
             await safeQuery(
@@ -2905,9 +3066,10 @@ export const updatePaymentInfo = async (req, res) => {
         const adminFeeRaw    = req.body.admin_fee ? Number(req.body.admin_fee) : null;
         const adminFee       = adminFeeRaw || null;
 
-        const classificationSplits = parseClassificationSplits(
-            req.body.classification_splits, classificationIds, nominalBayar);
-        const classificationName = formatClassificationLabel(classRows, classificationSplits);
+        const alloc = await resolvePaymentAllocations(id, classificationIds, classRows, nominalBayar, req.body);
+        if (alloc.error) return res.status(400).json({ message: alloc.error });
+        const classificationSplits = alloc.classificationSplits;
+        const classificationName = alloc.classificationName;
 
         // Klasifikasi lama (multi; fallback ke kolom legacy jika junction kosong)
         const oldClassRows = await getClassificationsOfPr(id);
@@ -2942,6 +3104,7 @@ export const updatePaymentInfo = async (req, res) => {
         );
 
         await syncClassifications(id, classificationIds, classificationSplits);
+        if (alloc.rows.length) await syncAllocations(id, alloc.rows);
 
         if (paymentMethod === "cash") {
             const payRows = await safeQuery(
