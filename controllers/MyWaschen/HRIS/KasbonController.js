@@ -896,7 +896,7 @@ export const createOpeningBalance = async (req, res) => {
 
           amounts[0],
 
-          purpose || null,
+          purpose,
 
           actor.name,
 
