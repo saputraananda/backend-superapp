@@ -17,8 +17,97 @@ export const AGING_CONFIG = {
   "KOPER": { label: "Koper", days: null, isCrossSelling: true },
 };
 
-export function classifyService(rawName) {
+export async function loadAgingConfigs() {
+  try {
+    const [rows] = await safeCleanoxQuery(
+      "SELECT * FROM mst_service_aging_configs WHERE is_active = 1 ORDER BY is_cross_selling ASC, aging_days ASC"
+    );
+    if (rows && rows.length > 0) {
+      const map = {};
+      for (const r of rows) {
+        map[r.category_key] = {
+          id: r.id,
+          key: r.category_key,
+          label: r.category_name,
+          days: r.is_cross_selling ? null : r.aging_days,
+          isCrossSelling: Boolean(r.is_cross_selling),
+          keywords: r.keywords
+            ? r.keywords
+                .split(",")
+                .map((k) => k.trim().toUpperCase())
+                .filter(Boolean)
+            : [],
+        };
+      }
+      return map;
+    }
+  } catch (err) {
+    console.warn("[loadAgingConfigs Warning]:", err.message);
+  }
+  return AGING_CONFIG;
+}
+
+let tableInitialized = false;
+async function ensureReminderTable() {
+  if (tableInitialized) return;
+  try {
+    await safeCleanoxQuery(`
+      CREATE TABLE IF NOT EXISTS tr_customer_aging_reminders (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        customer_phone VARCHAR(50) NOT NULL,
+        customer_name VARCHAR(255) NOT NULL,
+        reference_no VARCHAR(100),
+        category_key VARCHAR(100) NOT NULL,
+        service_name VARCHAR(255),
+        channel VARCHAR(50) DEFAULT 'WhatsApp',
+        reminded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        reminded_by VARCHAR(100),
+        notes TEXT,
+        INDEX idx_phone_cat (customer_phone, category_key),
+        INDEX idx_ref_cat (reference_no, category_key)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+    tableInitialized = true;
+  } catch (err) {
+    console.error("[ensureReminderTable Error]:", err);
+  }
+}
+
+export function classifyService(rawName, customConfigs = null) {
   const name = String(rawName || "").toUpperCase();
+
+  // If dynamic configs available, match keywords
+  if (customConfigs) {
+    for (const [key, cfg] of Object.entries(customConfigs)) {
+      if (key === "FAST CLEAN KASUR" || key === "DEEP CLEAN KASUR") continue;
+      if (Array.isArray(cfg.keywords)) {
+        for (const kw of cfg.keywords) {
+          if (name.includes(kw)) {
+            return key;
+          }
+        }
+      }
+    }
+
+    const isBedOrKasur =
+      name.includes("BED") ||
+      name.includes("KASUR") ||
+      name.includes("MATRAS") ||
+      name.includes("SPRINGBED") ||
+      name.includes("TOPPER");
+
+    if (isBedOrKasur) {
+      const isDeepClean =
+        name.includes("DEEP CLEAN") ||
+        name.includes("DEEPCLEAN") ||
+        name.includes("DEEP_CLEAN") ||
+        name.includes(" DC") ||
+        name.includes("(DC)") ||
+        name.includes("DC)");
+      if (isDeepClean && customConfigs["DEEP CLEAN KASUR"]) return "DEEP CLEAN KASUR";
+      if (customConfigs["FAST CLEAN KASUR"]) return "FAST CLEAN KASUR";
+    }
+  }
 
   if (name.includes("KOPER")) return "KOPER";
   if (name.includes("SEPATU")) return "SEPATU";
@@ -81,6 +170,28 @@ export function normalizePhone(raw) {
   return digits;
 }
 
+async function loadReminderLogs() {
+  await ensureReminderTable();
+  try {
+    const [rows] = await safeCleanoxQuery(`
+      SELECT 
+        customer_phone,
+        reference_no,
+        category_key,
+        reminded_at,
+        reminded_by,
+        notes,
+        channel
+      FROM tr_customer_aging_reminders
+      ORDER BY reminded_at DESC
+    `);
+    return rows || [];
+  } catch (err) {
+    console.error("[loadReminderLogs Error]:", err);
+    return [];
+  }
+}
+
 async function loadAllRawCompletedTransactions() {
   const sqlSmartlink = `
     SELECT 
@@ -129,12 +240,31 @@ async function loadAllRawCompletedTransactions() {
   return [...(smartlinkRows || []), ...(posRows || [])];
 }
 
-function processAgingItems(rows) {
+function processAgingItems(rows, reminderLogs = [], configs = AGING_CONFIG) {
   const now = new Date();
   const customerMap = new Map();
 
+  // Index reminder logs
+  const reminderMap = new Map();
+  const reminderCounts = new Map();
+
+  for (const log of reminderLogs) {
+    const normPhone = normalizePhone(log.customer_phone);
+    const key1 = normPhone ? `${normPhone}__${log.category_key}` : null;
+    const key2 = log.reference_no ? `${log.reference_no}__${log.category_key}` : null;
+
+    if (key1) {
+      if (!reminderMap.has(key1)) reminderMap.set(key1, log);
+      reminderCounts.set(key1, (reminderCounts.get(key1) || 0) + 1);
+    }
+    if (key2) {
+      if (!reminderMap.has(key2)) reminderMap.set(key2, log);
+      reminderCounts.set(key2, (reminderCounts.get(key2) || 0) + 1);
+    }
+  }
+
   for (const row of rows) {
-    const categoryKey = classifyService(row.service_name);
+    const categoryKey = classifyService(row.service_name, configs);
     if (!categoryKey) continue;
 
     const normPhone = normalizePhone(row.customer_phone);
@@ -147,13 +277,14 @@ function processAgingItems(rows) {
 
     const existing = customerMap.get(pairKey);
     if (!existing || completedAt > existing.completedAtDate) {
+      const cfg = configs[categoryKey] || { label: categoryKey, days: 90, isCrossSelling: false };
       customerMap.set(pairKey, {
         customer_name: String(row.customer_name || "").trim(),
         customer_phone: row.customer_phone || "",
         normalized_phone: normPhone,
         customer_address: row.customer_address || "-",
         category_key: categoryKey,
-        category_label: AGING_CONFIG[categoryKey].label,
+        category_label: cfg.label || categoryKey,
         service_name: row.service_name,
         reference_no: row.reference_no,
         source_system: row.source_system,
@@ -168,9 +299,11 @@ function processAgingItems(rows) {
   let reminderCount = 0;
   let safeCount = 0;
   let crossSellingCount = 0;
+  let remindedTotalCount = 0;
+  let unremindedCount = 0;
 
   for (const item of customerMap.values()) {
-    const cfg = AGING_CONFIG[item.category_key];
+    const cfg = configs[item.category_key] || { label: item.category_key, days: 90, isCrossSelling: false };
     const diffMs = now.getTime() - item.completedAtDate.getTime();
     const agingDays = Math.max(0, Math.floor(diffMs / (1000 * 60 * 60 * 24)));
 
@@ -180,14 +313,31 @@ function processAgingItems(rows) {
     if (cfg.isCrossSelling) {
       status = "cross_selling";
       crossSellingCount += 1;
-    } else if (agingDays >= cfg.days) {
+    } else if (cfg.days != null && agingDays >= cfg.days) {
       status = "reminder";
       daysDiff = agingDays - cfg.days;
       reminderCount += 1;
     } else {
       status = "safe";
-      daysDiff = cfg.days - agingDays;
+      daysDiff = (cfg.days || 90) - agingDays;
       safeCount += 1;
+    }
+
+    // Check reminder log
+    const matchKey1 = item.normalized_phone ? `${item.normalized_phone}__${item.category_key}` : null;
+    const matchKey2 = item.reference_no ? `${item.reference_no}__${item.category_key}` : null;
+    const remLog = (matchKey1 && reminderMap.get(matchKey1)) || (matchKey2 && reminderMap.get(matchKey2)) || null;
+
+    const isReminded = Boolean(remLog);
+    const remindedAt = remLog ? remLog.reminded_at : null;
+    const remindedBy = remLog ? remLog.reminded_by : null;
+    const reminderChannel = remLog ? remLog.channel : null;
+    const countReminders = (matchKey1 && reminderCounts.get(matchKey1)) || (matchKey2 && reminderCounts.get(matchKey2)) || 0;
+
+    if (isReminded) {
+      remindedTotalCount += 1;
+    } else if (status === "reminder") {
+      unremindedCount += 1;
     }
 
     items.push({
@@ -207,6 +357,11 @@ function processAgingItems(rows) {
       is_cross_selling: cfg.isCrossSelling,
       status,
       days_diff: daysDiff,
+      is_reminded: isReminded,
+      reminded_at: remindedAt,
+      reminded_by: remindedBy,
+      reminder_channel: reminderChannel,
+      reminder_count: countReminders,
     });
   }
 
@@ -217,6 +372,8 @@ function processAgingItems(rows) {
       reminder: reminderCount,
       safe: safeCount,
       crossSelling: crossSellingCount,
+      reminded: remindedTotalCount,
+      unreminded: unremindedCount,
     },
   };
 }
@@ -226,7 +383,8 @@ function processAgingItems(rows) {
  */
 export async function getCustomerAgingCategories(req, res) {
   try {
-    const categories = Object.entries(AGING_CONFIG).map(([key, val]) => ({
+    const configs = await loadAgingConfigs();
+    const categories = Object.entries(configs).map(([key, val]) => ({
       key,
       label: val.label,
       days: val.days,
@@ -244,8 +402,12 @@ export async function getCustomerAgingCategories(req, res) {
  */
 export async function getCustomerAgingStats(req, res) {
   try {
-    const rows = await loadAllRawCompletedTransactions();
-    const { stats } = processAgingItems(rows);
+    const [rows, reminderLogs, configs] = await Promise.all([
+      loadAllRawCompletedTransactions(),
+      loadReminderLogs(),
+      loadAgingConfigs(),
+    ]);
+    const { stats } = processAgingItems(rows, reminderLogs, configs);
     return res.json({ success: true, stats });
   } catch (err) {
     console.error("[getCustomerAgingStats Error]:", err);
@@ -262,20 +424,33 @@ export async function listCustomerAging(req, res) {
       search = "",
       status = "all",
       category = "all",
+      reminderStatus = "all", // all | unreminded | reminded
       sortBy = "aging_desc",
       page = "1",
       pageSize = "20",
     } = req.query;
 
-    const rows = await loadAllRawCompletedTransactions();
-    const { items: allItems, stats } = processAgingItems(rows);
+    const [rows, reminderLogs, configs] = await Promise.all([
+      loadAllRawCompletedTransactions(),
+      loadReminderLogs(),
+      loadAgingConfigs(),
+    ]);
+    const { items: allItems, stats } = processAgingItems(rows, reminderLogs, configs);
 
     let filtered = allItems;
 
-    // Filter status
+    // Filter status aging
     const statusLower = String(status || "all").trim().toLowerCase();
     if (statusLower && statusLower !== "all") {
       filtered = filtered.filter((i) => i.status === statusLower);
+    }
+
+    // Filter reminder status follow-up
+    const remStatus = String(reminderStatus || "all").trim().toLowerCase();
+    if (remStatus === "unreminded") {
+      filtered = filtered.filter((i) => !i.is_reminded);
+    } else if (remStatus === "reminded") {
+      filtered = filtered.filter((i) => i.is_reminded);
     }
 
     // Filter category
@@ -343,5 +518,76 @@ export async function listCustomerAging(req, res) {
   } catch (err) {
     console.error("[listCustomerAging Error]:", err);
     return res.status(500).json({ success: false, message: "Gagal memuat data aging pelanggan" });
+  }
+}
+
+/**
+ * POST /cleanox/customer-aging/remind
+ */
+export async function recordCustomerReminder(req, res) {
+  try {
+    await ensureReminderTable();
+    const {
+      customer_phone = "",
+      customer_name = "",
+      reference_no = "",
+      category_key = "",
+      service_name = "",
+      channel = "WhatsApp",
+      notes = "",
+    } = req.body;
+
+    const reminded_by = req.user?.name || req.body.reminded_by || "CS Cleanox";
+
+    if (!category_key) {
+      return res.status(400).json({ success: false, message: "category_key wajib diisi" });
+    }
+
+    const normPhone = normalizePhone(customer_phone);
+
+    await safeCleanoxQuery(
+      `INSERT INTO tr_customer_aging_reminders 
+        (customer_phone, customer_name, reference_no, category_key, service_name, channel, reminded_at, reminded_by, notes)
+       VALUES (?, ?, ?, ?, ?, ?, NOW(), ?, ?)`,
+      [normPhone || customer_phone, customer_name, reference_no, category_key, service_name, channel, reminded_by, notes]
+    );
+
+    return res.json({
+      success: true,
+      message: "Reminder berhasil dicatat",
+      data: {
+        customer_phone,
+        customer_name,
+        category_key,
+        reminded_at: new Date().toISOString(),
+        reminded_by,
+      },
+    });
+  } catch (err) {
+    console.error("[recordCustomerReminder Error]:", err);
+    return res.status(500).json({ success: false, message: "Gagal mencatat reminder" });
+  }
+}
+
+/**
+ * POST /cleanox/customer-aging/unremind
+ */
+export async function cancelCustomerReminder(req, res) {
+  try {
+    await ensureReminderTable();
+    const { customer_phone = "", category_key = "", reference_no = "" } = req.body;
+    const normPhone = normalizePhone(customer_phone);
+
+    await safeCleanoxQuery(
+      `DELETE FROM tr_customer_aging_reminders 
+       WHERE category_key = ? 
+         AND (customer_phone = ? OR customer_phone = ? OR (reference_no IS NOT NULL AND reference_no = ?))`,
+      [category_key, normPhone, customer_phone, reference_no]
+    );
+
+    return res.json({ success: true, message: "Status reminder berhasil direset" });
+  } catch (err) {
+    console.error("[cancelCustomerReminder Error]:", err);
+    return res.status(500).json({ success: false, message: "Gagal mereset status reminder" });
   }
 }
