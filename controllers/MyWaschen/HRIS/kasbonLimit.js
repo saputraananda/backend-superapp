@@ -55,32 +55,43 @@ export async function getEmployeeSalary(employeeId) {
   return rows[0] || null;
 }
 
-/** @returns {Promise<{kasbon:number, pinjaman:number, total:number}>} */
+/** Pinjaman menahan limit sebesar cicilan yang jatuh tempo di cutoff ini, bukan sisa pokok. */
 export async function reservedAmount(employeeId, excludeId = null) {
   const exclude = excludeId ? " AND k.id <> ?" : "";
-  const params = excludeId ? [employeeId, excludeId] : [employeeId];
+  const cutoffEnd = currentCutoff().end;
+  const pendingParams = excludeId ? [employeeId, excludeId] : [employeeId];
+  const openParams = excludeId ? [employeeId, cutoffEnd, excludeId] : [employeeId, cutoffEnd];
   const [pending] = await safeMyWaschenQuery(
-    `SELECT k.type, COALESCE(SUM(k.amount_requested), 0) AS hold
+    `SELECT k.type, COALESCE(SUM(
+        CASE WHEN k.type = 'pinjaman'
+          THEN FLOOR(k.amount_requested / GREATEST(COALESCE(k.tenor_count, 1), 1))
+          ELSE k.amount_requested END
+      ), 0) AS hold
      FROM tr_kasbon k
      WHERE k.employee_id = ? AND k.status IN ('pengajuan','proses')${exclude}
      GROUP BY k.type`,
-    params
+    pendingParams
   );
   const [open] = await safeMyWaschenQuery(
     `SELECT k.type, COALESCE(SUM(p.amount), 0) AS hold
      FROM tr_kasbon_payment p
      JOIN tr_kasbon k ON k.id = p.kasbon_id
-     WHERE k.employee_id = ? AND k.status = 'disetujui' AND p.status = 'belum'${exclude}
+     WHERE k.employee_id = ? AND k.status = 'disetujui' AND p.status = 'belum'
+       AND (k.type <> 'pinjaman' OR p.due_date <= ?)${exclude}
      GROUP BY k.type`,
-    params
+    openParams
   );
   const [legacy] = await safeMyWaschenQuery(
-    `SELECT k.type, COALESCE(SUM(COALESCE(k.amount_approved, k.amount_requested)), 0) AS hold
+    `SELECT k.type, COALESCE(SUM(
+        CASE WHEN k.type = 'pinjaman'
+          THEN COALESCE(k.installment_amount, FLOOR(COALESCE(k.amount_approved, k.amount_requested) / GREATEST(COALESCE(k.tenor_count, 1), 1)))
+          ELSE COALESCE(k.amount_approved, k.amount_requested) END
+      ), 0) AS hold
      FROM tr_kasbon k
      WHERE k.employee_id = ? AND k.status = 'disetujui'${exclude}
        AND NOT EXISTS (SELECT 1 FROM tr_kasbon_payment p WHERE p.kasbon_id = k.id)
      GROUP BY k.type`,
-    params
+    pendingParams
   );
   const out = { kasbon: 0, pinjaman: 0, total: 0 };
   for (const bucket of [pending, open, legacy]) {

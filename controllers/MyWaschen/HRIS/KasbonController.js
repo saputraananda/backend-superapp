@@ -9,7 +9,7 @@ import { buildKasbonProofUrl } from "./hrisAssetHelpers.js";
 import { notifyWaschenRealtime } from "../../../utils/notifyWaschenRealtime.js";
 
 import { uploadKasbonPaymentProof, deleteWaschenMobileUpload } from "../../../utils/waschenMobileUpload.js";
-import { buildKasbonSummary, getEmployeeSalary, insertSchedule, splitInstallments } from "./kasbonLimit.js";
+import { buildKasbonSummary, currentCutoff, getEmployeeSalary, insertSchedule, splitInstallments } from "./kasbonLimit.js";
 
 
 
@@ -228,8 +228,13 @@ export const getKasbonMonitor = async (req, res) => {
       params,
     );
 
+    const cutoffEnd = currentCutoff().end;
     const [pending] = await safeMyWaschenQuery(
-      `SELECT employee_id, type, COALESCE(SUM(amount_requested), 0) AS hold
+      `SELECT employee_id, type, COALESCE(SUM(
+          CASE WHEN type = 'pinjaman'
+            THEN FLOOR(amount_requested / GREATEST(COALESCE(tenor_count, 1), 1))
+            ELSE amount_requested END
+        ), 0) AS hold
        FROM tr_kasbon
        WHERE status IN ('pengajuan','proses')
        GROUP BY employee_id, type`,
@@ -239,10 +244,16 @@ export const getKasbonMonitor = async (req, res) => {
        FROM tr_kasbon_payment p
        JOIN tr_kasbon k ON k.id = p.kasbon_id
        WHERE k.status = 'disetujui' AND p.status = 'belum'
+         AND (k.type <> 'pinjaman' OR p.due_date <= ?)
        GROUP BY k.employee_id, k.type`,
+      [cutoffEnd],
     );
     const [legacy] = await safeMyWaschenQuery(
-      `SELECT k.employee_id, k.type, COALESCE(SUM(COALESCE(k.amount_approved, k.amount_requested)), 0) AS hold
+      `SELECT k.employee_id, k.type, COALESCE(SUM(
+          CASE WHEN k.type = 'pinjaman'
+            THEN COALESCE(k.installment_amount, FLOOR(COALESCE(k.amount_approved, k.amount_requested) / GREATEST(COALESCE(k.tenor_count, 1), 1)))
+            ELSE COALESCE(k.amount_approved, k.amount_requested) END
+        ), 0) AS hold
        FROM tr_kasbon k
        WHERE k.status = 'disetujui'
          AND NOT EXISTS (SELECT 1 FROM tr_kasbon_payment p WHERE p.kasbon_id = k.id)
@@ -522,15 +533,21 @@ export const approveKasbon = async (req, res) => {
 
     }
 
-    if (approved > summary.sisa) {
-
-      return res.status(422).json({ success: false, message: `Nominal melebihi sisa limit (Rp ${summary.sisa.toLocaleString("id-ID")}).` });
-
-    }
-
     const tenor = row.type === "kasbon" ? 1 : Math.max(1, Number(row.tenor_count) || 1);
 
     const amounts = splitInstallments(approved, tenor);
+
+    const charge = row.type === "pinjaman" ? amounts[0] : approved;
+
+    if (charge > summary.sisa) {
+
+      const message = row.type === "pinjaman"
+        ? `Cicilan bulan ini (Rp ${charge.toLocaleString("id-ID")}) melebihi sisa limit (Rp ${summary.sisa.toLocaleString("id-ID")}).`
+        : `Nominal melebihi sisa limit (Rp ${summary.sisa.toLocaleString("id-ID")}).`;
+
+      return res.status(422).json({ success: false, message });
+
+    }
 
     const conn = await myWaschenPool.getConnection();
 
@@ -819,13 +836,19 @@ export const createOpeningBalance = async (req, res) => {
 
     }
 
-    if (amount > summary.sisa) {
+    const amounts = splitInstallments(amount, tenor);
 
-      return res.status(422).json({ success: false, message: `Saldo terakhir melebihi sisa limit (Rp ${summary.sisa.toLocaleString("id-ID")}).` });
+    const charge = type === "pinjaman" ? amounts[currentNo - 1] : amount;
+
+    if (charge > summary.sisa) {
+
+      const message = type === "pinjaman"
+        ? `Cicilan bulan ini (Rp ${charge.toLocaleString("id-ID")}) melebihi sisa limit (Rp ${summary.sisa.toLocaleString("id-ID")}).`
+        : `Saldo terakhir melebihi sisa limit (Rp ${summary.sisa.toLocaleString("id-ID")}).`;
+
+      return res.status(422).json({ success: false, message });
 
     }
-
-    const amounts = splitInstallments(amount, tenor);
 
     if (!/^\d{4}-\d{2}-\d{2}$/.test(submissionDate)) {
       return res.status(422).json({ success: false, message: "Tanggal wajib diisi" });
@@ -873,7 +896,7 @@ export const createOpeningBalance = async (req, res) => {
 
           amounts[0],
 
-          purpose || null,
+          purpose,
 
           actor.name,
 

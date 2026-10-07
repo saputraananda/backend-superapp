@@ -788,6 +788,33 @@ export const getAttendanceDetail = async (req, res) => {
   }
 };
 
+/** DELETE /waschen/hris/attendance/cleanliness/:photoId */
+export const deleteCleanlinessPhoto = async (req, res) => {
+  try {
+    const id = Number(req.params.photoId);
+    if (!id) return res.status(400).json({ success: false, message: "Foto tidak valid" });
+
+    const [rows] = await safeMyWaschenQuery(
+      `SELECT cleanliness_photo_id, photo_name FROM tr_attendance_cleanliness_photo WHERE cleanliness_photo_id = ? LIMIT 1`,
+      [id],
+    );
+    if (!rows.length) {
+      return res.status(404).json({ success: false, message: "Foto kebersihan tidak ditemukan" });
+    }
+
+    await safeMyWaschenQuery(
+      `DELETE FROM tr_attendance_cleanliness_photo WHERE cleanliness_photo_id = ?`,
+      [id],
+    );
+    await tryDeleteTypedPhoto("cleanliness", rows[0].photo_name);
+
+    return res.json({ success: true, message: "Foto kebersihan dihapus" });
+  } catch (err) {
+    console.error("deleteCleanlinessPhoto:", err);
+    return res.status(500).json({ success: false, message: "Gagal menghapus foto kebersihan" });
+  }
+};
+
 /** GET /waschen/hris/attendance/cleanliness — tab Kebersihan */
 export const getCleanlinessList = async (req, res) => {
   try {
