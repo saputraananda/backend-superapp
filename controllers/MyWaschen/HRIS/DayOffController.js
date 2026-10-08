@@ -2,6 +2,38 @@ import { safeMyWaschenQuery, safeQuery } from "../../../db/pool.js";
 import { defaultCutoffDateRange } from "../cutoffHelpers.js";
 import { getActor, getEmployeeNameMap, toISODate, resolveMstRoleEmployeeIds, appendEmployeeIdInClause } from "./hrisHelpers.js";
 
+async function resolveBackupId(raw, employeeId, offDate) {
+  if (raw === undefined || raw === null || raw === "") return null;
+  const id = Number(raw);
+  if (!Number.isInteger(id) || id <= 0) {
+    const err = new Error("Karyawan backup tidak valid");
+    err.statusCode = 422;
+    throw err;
+  }
+  if (id === Number(employeeId)) {
+    const err = new Error("Karyawan tidak bisa menjadi backup dirinya sendiri");
+    err.statusCode = 422;
+    throw err;
+  }
+  const [emp] = await safeQuery("SELECT employee_id FROM mst_employee WHERE employee_id = ? LIMIT 1", [id]);
+  if (!emp.length) {
+    const err = new Error("Karyawan backup tidak ditemukan");
+    err.statusCode = 422;
+    throw err;
+  }
+  const [clash] = await safeMyWaschenQuery(
+    `SELECT day_off_id FROM tr_employee_day_off
+     WHERE employee_id = ? AND off_date = ? AND status = 'disetujui' LIMIT 1`,
+    [id, offDate],
+  );
+  if (clash.length) {
+    const err = new Error("Karyawan backup sudah disetujui libur di tanggal yang sama");
+    err.statusCode = 422;
+    throw err;
+  }
+  return id;
+}
+
 export const getDayOffList = async (req, res) => {
   try {
     const defaults = defaultCutoffDateRange();
@@ -52,7 +84,7 @@ export const getDayOffList = async (req, res) => {
       params,
     );
 
-    const empMap = await getEmployeeNameMap(rows.map((r) => r.employee_id));
+    const empMap = await getEmployeeNameMap(rows.flatMap((r) => [r.employee_id, r.backup_employee_id]));
     const empIds = [...new Set(rows.map((r) => Number(r.employee_id)).filter(Boolean))];
     const outletByEmp = new Map();
     if (empIds.length) {
@@ -83,6 +115,7 @@ export const getDayOffList = async (req, res) => {
       employee_name: empMap.get(Number(r.employee_id))?.full_name || `#${r.employee_id}`,
       employee_code: empMap.get(Number(r.employee_id))?.employee_code || null,
       outlet_name: outletByEmp.get(Number(r.employee_id)) || null,
+      backup_name: empMap.get(Number(r.backup_employee_id))?.full_name || null,
     }));
 
     if (search) {
@@ -117,15 +150,16 @@ export const adminAssignDayOff = async (req, res) => {
     if (!employeeId || !offDate || !reason) {
       return res.status(422).json({ success: false, message: "Karyawan, tanggal, dan alasan wajib" });
     }
+    const backupId = await resolveBackupId(req.body.backup_employee_id, employeeId, offDate);
     const d = new Date(`${offDate}T12:00:00`);
     const scheduleYear = d.getFullYear();
     const scheduleMonth = d.getMonth() + 1;
 
     const [result] = await safeMyWaschenQuery(
       `INSERT INTO tr_employee_day_off
-       (employee_id, off_date, schedule_year, schedule_month, reason, status, source, reviewed_by, reviewed_at)
-       VALUES (?, ?, ?, ?, ?, 'disetujui', 'admin', ?, NOW())`,
-      [employeeId, offDate, scheduleYear, scheduleMonth, reason, actor.employee_id],
+       (employee_id, off_date, schedule_year, schedule_month, reason, status, source, backup_employee_id, reviewed_by, reviewed_at)
+       VALUES (?, ?, ?, ?, ?, 'disetujui', 'admin', ?, ?, NOW())`,
+      [employeeId, offDate, scheduleYear, scheduleMonth, reason, backupId, actor.employee_id],
     );
 
     await safeMyWaschenQuery(
@@ -139,7 +173,7 @@ export const adminAssignDayOff = async (req, res) => {
     if (err.code === "ER_DUP_ENTRY") {
       return res.status(409).json({ success: false, message: "Tanggal libur sudah ada untuk karyawan ini" });
     }
-    return res.status(500).json({ success: false, message: err.message });
+    return res.status(err.statusCode || 500).json({ success: false, message: err.message || "Gagal menetapkan jadwal libur" });
   }
 };
 
@@ -153,10 +187,14 @@ export const approveDayOff = async (req, res) => {
     if (!hrdOpen.includes(rows[0].status)) {
       return res.status(409).json({ success: false, message: "Pengajuan ini sudah diputuskan HRD" });
     }
+    const offDate = toISODate(rows[0].off_date);
+    const backupId = await resolveBackupId(req.body.backup_employee_id, rows[0].employee_id, offDate);
 
     await safeMyWaschenQuery(
-      `UPDATE tr_employee_day_off SET status = 'disetujui', reviewed_by = ?, reviewed_at = NOW() WHERE day_off_id = ?`,
-      [actor.employee_id, id],
+      `UPDATE tr_employee_day_off
+       SET status = 'disetujui', backup_employee_id = ?, reviewed_by = ?, reviewed_at = NOW()
+       WHERE day_off_id = ?`,
+      [backupId, actor.employee_id, id],
     );
     await safeMyWaschenQuery(
       `INSERT INTO tr_day_off_change_log (day_off_id, employee_id, action, old_off_date, new_off_date, note, changed_by)
@@ -165,7 +203,7 @@ export const approveDayOff = async (req, res) => {
     );
     return res.json({ success: true, message: "Permintaan libur disetujui" });
   } catch (err) {
-    return res.status(500).json({ success: false, message: err.message });
+    return res.status(err.statusCode || 500).json({ success: false, message: err.message || "Gagal menyetujui libur" });
   }
 };
 
