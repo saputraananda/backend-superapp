@@ -1,4 +1,4 @@
-import { safeMyWaschenQuery } from "../../../db/pool.js";
+import { safeMyWaschenQuery, safeQuery } from "../../../db/pool.js";
 import { defaultCutoffDateRange } from "../cutoffHelpers.js";
 import { getActor, getEmployeeNameMap, toISODate, resolveMstRoleEmployeeIds, appendEmployeeIdInClause } from "./hrisHelpers.js";
 
@@ -32,7 +32,9 @@ export const getDayOffList = async (req, res) => {
       cond.push("d.off_date <= ?");
       params.push(endDate);
     }
-    if (status && status !== "Semua") {
+    if (status === "menunggu") {
+      cond.push("d.status IN ('pengajuan', 'disetujui_leader', 'ditolak_leader')");
+    } else if (status && status !== "Semua") {
       cond.push("d.status = ?");
       params.push(status.toLowerCase());
     }
@@ -51,12 +53,36 @@ export const getDayOffList = async (req, res) => {
     );
 
     const empMap = await getEmployeeNameMap(rows.map((r) => r.employee_id));
+    const empIds = [...new Set(rows.map((r) => Number(r.employee_id)).filter(Boolean))];
+    const outletByEmp = new Map();
+    if (empIds.length) {
+      const [roles] = await safeMyWaschenQuery(
+        `SELECT employee_id, outlet_id FROM mst_role
+         WHERE employee_id IN (${empIds.map(() => "?").join(",")})
+         ORDER BY is_leader DESC, outlet_id ASC`,
+        empIds,
+      );
+      const outletIds = [...new Set(roles.map((r) => Number(r.outlet_id)).filter(Boolean))];
+      const outletName = new Map();
+      if (outletIds.length) {
+        const [outlets] = await safeQuery(
+          `SELECT id, name, full_name FROM mst_outlet WHERE id IN (${outletIds.map(() => "?").join(",")})`,
+          outletIds,
+        );
+        outlets.forEach((o) => outletName.set(Number(o.id), o.name || o.full_name || null));
+      }
+      roles.forEach((r) => {
+        const id = Number(r.employee_id);
+        if (!outletByEmp.has(id)) outletByEmp.set(id, outletName.get(Number(r.outlet_id)) || null);
+      });
+    }
     let items = rows.map((r) => ({
       ...r,
       off_date: toISODate(r.off_date),
       requested_date: toISODate(r.requested_date),
       employee_name: empMap.get(Number(r.employee_id))?.full_name || `#${r.employee_id}`,
       employee_code: empMap.get(Number(r.employee_id))?.employee_code || null,
+      outlet_name: outletByEmp.get(Number(r.employee_id)) || null,
     }));
 
     if (search) {
@@ -70,7 +96,7 @@ export const getDayOffList = async (req, res) => {
 
     const summary = {
       total: items.length,
-      pengajuan: items.filter((r) => r.status === "pengajuan").length,
+      pengajuan: items.filter((r) => ["pengajuan", "disetujui_leader", "ditolak_leader"].includes(r.status)).length,
       disetujui: items.filter((r) => r.status === "disetujui").length,
       ditolak: items.filter((r) => r.status === "ditolak").length,
     };
@@ -123,6 +149,10 @@ export const approveDayOff = async (req, res) => {
     const id = Number(req.params.id);
     const [rows] = await safeMyWaschenQuery("SELECT * FROM tr_employee_day_off WHERE day_off_id = ?", [id]);
     if (!rows.length) return res.status(404).json({ success: false, message: "Data tidak ditemukan" });
+    const hrdOpen = ["pengajuan", "disetujui_leader", "ditolak_leader"];
+    if (!hrdOpen.includes(rows[0].status)) {
+      return res.status(409).json({ success: false, message: "Pengajuan ini sudah diputuskan HRD" });
+    }
 
     await safeMyWaschenQuery(
       `UPDATE tr_employee_day_off SET status = 'disetujui', reviewed_by = ?, reviewed_at = NOW() WHERE day_off_id = ?`,
@@ -146,6 +176,10 @@ export const rejectDayOff = async (req, res) => {
     const note = String(req.body.rejection_note || req.body.note || "").trim();
     const [rows] = await safeMyWaschenQuery("SELECT * FROM tr_employee_day_off WHERE day_off_id = ?", [id]);
     if (!rows.length) return res.status(404).json({ success: false, message: "Data tidak ditemukan" });
+    const hrdOpen = ["pengajuan", "disetujui_leader", "ditolak_leader"];
+    if (!hrdOpen.includes(rows[0].status)) {
+      return res.status(409).json({ success: false, message: "Pengajuan ini sudah diputuskan HRD" });
+    }
 
     await safeMyWaschenQuery(
       `UPDATE tr_employee_day_off SET status = 'ditolak', rejection_note = ?, reviewed_by = ?, reviewed_at = NOW() WHERE day_off_id = ?`,
