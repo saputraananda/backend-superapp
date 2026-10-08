@@ -265,6 +265,7 @@ export const exportIKMEmployees = async (req, res) => {
 					e.gender,
 					e.birth_place,
 					e.birth_date,
+					e.blood_type,
 					e.address,
 					e.ktp_number,
 					e.family_card_number,

@@ -15,6 +15,12 @@ const BASE_DIR = isProd ? DEFAULT_PROD_BASE : DEFAULT_DEV_BASE;
 const AVATAR_DIR   = path.join(BASE_DIR, "avatars");
 const DOCUMENT_DIR = path.join(BASE_DIR, "documents");
 
+function normalizeBloodType(value) {
+  if (value == null || String(value).trim() === "") return null;
+  const v = String(value).trim().toUpperCase().replace(/\s+/g, "");
+  return /^(A|B|AB|O)[+-]?$/.test(v) ? v : false;
+}
+
 const deleteOldFile = (filePath, dir) => {
   if (!filePath) return;
   const abs = path.join(dir, path.basename(filePath));
@@ -300,7 +306,7 @@ export const listEmployees = async (req, res) => {
       `SELECT
         e.employee_id, e.full_name, e.email, e.phone_number,
         e.join_date, e.contract_end_date, e.exit_date,
-        e.profile_path, e.gender, e.birth_place, e.birth_date, e.address,
+        e.profile_path, e.gender, e.birth_place, e.birth_date, e.blood_type, e.address,
         e.ktp_number, e.family_card_number, e.religion_id,
         e.marital_status, e.company_id, e.department_id,
         e.position_id, e.employment_status_id,
@@ -380,7 +386,7 @@ export const updateEmployee = async (req, res) => {
   try {
     const { id } = req.params;
     const {
-      full_name, gender, birth_place, birth_date, address, ktp_number,
+      full_name, gender, birth_place, birth_date, blood_type, address, ktp_number,
       family_card_number, phone_number, company_id, job_level_id, position_id,
       department_id, join_date, employment_status_id, contract_end_date,
       exit_date, exit_reason, education_level_id, school_name, major_name, religion_id,
@@ -442,9 +448,14 @@ export const updateEmployee = async (req, res) => {
       salaryValue = n;
     }
 
+    const bloodType = normalizeBloodType(blood_type);
+    if (bloodType === false) {
+      return res.status(400).json({ message: "Golongan darah tidak valid. Isi A, B, AB, atau O." });
+    }
+
     await safeQuery(
       `UPDATE mst_employee SET
-        full_name = ?, gender = ?, birth_place = ?, birth_date = ?,
+        full_name = ?, gender = ?, birth_place = ?, birth_date = ?, blood_type = ?,
         address = ?, ktp_number = ?, family_card_number = ?,
         phone_number = ?, company_id = ?, job_level_id = ?, position_id = ?,
         department_id = ?, join_date = ?, employment_status_id = ?,
@@ -456,7 +467,7 @@ export const updateEmployee = async (req, res) => {
         email = ?, private_email = ?
        WHERE employee_id = ? AND is_deleted = 0`,
       [
-        full_name, gender, birth_place, birth_date, address, ktp_number,
+        full_name, gender, birth_place, birth_date, bloodType, address, ktp_number,
         family_card_number, phone_number, company_id, job_level_id, position_id,
         department_id, join_date, employment_status_id, contract_end_date,
         exit_date || null, exit_reason || null,

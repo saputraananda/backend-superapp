@@ -344,7 +344,7 @@ export const getWaschenEmployee = async (req, res) => {
       `
         SELECT
           e.employee_id, e.employee_code, e.full_name, e.gender,
-          e.birth_place, e.birth_date, e.address, e.phone_number, e.email,
+          e.birth_place, e.birth_date, e.blood_type, e.address, e.phone_number, e.email,
           e.join_date, e.contract_end_date, e.marital_status, e.school_name, e.major_name,
           e.company_id, e.position_id, e.job_level_id, e.created_at,
           u.username, c.company_name, p.position_name, j.job_level_name,

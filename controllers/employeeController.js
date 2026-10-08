@@ -9,6 +9,12 @@ const __dirname  = path.dirname(__filename);
 const AVATAR_DIR   = path.join(__dirname, "..", "assets", "avatars");
 const DOCUMENT_DIR = path.join(__dirname, "..", "assets", "documents");
 
+function normalizeBloodType(value) {
+  if (value == null || String(value).trim() === "") return null;
+  const v = String(value).trim().toUpperCase().replace(/\s+/g, "");
+  return /^(A|B|AB|O)[+-]?$/.test(v) ? v : false;
+}
+
 const deleteOldFile = (filePath, dir = AVATAR_DIR) => {
   if (!filePath) return;
   const abs = path.join(dir, path.basename(filePath));
@@ -84,7 +90,7 @@ export const updateProfile = async (req, res) => {
   const toNull = (value) => (value === "" || value == null ? null : value);
 
   const {
-    full_name, gender, birth_place, birth_date, address, ktp_number,
+    full_name, gender, birth_place, birth_date, blood_type, address, ktp_number,
     family_card_number, phone_number, company_id, job_level_id, position_id,
     department_id, join_date, employment_status_id, contract_end_date,
     education_level_id, school_name, major_name, religion_id, marital_status,
@@ -144,9 +150,14 @@ export const updateProfile = async (req, res) => {
       }
     }
 
+    const bloodType = normalizeBloodType(blood_type);
+    if (bloodType === false) {
+      return res.status(400).json({ message: "Golongan darah tidak valid. Isi A, B, AB, atau O." });
+    }
+
     await safeQuery(
       `UPDATE mst_employee SET
-        full_name = ?, gender = ?, birth_place = ?, birth_date = ?,
+        full_name = ?, gender = ?, birth_place = ?, birth_date = ?, blood_type = ?,
         address = ?, ktp_number = ?, family_card_number = ?,
         phone_number = ?, company_id = ?, job_level_id = ?, position_id = ?,
         department_id = ?, join_date = ?, employment_status_id = ?,
@@ -157,7 +168,7 @@ export const updateProfile = async (req, res) => {
         mother_name = ?, email = ?, private_email = ?
        WHERE email = ? AND is_deleted = 0`,
       [
-        full_name, gender, birth_place, toNull(birth_date), address, ktp_number,
+        full_name, gender, birth_place, toNull(birth_date), bloodType, address, ktp_number,
         family_card_number, phone_number, toNull(company_id), toNull(job_level_id), toNull(position_id),
         toNull(department_id), toNull(join_date), toNull(employment_status_id), toNull(contract_end_date),
         toNull(education_level_id), school_name, major_name || null, toNull(religion_id), marital_status,
