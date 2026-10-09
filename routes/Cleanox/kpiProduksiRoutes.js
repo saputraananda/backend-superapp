@@ -7,6 +7,7 @@ import {
   getKpiOutlets,
   getSlaItems,
   exportSlaItems,
+  exportKpiExcel,
   getKpiOnlySummary,
   getKpiOnlyDetail,
   getKpiOnlyAvailablePeriods,
@@ -18,6 +19,7 @@ router.get("/summary", requireAuth, getKpiSummary);
 router.get("/detail", requireAuth, getKpiDetail);
 router.get("/available-periods", requireAuth, getAvailablePeriods);
 router.get("/outlets", requireAuth, getKpiOutlets);
+router.get("/export-excel", requireAuth, exportKpiExcel);
 router.get("/sla-items", requireAuth, getSlaItems);
 router.get("/sla-items/export", requireAuth, exportSlaItems);
 

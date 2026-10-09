@@ -100,7 +100,22 @@ export const getServices = async (req, res) => {
 
 // ── CREATE SERVICE ────────────────────────────────────────
 export const createService = async (req, res) => {
-  const { name, price, satuan_id, satuan_name, category_id, duration_value, duration_unit } = req.body;
+  const {
+    name,
+    price,
+    satuan_id,
+    satuan_name,
+    category_id,
+    duration_value,
+    duration_unit,
+    durasi_cuci_menit = 0,
+    durasi_jemur_menit = 0,
+    durasi_packing_menit = 0,
+    durasi_blower_menit = 0,
+    total_durasi_kerja_menit = 0,
+    sla_hari = 0,
+    kategori_kpi = null,
+  } = req.body;
 
   if (!name || price == null) {
     return res.status(400).json({ message: "Nama dan Harga wajib diisi" });
@@ -112,13 +127,43 @@ export const createService = async (req, res) => {
   const durationValueVal = duration_value !== undefined && duration_value !== "" ? duration_value : null;
   const durationUnitVal = duration_unit !== undefined && duration_unit !== "" ? duration_unit : null;
 
+  const cuci = Number(durasi_cuci_menit) || 0;
+  const jemur = Number(durasi_jemur_menit) || 0;
+  const packing = Number(durasi_packing_menit) || 0;
+  const blower = Number(durasi_blower_menit) || 0;
+  let total = Number(total_durasi_kerja_menit) || 0;
+  if (total === 0 && (cuci > 0 || jemur > 0 || packing > 0)) {
+    total = cuci + jemur + packing;
+  }
+  const sla = Number(sla_hari) || 0;
+
   try {
     const [result] = await safeCleanoxQuery(
       `
-      INSERT INTO mst_services (name, price, satuan_id, satuan_name, category_id, duration_value, duration_unit)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO mst_services (
+        name, price, satuan_id, satuan_name, category_id,
+        duration_value, duration_unit,
+        durasi_cuci_menit, durasi_jemur_menit, durasi_packing_menit, durasi_blower_menit,
+        total_durasi_kerja_menit, sla_hari, kategori_kpi
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
-      [name, price, satuanIdVal, satuanNameVal, categoryIdVal, durationValueVal, durationUnitVal]
+      [
+        name,
+        price,
+        satuanIdVal,
+        satuanNameVal,
+        categoryIdVal,
+        durationValueVal,
+        durationUnitVal,
+        cuci,
+        jemur,
+        packing,
+        blower,
+        total,
+        sla,
+        kategori_kpi || null,
+      ]
     );
 
     await upsertServicePrice(result.insertId, price);
@@ -133,7 +178,23 @@ export const createService = async (req, res) => {
 // ── UPDATE SERVICE ────────────────────────────────────────
 export const updateService = async (req, res) => {
   const { id } = req.params;
-  const { name, price, satuan_id, satuan_name, category_id, duration_value, duration_unit, status } = req.body;
+  const {
+    name,
+    price,
+    satuan_id,
+    satuan_name,
+    category_id,
+    duration_value,
+    duration_unit,
+    status,
+    durasi_cuci_menit,
+    durasi_jemur_menit,
+    durasi_packing_menit,
+    durasi_blower_menit,
+    total_durasi_kerja_menit,
+    sla_hari,
+    kategori_kpi,
+  } = req.body;
 
   if (!name || price == null) {
     return res.status(400).json({ message: "Nama dan Harga wajib diisi" });
@@ -145,14 +206,49 @@ export const updateService = async (req, res) => {
   const durationValueVal = duration_value !== undefined && duration_value !== "" ? duration_value : null;
   const durationUnitVal = duration_unit !== undefined && duration_unit !== "" ? duration_unit : null;
 
+  const cuci = durasi_cuci_menit !== undefined ? Number(durasi_cuci_menit) || 0 : undefined;
+  const jemur = durasi_jemur_menit !== undefined ? Number(durasi_jemur_menit) || 0 : undefined;
+  const packing = durasi_packing_menit !== undefined ? Number(durasi_packing_menit) || 0 : undefined;
+  const blower = durasi_blower_menit !== undefined ? Number(durasi_blower_menit) || 0 : undefined;
+  let total = total_durasi_kerja_menit !== undefined ? Number(total_durasi_kerja_menit) || 0 : undefined;
+  if (total === 0 && cuci !== undefined && (cuci > 0 || jemur > 0 || packing > 0)) {
+    total = (cuci || 0) + (jemur || 0) + (packing || 0);
+  }
+  const sla = sla_hari !== undefined ? Number(sla_hari) || 0 : undefined;
+
   try {
     await safeCleanoxQuery(
       `
       UPDATE mst_services
-      SET name = ?, price = ?, satuan_id = ?, satuan_name = ?, category_id = ?, duration_value = ?, duration_unit = ?, status = ?
+      SET name = ?, price = ?, satuan_id = ?, satuan_name = ?, category_id = ?,
+          duration_value = ?, duration_unit = ?, status = ?,
+          durasi_cuci_menit = COALESCE(?, durasi_cuci_menit),
+          durasi_jemur_menit = COALESCE(?, durasi_jemur_menit),
+          durasi_packing_menit = COALESCE(?, durasi_packing_menit),
+          durasi_blower_menit = COALESCE(?, durasi_blower_menit),
+          total_durasi_kerja_menit = COALESCE(?, total_durasi_kerja_menit),
+          sla_hari = COALESCE(?, sla_hari),
+          kategori_kpi = COALESCE(?, kategori_kpi)
       WHERE id = ?
     `,
-      [name, price, satuanIdVal, satuanNameVal, categoryIdVal, durationValueVal, durationUnitVal, status || "Aktif", id]
+      [
+        name,
+        price,
+        satuanIdVal,
+        satuanNameVal,
+        categoryIdVal,
+        durationValueVal,
+        durationUnitVal,
+        status || "Aktif",
+        cuci,
+        jemur,
+        packing,
+        blower,
+        total,
+        sla,
+        kategori_kpi !== undefined ? kategori_kpi : null,
+        id,
+      ]
     );
 
     await upsertServicePrice(id, price);
