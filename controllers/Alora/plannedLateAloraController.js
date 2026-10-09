@@ -70,7 +70,15 @@ async function getEmployeeMap(employeeIds) {
 
 function formatTimeFromDate(value) {
 	if (!value) return null;
-	const d = new Date(value);
+	if (typeof value === "string") {
+		const str = value.trim();
+		if (!/[zZ]|[+-]\d{2}:?\d{2}$/.test(str)) {
+			const m = str.match(/(\d{2}):(\d{2})/);
+			if (m) return `${m[1]}:${m[2]}`;
+		}
+	}
+	const d = value instanceof Date ? value : new Date(value);
+	if (Number.isNaN(d.getTime())) return null;
 	const parts = new Intl.DateTimeFormat("en-GB", {
 		timeZone: "Asia/Jakarta",
 		hour: "2-digit",
