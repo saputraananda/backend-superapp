@@ -6,6 +6,20 @@ const SORT_COLUMNS = [
   "last_transaction_at",
 ];
 
+const MEMBERSHIP_JOIN = `
+  LEFT JOIN (
+    SELECT m.customer_id, m.id, m.package_id, m.status, m.start_date, m.end_date, m.top_up_amount
+    FROM tr_membership m
+    INNER JOIN (
+      SELECT customer_id, MAX(id) AS id
+      FROM tr_membership
+      WHERE status <> 'Cancelled'
+      GROUP BY customer_id
+    ) latest ON latest.id = m.id
+  ) tm ON tm.customer_id = c.id
+  LEFT JOIN mst_membership_package mp ON mp.id = tm.package_id
+`;
+
 const CUSTOMER_SELECT = `
   SELECT c.*,
          o.outlet_code AS preferred_outlet_code,
@@ -16,11 +30,19 @@ const CUSTOMER_SELECT = `
          ct.label AS spending_tier_label,
          cs.code AS customer_source_code,
          cs.name AS customer_source_name,
-         cs.label AS customer_source_label
+         cs.label AS customer_source_label,
+         mp.id AS membership_package_id,
+         mp.tier AS membership_tier,
+         mp.name AS membership_name,
+         tm.status AS membership_status,
+         tm.start_date AS membership_start,
+         tm.end_date AS membership_end,
+         (tm.id IS NOT NULL AND (tm.status <> 'Active' OR tm.end_date < CURDATE())) AS membership_expired
   FROM mst_customer c
   LEFT JOIN mst_outlet o ON o.id = c.preferred_outlet_id
   LEFT JOIN mst_customer_tier ct ON ct.id = c.spending_tier_id
   LEFT JOIN mst_customer_source cs ON cs.id = c.customer_source_id
+  ${MEMBERSHIP_JOIN}
 `;
 
 /** Format: CUS{outlet_code}{YYMM}{sequence 4 digit} — contoh CUSCG26080001 */
@@ -70,6 +92,8 @@ export const getCustomers = async (req, res) => {
     const spendingTierId = req.query.spendingTierId;
     const customerSourceId = req.query.customerSourceId;
     const preferredOutletId = req.query.preferredOutletId;
+    const membershipPackageId = req.query.membershipPackageId;
+    const hasMembership = req.query.hasMembership === "1";
     const dateFrom = String(req.query.dateFrom || "").trim().slice(0, 10);
     const dateTo = String(req.query.dateTo || "").trim().slice(0, 10);
     const sortByRaw = String(req.query.sortBy || "id");
@@ -108,6 +132,13 @@ export const getCustomers = async (req, res) => {
       params.push(Number(preferredOutletId));
     }
 
+    if (membershipPackageId) {
+      where.push("tm.package_id = ?");
+      params.push(Number(membershipPackageId));
+    } else if (hasMembership) {
+      where.push("tm.id IS NOT NULL");
+    }
+
     // Filter tanggal = tanggal terdaftar (created_at). Kosong = tampilkan semua.
     if (dateFrom) {
       where.push("DATE(c.created_at) >= ?");
@@ -126,12 +157,14 @@ export const getCustomers = async (req, res) => {
     const [[stats]] = await safeMyWaschenQuery(
       `SELECT COUNT(*) AS total,
               COALESCE(SUM(c.is_active = 1), 0) AS active,
+              COALESCE(SUM(tm.id IS NOT NULL), 0) AS members,
               COALESCE(SUM(ct.code = 'VIP'), 0) AS vip,
               COALESCE(SUM(ct.code = 'GOLD'), 0) AS gold,
               COALESCE(SUM(ct.code = 'REGULER'), 0) AS reguler,
               COALESCE(SUM(ct.code = 'ONE_TIME'), 0) AS one_time
        FROM mst_customer c
        LEFT JOIN mst_customer_tier ct ON ct.id = c.spending_tier_id
+       ${MEMBERSHIP_JOIN}
        ${whereSql}`,
       params
     );
@@ -159,6 +192,7 @@ export const getCustomers = async (req, res) => {
         page,
         limit,
         active: Number(stats.active) || 0,
+        members: Number(stats.members) || 0,
         vip: Number(stats.vip) || 0,
         gold: Number(stats.gold) || 0,
         reguler: Number(stats.reguler) || 0,
