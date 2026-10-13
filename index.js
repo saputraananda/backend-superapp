@@ -58,6 +58,7 @@ import absensiManajemenIKMRoutes from "./routes/IKM/absensiManajemenIKMRoutes.js
 import stockOpnameIKMRoutes from "./routes/IKM/stockOpnameIKMRoutes.js";
 import linenTransactionRoutes from "./routes/IKM/LinenTransaction/linenTransactionRoutes.js";
 import linenTransactionKomersilRoutes from "./routes/IKM/LinenTransaction/linenTransactionKomersilRoutes.js";
+import bastLinenSewaRoutes from "./routes/IKM/LinenTransaction/bastLinenSewaRoutes.js";
 import operationalRoutes from "./routes/operationalRoutes.js";
 import internalRoutes from "./routes/internalRoutes.js";
 import complaintRoutes from "./routes/complaintRoutes.js";
@@ -412,6 +413,7 @@ app.use("/ikm/absensi-manajemen", absensiManajemenIKMRoutes);
 app.use("/ikm/stock-opname", stockOpnameIKMRoutes);
 app.use("/ikm/linen-transactions", linenTransactionRoutes);
 app.use("/ikm/linen-transactions-komersil", linenTransactionKomersilRoutes);
+app.use("/ikm/bast-linen-sewa", bastLinenSewaRoutes);
 app.use("/operational", operationalRoutes);
 app.use("/internal", internalRoutes);
 app.use("/complaints", complaintRoutes);
