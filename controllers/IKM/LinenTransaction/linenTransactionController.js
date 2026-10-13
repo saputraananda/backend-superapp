@@ -937,6 +937,87 @@ export const getRekapKgLinen = async (req, res) => {
   }
 };
 
+export const getRekapSewaLinen = async (req, res) => {
+  try {
+    const startDate = toISODateString(req.query.startDate);
+    const endDate = toISODateString(req.query.endDate);
+    if (!startDate || !endDate || startDate > endDate) {
+      return res.status(400).json({ success: false, message: "Tanggal awal dan akhir harus diisi" });
+    }
+    const hospitalId = req.query.hospital_id ? toPositiveInt(req.query.hospital_id) : null;
+    if (req.query.hospital_id && !hospitalId) {
+      return res.status(400).json({ success: false, message: "Rumah sakit tidak valid" });
+    }
+
+    let hospitalSql = "SELECT id, hospital_name FROM mst_hospital";
+    const hospitalParams = [];
+    if (hospitalId) {
+      hospitalSql += " WHERE id = ?";
+      hospitalParams.push(hospitalId);
+    }
+    hospitalSql += " ORDER BY hospital_name ASC";
+    const [hospitals] = await safeIKMQuery(hospitalSql, hospitalParams);
+    if (!hospitals.length) {
+      return res.json({ success: true, hospitals: [], linens: [], movements: [], usage: [] });
+    }
+
+    const hospitalIds = hospitals.map((row) => row.id);
+    const ph = hospitalIds.map(() => "?").join(",");
+    const [linens] = await safeIKMQuery(
+      `SELECT hl.id AS hospital_linen_id, hl.hospital_id, hl.hospital_linen_name,
+              hl.rental_price, hl.stock_in_rs,
+              l.linen_name AS master_linen_name, sz.size_name, cl.color_name, mt.material_name
+       FROM mst_hospital_linen hl
+       LEFT JOIN mst_linen l ON l.id = hl.linen_id
+       LEFT JOIN mst_size sz ON l.size_id = sz.id
+       LEFT JOIN mst_color cl ON l.color_id = cl.id
+       LEFT JOIN mst_material mt ON l.material_id = mt.id
+       WHERE hl.is_active = 1 AND COALESCE(hl.is_commercial, 0) = 0
+         AND hl.ownership_type = 'SEWA' AND hl.hospital_id IN (${ph})
+       ORDER BY hl.hospital_id ASC, hl.hospital_linen_name ASC, l.linen_name ASC`,
+      hospitalIds
+    );
+    const [movements] = await safeIKMQuery(
+      `SELECT b.hospital_id, d.hospital_linen_id,
+              DATE_FORMAT(b.bast_date, '%Y-%m-%d') AS move_date,
+              COALESCE(SUM(d.qty_pengiriman), 0) AS qty_pengiriman,
+              COALESCE(SUM(d.qty_penarikan), 0) AS qty_penarikan
+       FROM tr_bast_linen_sewa b
+       JOIN tr_bast_linen_sewa_detail d ON d.bast_id = b.id
+       WHERE b.hospital_id IN (${ph}) AND b.bast_date >= ?
+       GROUP BY b.hospital_id, d.hospital_linen_id, DATE_FORMAT(b.bast_date, '%Y-%m-%d')`,
+      [...hospitalIds, `${startDate} 00:00:00`]
+    );
+    const [usage] = await safeIKMQuery(
+      `SELECT tr.hospital_id, d.hospital_linen_id,
+              DATE_FORMAT(tr.pickup_date, '%Y-%m-%d') AS tx_date,
+              COALESCE(SUM(d.qty_kotor), 0) AS total_qty_kotor
+       FROM tr_linen_transaction tr
+       JOIN tr_linen_transaction_detail d ON d.transaction_id = tr.id
+       JOIN mst_hospital_linen hl ON hl.id = d.hospital_linen_id
+       WHERE tr.hospital_id IN (${ph})
+         AND hl.ownership_type = 'SEWA' AND COALESCE(hl.is_commercial, 0) = 0
+         AND tr.pickup_date >= ? AND tr.pickup_date <= ?
+       GROUP BY tr.hospital_id, d.hospital_linen_id, DATE_FORMAT(tr.pickup_date, '%Y-%m-%d')`,
+      [...hospitalIds, `${startDate} 00:00:00`, `${endDate} 23:59:59`]
+    );
+
+    res.json({
+      success: true,
+      hospitals,
+      linens: linens.map((row) => {
+        const parts = [row.master_linen_name, row.size_name, row.color_name, row.material_name].filter(Boolean);
+        return { ...row, linen_display_name: row.hospital_linen_name || parts.join(" ") };
+      }),
+      movements,
+      usage,
+    });
+  } catch (err) {
+    console.error("rekap sewa linen:", err);
+    res.status(500).json({ success: false, message: "Gagal memuat rekap sewa linen" });
+  }
+};
+
 export const proxySignature = async (req, res) => {
   try {
     let rawName = String(req.query.name || "").trim();
