@@ -84,6 +84,7 @@ import employeeBalancesAloraRoutes from "./routes/Alora/employeeBalancesAloraRou
 import payslipAloraRoutes from "./routes/Alora/payslipAloraRoutes.js";
 import attendanceModeRequestAloraRoutes from "./routes/Alora/attendanceModeRequestAloraRoutes.js";
 import bugarAloraRoutes from "./routes/Alora/bugarAloraRoutes.js";
+import holidayAloraRoutes from "./routes/Alora/holidayAloraRoutes.js";
 import kasbonCleanoxRoutes from "./routes/Cleanox/kasbonCleanoxRoutes.js";
 import overtimeCleanoxRoutes from "./routes/Cleanox/overtimeCleanoxRoutes.js";
 import mealCleanoxRoutes from "./routes/Cleanox/mealCleanoxRoutes.js";
@@ -398,6 +399,7 @@ app.use("/alora/employee-balances", employeeBalancesAloraRoutes);
 app.use("/alora/payslips", payslipAloraRoutes);
 app.use("/alora/attendance-mode-requests", attendanceModeRequestAloraRoutes);
 app.use("/alora/bugar", bugarAloraRoutes);
+app.use("/alora/holidays", holidayAloraRoutes);
 app.use("/ikm/master-absensi", masterAbsensiRoutes);
 app.use("/ikm/master-rs", masterRsIkmRoutes);
 app.use("/ikm/linen-report", linenReportRoutes);
