@@ -80,6 +80,7 @@ function mapTransactionRow(row) {
     paidAt: row.paid_at,
     workStatus: num(row.work_status, 10),
     isDelivery: Boolean(row.is_delivery),
+    isEvent: Number(row.is_event) === 1,
     deliveryAddress: row.delivery_address || null,
     deliveryNotes: row.delivery_notes || null,
     orderDate: row.order_date,
@@ -203,9 +204,13 @@ export const getTransactions = async (req, res) => {
     const workMax = req.query.workMax !== undefined && req.query.workMax !== "" ? Number(req.query.workMax) : null;
     const includeDeleted = String(req.query.includeDeleted || "") === "1";
     const listType = String(req.query.listType || "active").trim(); // active | delete | refund
+    // Menu Event B2B: hanya nota outlet event (tr_transaction.is_event = 1)
+    const eventOnly = String(req.query.eventOnly || "") === "1";
 
     const where = [];
     const params = [];
+
+    if (eventOnly) where.push("t.is_event = 1");
 
     if (listType === "delete") {
       where.push("t.is_delete_requested = 1");
