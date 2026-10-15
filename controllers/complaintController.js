@@ -31,7 +31,7 @@ function posOrigin() {
 
 /** Kirim lampiran ke folder uploads POS, lalu hapus salinan di API Alora. */
 async function publishComplaintFile(file) {
-  const token = process.env.COMPLAINT_DOC_SYNC_TOKEN || "";
+  const token = process.env.WASCHEN_POS_TOKEN || "";
   if (!token) {
     if (process.env.NODE_ENV !== "production") return;
     throw new Error("Gagal menyimpan lampiran");
@@ -52,7 +52,7 @@ async function publishComplaintFile(file) {
 
 async function deleteComplaintFile(relativePath) {
   removeFile(relativePath);
-  const token = process.env.COMPLAINT_DOC_SYNC_TOKEN || "";
+  const token = process.env.WASCHEN_POS_TOKEN || "";
   const filename = path.basename(String(relativePath || ""));
   if (!token || !filename || filename === "." || filename === "..") return;
   await fetch(`${posOrigin()}/api/internal/complaint-docs/${encodeURIComponent(filename)}`, {
