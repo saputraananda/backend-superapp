@@ -151,7 +151,7 @@ function emptyAttendanceSummary() {
   };
 }
 
-function buildAttendanceAggregates(rows, employeeMap, roleMap) {
+function buildAttendanceAggregates(rows, offAndLeaveRecords = [], employeeMap, roleMap) {
   const list = rows || [];
   let checkedInCount = 0;
   let checkedOutCount = 0;
@@ -166,9 +166,50 @@ function buildAttendanceAggregates(rows, employeeMap, roleMap) {
     if (complete) completeCount += 1;
 
     if (!Number.isInteger(workerId) || workerId <= 0) continue;
-    const prev = byWorker.get(workerId) || { record_count: 0, complete_count: 0 };
+    const prev = byWorker.get(workerId) || {
+      record_count: 0,
+      complete_count: 0,
+      off_day_count: 0,
+      libur_count: 0,
+      cuti_count: 0,
+      izin_count: 0,
+      sakit_count: 0,
+    };
     prev.record_count += 1;
     if (complete) prev.complete_count += 1;
+    byWorker.set(workerId, prev);
+  }
+
+  let offDayCount = 0;
+  let liburCount = 0;
+  let cutiCount = 0;
+  let izinCount = 0;
+  let sakitCount = 0;
+
+  for (const item of offAndLeaveRecords || []) {
+    const workerId = Number(item.employee_id);
+    offDayCount += 1;
+    const status = String(item.status_label || "").toLowerCase();
+    if (status === "libur") liburCount += 1;
+    else if (status === "cuti") cutiCount += 1;
+    else if (status === "izin") izinCount += 1;
+    else if (status === "sakit") sakitCount += 1;
+
+    if (!Number.isInteger(workerId) || workerId <= 0) continue;
+    const prev = byWorker.get(workerId) || {
+      record_count: 0,
+      complete_count: 0,
+      off_day_count: 0,
+      libur_count: 0,
+      cuti_count: 0,
+      izin_count: 0,
+      sakit_count: 0,
+    };
+    prev.off_day_count = (prev.off_day_count || 0) + 1;
+    if (status === "libur") prev.libur_count = (prev.libur_count || 0) + 1;
+    else if (status === "cuti") prev.cuti_count = (prev.cuti_count || 0) + 1;
+    else if (status === "izin") prev.izin_count = (prev.izin_count || 0) + 1;
+    else if (status === "sakit") prev.sakit_count = (prev.sakit_count || 0) + 1;
     byWorker.set(workerId, prev);
   }
 
@@ -180,6 +221,11 @@ function buildAttendanceAggregates(rows, employeeMap, roleMap) {
     checkedOutCount,
     completeCount,
     incompleteCount: totalRecords - completeCount,
+    offDayCount,
+    liburCount,
+    cutiCount,
+    izinCount,
+    sakitCount,
   };
 
   const employeeSummary = [...byWorker.entries()]
@@ -193,9 +239,14 @@ function buildAttendanceAggregates(rows, employeeMap, roleMap) {
         record_count: agg.record_count,
         complete_count: agg.complete_count,
         incomplete_count: agg.record_count - agg.complete_count,
+        off_day_count: agg.off_day_count || 0,
+        libur_count: agg.libur_count || 0,
+        cuti_count: agg.cuti_count || 0,
+        izin_count: agg.izin_count || 0,
+        sakit_count: agg.sakit_count || 0,
       };
     })
-    .sort((a, b) => b.record_count - a.record_count)
+    .sort((a, b) => (b.record_count + b.off_day_count) - (a.record_count + a.off_day_count))
     .slice(0, 500);
 
   return { summary, employeeSummary };
@@ -585,10 +636,12 @@ export const listAttendanceRecords = async (req, res) => {
       [...workerIds, startDate, endDate],
     );
 
+    const offDayKeys = new Set();
     for (const off of offRows || []) {
       const workerId = Number(off.worker_id);
       const offDate = toDateOnly(off.off_date);
       const key = `${workerId}|${offDate}`;
+      offDayKeys.add(key);
       if (attendanceKeys.has(key)) continue;
 
       const emp = employeeMap[workerId] || {};
@@ -623,6 +676,83 @@ export const listAttendanceRecords = async (req, res) => {
       });
     }
 
+    const [leaveRows] = await safeCleanoxQuery(
+      `
+        SELECT id, worker_id, leave_type, duration_type, start_date, end_date, reason, approved_by, approved_by_name, created_at
+        FROM tr_worker_leaves
+        WHERE worker_id IN (${workerPh})
+          AND status = 'disetujui'
+          AND start_date <= ?
+          AND end_date >= ?
+        ORDER BY start_date ASC, id ASC
+      `,
+      [...workerIds, endDate, startDate],
+    );
+
+    for (const leave of leaveRows || []) {
+      const workerId = Number(leave.worker_id);
+      const rawStart = toDateOnly(leave.start_date);
+      const rawEnd = toDateOnly(leave.end_date);
+      if (!rawStart || !rawEnd) continue;
+
+      const s = rawStart < startDate ? startDate : rawStart;
+      const e = rawEnd > endDate ? endDate : rawEnd;
+
+      const cur = new Date(`${s}T12:00:00`);
+      const endD = new Date(`${e}T12:00:00`);
+
+      const rawType = String(leave.leave_type || "").trim().toLowerCase();
+      let label = "Cuti";
+      if (rawType === "izin") label = "Izin";
+      else if (rawType === "sakit") label = "Sakit";
+      else if (rawType === "libur") label = "Libur";
+      else if (rawType) label = rawType.charAt(0).toUpperCase() + rawType.slice(1);
+
+      while (cur <= endD) {
+        const dateStr = toDateOnly(cur);
+        const key = `${workerId}|${dateStr}`;
+        cur.setDate(cur.getDate() + 1);
+
+        if (attendanceKeys.has(key)) continue;
+        if (offDayKeys.has(key)) continue;
+
+        offDayKeys.add(key);
+        const emp = employeeMap[workerId] || {};
+
+        data.push({
+          id: `leave-${leave.id}-${dateStr}`,
+          leave_id: Number(leave.id),
+          is_off_day: true,
+          is_leave: true,
+          leave_type: rawType,
+          attendance_date: dateStr,
+          employee_id: workerId,
+          employee_code: emp.employee_code || null,
+          full_name: emp.full_name || null,
+          username: emp.username || null,
+          cleanox_role: roleMap[workerId] ?? null,
+          check_in_at: null,
+          check_out_at: null,
+          check_in_photo: null,
+          photos: [],
+          check_out_photo: null,
+          reviewed_count: 0,
+          review_status: "belum",
+          status_label: label,
+          is_late: false,
+          kehadiran_label: null,
+          late_reason: null,
+          check_out_location_name: null,
+          check_out_outside_type: null,
+          check_out_outside_label: null,
+          check_out_outside_note: null,
+          check_out_outside_services: [],
+          off_note: leave.reason || null,
+          created_by_name: leave.approved_by_name || leave.approved_by || null,
+        });
+      }
+    }
+
     data.sort((a, b) => {
       const da = String(a.attendance_date || "");
       const db = String(b.attendance_date || "");
@@ -630,7 +760,12 @@ export const listAttendanceRecords = async (req, res) => {
       return String(a.full_name || "").localeCompare(String(b.full_name || ""));
     });
 
-    const { summary, employeeSummary } = buildAttendanceAggregates(rows || [], employeeMap, roleMap);
+    const { summary, employeeSummary } = buildAttendanceAggregates(
+      rows || [],
+      data.filter((d) => d.is_off_day),
+      employeeMap,
+      roleMap,
+    );
 
     return res.json({
       success: true,
@@ -753,8 +888,10 @@ export const listEmployeeAttendanceRecords = async (req, res) => {
       [employee.employee_id, startDate, endDate],
     );
 
+    const offDayKeys = new Set();
     for (const off of offRows || []) {
       const offDate = toDateOnly(off.off_date);
+      offDayKeys.add(offDate);
       if (attendanceKeys.has(offDate)) continue;
 
       data.push({
@@ -779,6 +916,72 @@ export const listEmployeeAttendanceRecords = async (req, res) => {
         off_note: off.note || null,
         created_by_name: off.created_by_name || null,
       });
+    }
+
+    const [empLeaveRows] = await safeCleanoxQuery(
+      `
+        SELECT id, worker_id, leave_type, duration_type, start_date, end_date, reason, approved_by, approved_by_name, created_at
+        FROM tr_worker_leaves
+        WHERE worker_id = ?
+          AND status = 'disetujui'
+          AND start_date <= ?
+          AND end_date >= ?
+        ORDER BY start_date ASC, id ASC
+      `,
+      [employee.employee_id, endDate, startDate],
+    );
+
+    for (const leave of empLeaveRows || []) {
+      const rawStart = toDateOnly(leave.start_date);
+      const rawEnd = toDateOnly(leave.end_date);
+      if (!rawStart || !rawEnd) continue;
+
+      const s = rawStart < startDate ? startDate : rawStart;
+      const e = rawEnd > endDate ? endDate : rawEnd;
+
+      const cur = new Date(`${s}T12:00:00`);
+      const endD = new Date(`${e}T12:00:00`);
+
+      const rawType = String(leave.leave_type || "").trim().toLowerCase();
+      let label = "Cuti";
+      if (rawType === "izin") label = "Izin";
+      else if (rawType === "sakit") label = "Sakit";
+      else if (rawType === "libur") label = "Libur";
+      else if (rawType) label = rawType.charAt(0).toUpperCase() + rawType.slice(1);
+
+      while (cur <= endD) {
+        const dateStr = toDateOnly(cur);
+        cur.setDate(cur.getDate() + 1);
+
+        if (attendanceKeys.has(dateStr)) continue;
+        if (offDayKeys.has(dateStr)) continue;
+
+        offDayKeys.add(dateStr);
+        data.push({
+          id: `leave-${leave.id}-${dateStr}`,
+          leave_id: Number(leave.id),
+          is_off_day: true,
+          is_leave: true,
+          leave_type: rawType,
+          attendance_date: dateStr,
+          check_in_at: null,
+          check_out_at: null,
+          photos: [],
+          reviewed_count: 0,
+          review_status: "belum",
+          status_label: label,
+          is_late: false,
+          kehadiran_label: null,
+          late_reason: null,
+          check_out_location_name: null,
+          check_out_outside_type: null,
+          check_out_outside_label: null,
+          check_out_outside_note: null,
+          check_out_outside_services: [],
+          off_note: leave.reason || null,
+          created_by_name: leave.approved_by_name || leave.approved_by || null,
+        });
+      }
     }
 
     data.sort((a, b) => String(b.attendance_date || "").localeCompare(String(a.attendance_date || "")));
