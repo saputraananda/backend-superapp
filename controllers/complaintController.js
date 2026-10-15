@@ -4,6 +4,7 @@ import { safeQuery, safeSmartlinkQuery, safeMyWaschenQuery } from "../db/pool.js
 const complaintQuery = safeMyWaschenQuery;
 import fs from "fs";
 import path from "path";
+import FormData from "form-data";
 
 const isProd = process.env.NODE_ENV === "production";
 const ASSETS_BASE = isProd
@@ -17,6 +18,47 @@ function removeFile(relativePath) {
   if (fs.existsSync(full)) {
     try { fs.unlinkSync(full); } catch (_) { /* ignore */ }
   }
+  const baseName = path.basename(cleaned);
+  const stored = path.join(ASSETS_BASE, "complaint_docs", baseName);
+  if (stored !== full && fs.existsSync(stored)) {
+    try { fs.unlinkSync(stored); } catch (_) { /* ignore */ }
+  }
+}
+
+function posOrigin() {
+  return (process.env.WASCHEN_POS_PUBLIC_BASE_URL || "https://pos.mywaschen.com").replace(/\/$/, "");
+}
+
+/** Kirim lampiran ke folder uploads POS, lalu hapus salinan di API Alora. */
+async function publishComplaintFile(file) {
+  const token = process.env.COMPLAINT_DOC_SYNC_TOKEN || "";
+  if (!token) {
+    if (process.env.NODE_ENV !== "production") return;
+    throw new Error("Gagal menyimpan lampiran");
+  }
+  const form = new FormData();
+  form.append("file", fs.createReadStream(file.path), {
+    filename: file.filename,
+    contentType: file.mimetype || "application/octet-stream",
+  });
+  const res = await fetch(`${posOrigin()}/api/internal/complaint-docs`, {
+    method: "POST",
+    headers: { ...form.getHeaders(), "X-Complaint-Sync-Token": token },
+    body: form,
+  });
+  if (!res.ok) throw new Error("Gagal menyimpan lampiran");
+  fs.unlink(file.path, () => {});
+}
+
+async function deleteComplaintFile(relativePath) {
+  removeFile(relativePath);
+  const token = process.env.COMPLAINT_DOC_SYNC_TOKEN || "";
+  const filename = path.basename(String(relativePath || ""));
+  if (!token || !filename || filename === "." || filename === "..") return;
+  await fetch(`${posOrigin()}/api/internal/complaint-docs/${encodeURIComponent(filename)}`, {
+    method: "DELETE",
+    headers: { "X-Complaint-Sync-Token": token },
+  }).catch(() => {});
 }
 
 function getLastCutoffPeriods(count = 6) {
@@ -514,6 +556,7 @@ export const createComplaint = async (req, res) => {
     // Save documents
     const files = req.files || [];
     for (const file of files) {
+      await publishComplaintFile(file);
       await complaintQuery(
         `INSERT INTO tr_complaint_document (complaint_id, file_path, original_name, mime_type, file_size_kb)
          VALUES (?,?,?,?,?)`,
@@ -599,6 +642,7 @@ export const updateComplaint = async (req, res) => {
     // Handle new file uploads
     const files = req.files || [];
     for (const file of files) {
+      await publishComplaintFile(file);
       await complaintQuery(
         `INSERT INTO tr_complaint_document (complaint_id, file_path, original_name, mime_type, file_size_kb)
          VALUES (?,?,?,?,?)`,
@@ -614,7 +658,7 @@ export const updateComplaint = async (req, res) => {
         `SELECT file_path FROM tr_complaint_document WHERE doc_id IN (${deletedDocIds.map(() => "?").join(",")}) AND complaint_id=?`,
         [...deletedDocIds.map(Number), id]
       );
-      delDocs.forEach((d) => removeFile(d.file_path));
+      await Promise.all(delDocs.map((d) => deleteComplaintFile(d.file_path)));
       await complaintQuery(
         `DELETE FROM tr_complaint_document WHERE doc_id IN (${deletedDocIds.map(() => "?").join(",")}) AND complaint_id=?`,
         [...deletedDocIds.map(Number), id]
@@ -643,7 +687,7 @@ export const deleteComplaint = async (req, res) => {
        JOIN tr_complaint_progress_log pl ON pl.log_id = pd.log_id
        WHERE pl.complaint_id = ?`, [id]
     );
-    [...docs, ...pdocs].forEach((d) => removeFile(d.file_path));
+    await Promise.all([...docs, ...pdocs].map((d) => deleteComplaintFile(d.file_path)));
 
     await complaintQuery("DELETE FROM tr_complaint WHERE complaint_id=?", [id]);
     res.json({ message: "Komplain berhasil dihapus." });
@@ -689,6 +733,7 @@ export const addProgressLog = async (req, res) => {
     // Save progress documents
     const files = req.files || [];
     for (const file of files) {
+      await publishComplaintFile(file);
       await complaintQuery(
         `INSERT INTO tr_complaint_progress_document (log_id, file_path, original_name, mime_type, file_size_kb)
          VALUES (?,?,?,?,?)`,
@@ -772,7 +817,7 @@ export const deleteProgressLog = async (req, res) => {
       "SELECT file_path FROM tr_complaint_progress_document WHERE log_id = ?",
       [logId]
     );
-    pdocs.forEach((d) => removeFile(d.file_path));
+    await Promise.all(pdocs.map((d) => deleteComplaintFile(d.file_path)));
 
     // Delete database records
     await complaintQuery("DELETE FROM tr_complaint_progress_log WHERE log_id = ?", [logId]);
