@@ -369,10 +369,16 @@ export const uploadIKMBriefing = multer({
 // Upload Complaint (semua ekstensi, max 5 MB per file)
 // =========================
 const COMPLAINT_DOC_DIR = path.join(BASE_DIR, "complaint_docs");
-if (!fs.existsSync(COMPLAINT_DOC_DIR)) fs.mkdirSync(COMPLAINT_DOC_DIR, { recursive: true });
 
 const complaintDocStorage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, COMPLAINT_DOC_DIR),
+  destination: (_req, _file, cb) => {
+    try {
+      fs.mkdirSync(COMPLAINT_DOC_DIR, { recursive: true });
+      cb(null, COMPLAINT_DOC_DIR);
+    } catch (err) {
+      cb(err);
+    }
+  },
   filename: (_req, file, cb) => {
     const ext = path.extname(file.originalname);
     const baseName = path
