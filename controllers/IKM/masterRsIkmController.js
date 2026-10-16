@@ -86,7 +86,7 @@ export const getHospitals = async (req, res) => {
     const [rows] = await safeIKMQuery(
       `SELECT id, hospital_name, hospital_id, company_name, address,
               latitude, longitude, username, password, username_unit, password_unit, password_to_valet,
-              billing_by_kg, allow_express, price_per_kg, express_price_per_kg, created_at, updated_at
+              billing_by_kg, allow_express, price_per_kg, express_price_per_kg, kg_agreement, created_at, updated_at
        FROM mst_hospital
        ORDER BY hospital_name ASC`
     );
@@ -151,6 +151,7 @@ export const createHospital = async (req, res) => {
     allow_express,
     price_per_kg,
     express_price_per_kg,
+    kg_agreement,
     rooms,
   } = req.body;
 
@@ -164,6 +165,11 @@ export const createHospital = async (req, res) => {
   const expressPricePerKg = parsePrice(express_price_per_kg);
   if (expressPricePerKg != null && expressPricePerKg < 0) {
     return res.status(400).json({ message: "Harga express per kilogram tidak boleh negatif" });
+  }
+  // Opsional; hanya berlaku untuk RS billing kilogram
+  const kgAgreement = billing_by_kg ? parsePrice(kg_agreement) : null;
+  if (kgAgreement != null && kgAgreement < 0) {
+    return res.status(400).json({ message: "Kg perjanjian tidak boleh negatif" });
   }
 
   try {
@@ -187,8 +193,8 @@ export const createHospital = async (req, res) => {
       `INSERT INTO mst_hospital
          (hospital_name, hospital_id, company_name, address, latitude, longitude,
           username, password, username_unit, password_unit, password_to_valet,
-          billing_by_kg, allow_express, price_per_kg, express_price_per_kg)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          billing_by_kg, allow_express, price_per_kg, express_price_per_kg, kg_agreement)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         hospital_name.trim(),
         hospital_id?.trim() || null,
@@ -205,6 +211,7 @@ export const createHospital = async (req, res) => {
         allow_express ? 1 : 0,
         pricePerKg,
         expressPricePerKg,
+        kgAgreement,
       ]
     );
 
@@ -262,6 +269,7 @@ export const updateHospital = async (req, res) => {
     allow_express,
     price_per_kg,
     express_price_per_kg,
+    kg_agreement,
     rooms,
   } = req.body;
 
@@ -275,6 +283,11 @@ export const updateHospital = async (req, res) => {
   const expressPricePerKg = parsePrice(express_price_per_kg);
   if (expressPricePerKg != null && expressPricePerKg < 0) {
     return res.status(400).json({ message: "Harga express per kilogram tidak boleh negatif" });
+  }
+  // Opsional; hanya berlaku untuk RS billing kilogram
+  const kgAgreement = billing_by_kg ? parsePrice(kg_agreement) : null;
+  if (kgAgreement != null && kgAgreement < 0) {
+    return res.status(400).json({ message: "Kg perjanjian tidak boleh negatif" });
   }
 
   try {
@@ -309,7 +322,7 @@ export const updateHospital = async (req, res) => {
       `UPDATE mst_hospital
        SET hospital_name=?, hospital_id=?, company_name=?, address=?,
            latitude=?, longitude=?, username=?, password=?, username_unit=?, password_unit=?, password_to_valet=?,
-           billing_by_kg=?, allow_express=?, price_per_kg=?, express_price_per_kg=?, updated_at=NOW()
+           billing_by_kg=?, allow_express=?, price_per_kg=?, express_price_per_kg=?, kg_agreement=?, updated_at=NOW()
        WHERE id=?`,
       [
         hospital_name.trim(),
@@ -327,6 +340,7 @@ export const updateHospital = async (req, res) => {
         allow_express ? 1 : 0,
         pricePerKg,
         expressPricePerKg,
+        kgAgreement,
         id,
       ]
     );

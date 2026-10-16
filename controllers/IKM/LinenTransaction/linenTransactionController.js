@@ -17,6 +17,16 @@ function parseKg(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+// Kg ditagihkan = kg aktual + kg perjanjian RS.
+// Kg aktual = kg valet, kecuali kg admin (opsional) lebih besar.
+// Kosong (null) selama kg aktual belum diisi.
+function computeKgTotal(row) {
+  const kgs = [parseKg(row.total_kg_valet), parseKg(row.total_kg_admin)].filter((n) => n != null);
+  if (!kgs.length) return null;
+  const actual = Math.max(...kgs);
+  return actual + (parseKg(row.kg_agreement) ?? 0);
+}
+
 function parseExpress(v) {
   return v === true || v === 1 || v === "1" ? 1 : 0;
 }
@@ -24,7 +34,7 @@ function parseExpress(v) {
 export const getHospitals = async (req, res) => {
   try {
     const [rows] = await safeIKMQuery(
-      "SELECT id, hospital_name, billing_by_kg, allow_express FROM mst_hospital ORDER BY hospital_name ASC"
+      "SELECT id, hospital_name, billing_by_kg, allow_express, kg_agreement FROM mst_hospital ORDER BY hospital_name ASC"
     );
     res.json({ success: true, data: rows });
   } catch (err) {
@@ -116,7 +126,7 @@ export const getLinenTransactions = async (req, res) => {
     const fetchSql = `
       SELECT tr.id, tr.form_number, tr.hospital_id, tr.user_pickup, tr.user_delivery, tr.pickup_date, tr.delivery_date, tr.status, tr.notes_pickup, tr.notes_delivery,
              tr.total_kg_valet, tr.is_express, tr.total_kg_admin,
-             h.hospital_name, h.billing_by_kg, h.allow_express,
+             h.hospital_name, h.billing_by_kg, h.allow_express, h.kg_agreement,
              COALESCE(SUM(d.qty_kotor), 0) AS total_kotor,
              COALESCE(SUM(d.qty_bersih), 0) AS total_bersih,
              (COALESCE(SUM(d.qty_kotor), 0) - COALESCE(SUM(d.qty_bersih), 0)) AS kurang_kirim
@@ -132,6 +142,8 @@ export const getLinenTransactions = async (req, res) => {
     `;
 
     const [rows] = await safeIKMQuery(fetchSql, [...selectParams, lm, offset]);
+
+    rows.forEach(r => { r.kg_total = computeKgTotal(r); });
 
     if (rows.length) {
       const employeeIds = [...new Set(rows.flatMap(r => [r.user_pickup, r.user_delivery]).filter(Boolean))];
@@ -185,7 +197,7 @@ export const getLinenTransactionById = async (req, res) => {
               tr.pickup_date, tr.delivery_date, tr.status, tr.notes_pickup, tr.notes_delivery,
               tr.total_kg_valet, tr.is_express, tr.total_kg_admin,
               h.hospital_name, h.billing_by_kg, h.allow_express,
-              h.price_per_kg, h.express_price_per_kg
+              h.price_per_kg, h.express_price_per_kg, h.kg_agreement
        FROM tr_linen_transaction tr
        LEFT JOIN mst_hospital h ON h.id = tr.hospital_id
        WHERE tr.id = ?`,
@@ -197,6 +209,7 @@ export const getLinenTransactionById = async (req, res) => {
     }
 
     const header = headers[0];
+    header.kg_total = computeKgTotal(header);
     const employeeIds = [header.user_pickup, header.user_delivery].filter(Boolean);
     if (employeeIds.length) {
       const ph = employeeIds.map(() => "?").join(",");
@@ -870,7 +883,7 @@ export const getRekapKgLinen = async (req, res) => {
     }
 
     const [hospitals] = await safeIKMQuery(
-      `SELECT id, hospital_name, billing_by_kg, price_per_kg, express_price_per_kg FROM mst_hospital WHERE id = ?`,
+      `SELECT id, hospital_name, billing_by_kg, price_per_kg, express_price_per_kg, kg_agreement FROM mst_hospital WHERE id = ?`,
       [Number(hospital_id)]
     );
     if (!hospitals.length) {
@@ -903,6 +916,12 @@ export const getRekapKgLinen = async (req, res) => {
       [Number(hospital_id), `${startDate} 00:00:00`, `${endDate} 23:59:59`]
     );
 
+    const kgAgreement = parseKg(hospitals[0].kg_agreement);
+    details.forEach((row) => {
+      row.kg_agreement = kgAgreement;
+      row.kg_total = computeKgTotal(row);
+    });
+
     const dailyMap = new Map();
     details.forEach((row) => {
       const key = row.tx_date;
@@ -912,6 +931,8 @@ export const getRekapKgLinen = async (req, res) => {
           tx_count: 0,
           total_kg_valet: 0,
           total_kg_admin: 0,
+          total_kg_agreement: 0,
+          total_kg_tagih: 0,
           express_count: 0,
           total_kotor: 0,
           total_bersih: 0,
@@ -921,6 +942,10 @@ export const getRekapKgLinen = async (req, res) => {
       agg.tx_count += 1;
       agg.total_kg_valet += Number(row.total_kg_valet || 0);
       agg.total_kg_admin += Number(row.total_kg_admin || 0);
+      if (row.kg_total != null) {
+        agg.total_kg_agreement += kgAgreement ?? 0;
+        agg.total_kg_tagih += row.kg_total;
+      }
       agg.express_count += Number(row.is_express) === 1 ? 1 : 0;
       agg.total_kotor += Number(row.total_kotor || 0);
       agg.total_bersih += Number(row.total_bersih || 0);
