@@ -30,8 +30,7 @@ router.post("/classifications", requireAuth, createClassification);
 router.get("/employee-options", requireAuth, getEmployeeOptions);
 
 // ── Dashboard & list ──
-router.get("/dashboard",            requireAuth, getDashboard);
-router.get("/me",                   requireAuth, listMy);
+router.get("/dashboard",            requireAuth, getDashboard);router.get("/me",                   requireAuth, listMy);
 router.get("/department",           requireAuth, listDepartment);
 router.get("/approval",             requireAuth, listApproval);
 router.get("/all",                  requireAuth, listAll);
