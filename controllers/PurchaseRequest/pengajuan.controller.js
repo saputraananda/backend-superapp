@@ -180,6 +180,10 @@ const isFinance = (positionName) => {
     return pos.includes("finance") || pos.includes("accounting") || pos.includes("accountiing");
 };
 
+// GA boleh mengedit detail pengajuan (non-reimburse) selama belum diproses Finance (status < 5)
+const canGAEdit = (me, pr) =>
+    !!me && isGA(me.position_name) && pr.type !== "reimburse" && Number(pr.status) < 5;
+
 // Hapus file fisik di ASSETS_BASE. Path harus relatif & tetap di dalam base (anti path traversal).
 const removeAssetFile = (relPath) => {
     if (!relPath) return;
@@ -1769,7 +1773,7 @@ export const deleteAttachment = async (req, res) => {
 
         const { attachmentId } = req.params;
         const att = await safeQuery(
-            `SELECT a.*, pr.employee_id, pr.status
+            `SELECT a.*, pr.employee_id, pr.status, pr.type
              FROM tr_purchase_request_attachment a
              JOIN tr_purchase_request pr ON pr.pr_id = a.pr_id
              WHERE a.attachment_id = ?`,
@@ -1780,7 +1784,8 @@ export const deleteAttachment = async (req, res) => {
 
         const me = await fetchEmployee(employeeId);
         const financeAccess = isFinance(me?.position_name);
-        if (!financeAccess) {
+        const gaAccess = canGAEdit(me, row);
+        if (!financeAccess && !gaAccess) {
             if (row.employee_id !== employeeId) return res.status(403).json({ message: "Tidak diizinkan" });
             if (![1, 2, 9].includes(Number(row.status))) {
                 return res.status(400).json({ message: "Tidak bisa menghapus lampiran pada status ini" });
@@ -1790,9 +1795,9 @@ export const deleteAttachment = async (req, res) => {
         removeAssetFile(row.file_path);
 
         await safeQuery(`DELETE FROM tr_purchase_request_attachment WHERE attachment_id = ?`, [attachmentId]);
-        if (financeAccess) {
+        if (financeAccess || gaAccess) {
             await writeLog(row.pr_id, "updated", employeeId, me?.full_name,
-                `Lampiran dihapus oleh Finance: ${row.original_name || row.file_path}`);
+                `Lampiran dihapus oleh ${financeAccess ? "Finance" : "GA"}: ${row.original_name || row.file_path}`);
         }
         res.json({ message: "Lampiran dihapus" });
     } catch (err) {
@@ -1811,19 +1816,25 @@ export const addAttachments = async (req, res) => {
         if (!employeeId) return res.status(401).json({ message: "Unauthorized" });
 
         const me = await fetchEmployee(employeeId);
-        if (!me || !isFinance(me.position_name)) {
+        const financeAccess = !!me && isFinance(me.position_name);
+        if (!me || (!financeAccess && !isGA(me.position_name))) {
             files.forEach(f => removeAssetFile(`purchase/${f.filename}`));
-            return res.status(403).json({ message: "Akses ditolak: hanya Finance" });
+            return res.status(403).json({ message: "Akses ditolak: hanya Finance / GA" });
         }
 
         const { id } = req.params;
         const rows = await safeQuery(
-            `SELECT pr_id FROM tr_purchase_request WHERE pr_id = ? AND is_deleted = 0`,
+            `SELECT pr_id, status, type FROM tr_purchase_request WHERE pr_id = ? AND is_deleted = 0`,
             [id]
         );
         if (!rows.length) {
             files.forEach(f => removeAssetFile(`purchase/${f.filename}`));
             return res.status(404).json({ message: "Data tidak ditemukan" });
+        }
+        // GA: tambah lampiran pada pengajuan (non-reimburse) yang tidak ditolak
+        if (!financeAccess && (rows[0].type === "reimburse" || Number(rows[0].status) === 9)) {
+            files.forEach(f => removeAssetFile(`purchase/${f.filename}`));
+            return res.status(400).json({ message: "Tidak bisa menambah lampiran pada pengajuan ini" });
         }
         if (!files.length) return res.status(400).json({ message: "Tidak ada file yang diunggah" });
 
@@ -1837,7 +1848,7 @@ export const addAttachments = async (req, res) => {
         }
 
         await writeLog(id, "updated", employeeId, me.full_name,
-            `Lampiran ditambahkan oleh Finance (${files.length} file)`);
+            `Lampiran ditambahkan oleh ${financeAccess ? "Finance" : "GA"} (${files.length} file)`);
 
         res.json({ message: "Lampiran ditambahkan" });
     } catch (err) {
@@ -1856,8 +1867,9 @@ export const updateHeaderInfo = async (req, res) => {
         if (!employeeId) return res.status(401).json({ message: "Unauthorized" });
 
         const me = await fetchEmployee(employeeId);
-        if (!me || !isFinance(me.position_name)) {
-            return res.status(403).json({ message: "Akses ditolak: hanya Finance" });
+        const financeAccess = !!me && isFinance(me.position_name);
+        if (!me || (!financeAccess && !isGA(me.position_name))) {
+            return res.status(403).json({ message: "Akses ditolak: hanya Finance / GA" });
         }
 
         const { id } = req.params;
@@ -1873,6 +1885,9 @@ export const updateHeaderInfo = async (req, res) => {
         );
         if (!rows.length) return res.status(404).json({ message: "Data tidak ditemukan" });
         const pr = rows[0];
+        if (!financeAccess && !canGAEdit(me, pr)) {
+            return res.status(400).json({ message: "Pengajuan sudah diproses Finance, tidak bisa diedit GA" });
+        }
 
         const newEmployeeId = req.body.employee_id ? Number(req.body.employee_id) : null;
         if (!newEmployeeId) return res.status(400).json({ message: "Pengaju wajib dipilih" });
@@ -1906,7 +1921,7 @@ export const updateHeaderInfo = async (req, res) => {
         await syncScopes(id, scope.companies, scope.outlets);
 
         await writeLog(id, "updated", employeeId, me.full_name,
-            `Data pengajuan dikoreksi oleh Finance | ` +
+            `Data pengajuan dikoreksi oleh ${financeAccess ? "Finance" : "GA"} | ` +
             `Pengaju: ${pr.pengaju_name || "—"} -> ${emp.full_name} | ` +
             `Departemen: ${pr.department_name || "—"} -> ${emp.department_name || "—"} | ` +
             `Kategori: ${pr.company_name || "—"} -> ${scope.companies.map(c => c.company_name).join(", ")} | ` +
@@ -1916,6 +1931,79 @@ export const updateHeaderInfo = async (req, res) => {
     } catch (err) {
         console.error("[updateHeaderInfo]", err);
         res.status(500).json({ message: "Gagal memperbarui data pengajuan" });
+    }
+};
+
+// ════════════════════════════════════════════════════════════════════════════
+// UPDATE ITEM (GA — koreksi barang / qty / satuan / estimasi / alasan, status < 5)
+// ════════════════════════════════════════════════════════════════════════════
+export const updateItemInfo = async (req, res) => {
+    try {
+        const employeeId = getEmployeeId(req);
+        if (!employeeId) return res.status(401).json({ message: "Unauthorized" });
+
+        const me = await fetchEmployee(employeeId);
+        if (!me || !isGA(me.position_name)) {
+            return res.status(403).json({ message: "Akses ditolak: hanya General Affair" });
+        }
+
+        const { id } = req.params;
+        const rows = await safeQuery(
+            `SELECT pr.*, s.satuan_name
+             FROM tr_purchase_request pr
+             LEFT JOIN mst_satuan s ON s.satuan_id = pr.satuan_id
+             WHERE pr.pr_id = ? AND pr.is_deleted = 0`,
+            [id]
+        );
+        if (!rows.length) return res.status(404).json({ message: "Data tidak ditemukan" });
+        const pr = rows[0];
+        if (!canGAEdit(me, pr)) {
+            return res.status(400).json({ message: "Pengajuan sudah diproses Finance, tidak bisa diedit GA" });
+        }
+
+        const namaBarang      = sanitize(req.body.nama_barang);
+        const deskripsi       = sanitize(req.body.deskripsi);
+        const merk            = titleCase(sanitize(req.body.merk));
+        const qty             = Number(req.body.qty);
+        const satuanId        = req.body.satuan_id ? Number(req.body.satuan_id) : null;
+        const estimasiHarga   = req.body.estimasi_harga ? Number(req.body.estimasi_harga) : null;
+        const alasanPembelian = sanitize(req.body.alasan_pembelian);
+
+        if (!namaBarang)      return res.status(400).json({ message: "Nama barang wajib diisi" });
+        if (!(qty > 0))       return res.status(400).json({ message: "Jumlah harus lebih dari 0" });
+        if (!alasanPembelian) return res.status(400).json({ message: "Alasan pembelian wajib diisi" });
+        if (estimasiHarga != null && !(estimasiHarga >= 0)) {
+            return res.status(400).json({ message: "Estimasi harga tidak valid" });
+        }
+
+        await safeQuery(
+            `UPDATE tr_purchase_request SET
+                nama_barang = ?, deskripsi = ?, merk = ?, qty = ?, satuan_id = ?,
+                estimasi_harga = ?, alasan_pembelian = ?, updated_at = NOW()
+             WHERE pr_id = ?`,
+            [namaBarang, deskripsi, merk, qty, satuanId, estimasiHarga, alasanPembelian, id]
+        );
+
+        // Catat hanya field yang berubah
+        const fmt = (v) => (v == null || v === "" ? "—" : String(v));
+        const changes = [];
+        if (fmt(pr.nama_barang) !== fmt(namaBarang)) changes.push(`Nama: ${fmt(pr.nama_barang)} -> ${namaBarang}`);
+        if (fmt(pr.merk) !== fmt(merk)) changes.push(`Merk: ${fmt(pr.merk)} -> ${fmt(merk)}`);
+        if (Number(pr.qty) !== qty) changes.push(`Qty: ${Number(pr.qty)} -> ${qty}`);
+        if ((pr.satuan_id || null) !== satuanId) changes.push("Satuan diubah");
+        if ((pr.estimasi_harga == null ? null : Number(pr.estimasi_harga)) !== estimasiHarga) {
+            changes.push(`Estimasi: ${fmt(pr.estimasi_harga == null ? null : Number(pr.estimasi_harga))} -> ${fmt(estimasiHarga)}`);
+        }
+        if (fmt(pr.deskripsi) !== fmt(deskripsi)) changes.push("Deskripsi diubah");
+        if (fmt(pr.alasan_pembelian) !== fmt(alasanPembelian)) changes.push("Alasan pembelian diubah");
+
+        await writeLog(id, "updated", employeeId, me.full_name,
+            `Detail barang dikoreksi oleh GA${changes.length ? ` | ${changes.join(" | ")}` : ""}`);
+
+        res.json({ message: "Detail barang berhasil diperbarui" });
+    } catch (err) {
+        console.error("[updateItemInfo]", err);
+        res.status(500).json({ message: "Gagal memperbarui detail barang" });
     }
 };
 

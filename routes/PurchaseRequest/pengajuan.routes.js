@@ -8,7 +8,7 @@ import {
     listMy, listDepartment, listApproval, listAll, listGaReview, getDetail,
     listFinanceReview, listPaymentPending,
     listCredit, getPaymentHistory, addInstallment,
-    createPR, updatePR, deletePR, deleteAttachment, addAttachments, updateHeaderInfo,
+    createPR, updatePR, deletePR, deleteAttachment, addAttachments, updateHeaderInfo, updateItemInfo,
     approvePR, rejectPR,
     approveGA, rejectGA, getPOData,
     approveFinance, rejectFinance,
@@ -55,6 +55,7 @@ router.delete("/:id", requireAuth, deletePR);
 router.delete("/attachment/:attachmentId", requireAuth, deleteAttachment);
 router.post("/:id/attachments", requireAuth, uploadPurchase.array("attachments", 10), addAttachments);
 router.put("/:id/header-info",  requireAuth, updateHeaderInfo);
+router.put("/:id/item-info",    requireAuth, updateItemInfo);
 
 // ── Approval flow ──
 router.post("/:id/approve",         requireAuth, approvePR);
