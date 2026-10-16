@@ -18,6 +18,16 @@ function todayWIB() {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jakarta" }).format(new Date());
 }
 
+/** H-1 WIB. Hari berjalan belum ditutup, jadi tidak masuk capaian. */
+function yesterdayWIB() {
+  const d = new Date(`${todayWIB()}T12:00:00`);
+  d.setDate(d.getDate() - 1);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 function fillDailyTrend(rows, dateStart, dateEnd) {
   const byDate = new Map(rows.map((r) => [r.date, r.sales]));
   const out = [];
@@ -103,15 +113,15 @@ export const getPenjualan = async (req, res) => {
       dateStart = startDate;
       dateEnd   = endDate;
     } else {
-      if (!asOfDate) asOfDate = todayWIB();
+      if (!asOfDate) asOfDate = yesterdayWIB();
       effectiveAsOfDate = asOfDate;
       ({ dateStart, dateEnd } = computeDateRange(asOfDate));
     }
 
-    // Jangan lewati hari ini (WIB). Periode depan tetap dipotong ke hari ini.
+    // Periode berjalan dipotong ke H-1 (WIB). Hari ini belum masuk.
     {
-      const today = todayWIB();
-      if (effectiveAsOfDate > today) effectiveAsOfDate = today;
+      const yesterday = yesterdayWIB();
+      if (effectiveAsOfDate > yesterday) effectiveAsOfDate = yesterday;
       if (effectiveAsOfDate < dateStart) effectiveAsOfDate = dateStart;
     }
 
