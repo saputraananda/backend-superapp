@@ -34,19 +34,36 @@ async function publishComplaintFile(file) {
   const token = process.env.WASCHEN_POS_TOKEN || "";
   if (!token) {
     if (process.env.NODE_ENV !== "production") return;
-    throw new Error("Gagal menyimpan lampiran");
+    throw new Error("Gagal menyimpan lampiran: WASCHEN_POS_TOKEN belum di-set di server API.");
   }
   const form = new FormData();
   form.append("file", fs.createReadStream(file.path), {
     filename: file.filename,
     contentType: file.mimetype || "application/octet-stream",
   });
-  const res = await fetch(`${posOrigin()}/api/internal/complaint-docs`, {
-    method: "POST",
-    headers: { ...form.getHeaders(), "X-Complaint-Sync-Token": token },
-    body: form,
-  });
-  if (!res.ok) throw new Error("Gagal menyimpan lampiran");
+  const url = `${posOrigin()}/api/internal/complaint-docs`;
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { ...form.getHeaders(), "X-Complaint-Sync-Token": token },
+      body: form,
+    });
+  } catch (err) {
+    console.error("publishComplaintFile fetch error:", url, err);
+    throw new Error(`Gagal menyimpan lampiran: server POS tidak bisa dihubungi (${err.cause?.code || err.message}).`);
+  }
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    console.error("publishComplaintFile POS response:", res.status, url, body.slice(0, 500));
+    const hint = {
+      401: "token POS ditolak",
+      403: "token POS ditolak",
+      404: "endpoint POS tidak ditemukan",
+      413: "file terlalu besar untuk server POS",
+    }[res.status];
+    throw new Error(`Gagal menyimpan lampiran: POS membalas ${res.status}${hint ? ` (${hint})` : ""}.`);
+  }
   fs.unlink(file.path, () => {});
 }
 
@@ -720,6 +737,20 @@ export const addProgressLog = async (req, res) => {
     const picName = String(req.body.pic_name || "").trim() || null;
     const loggedAt = (req.body.logged_at && req.body.logged_at !== "null" && req.body.logged_at !== "") ? req.body.logged_at : null;
 
+    // Upload lampiran dulu, supaya log tidak tersimpan tanpa lampiran kalau upload gagal
+    const files = req.files || [];
+    const published = [];
+    try {
+      for (const file of files) {
+        await publishComplaintFile(file);
+        published.push(file);
+      }
+    } catch (err) {
+      await Promise.all(published.map((f) => deleteComplaintFile(`assets/complaint_docs/${f.filename}`)));
+      files.forEach((f) => fs.unlink(f.path, () => {}));
+      throw err;
+    }
+
     const [logResult] = await complaintQuery(
       `INSERT INTO tr_complaint_progress_log
          (complaint_id, progress, note, pic_employee_id, pic_name, logged_by_user_id, logged_by_employee_id, logged_at)
@@ -731,9 +762,7 @@ export const addProgressLog = async (req, res) => {
     const logId = logResult.insertId;
 
     // Save progress documents
-    const files = req.files || [];
     for (const file of files) {
-      await publishComplaintFile(file);
       await complaintQuery(
         `INSERT INTO tr_complaint_progress_document (log_id, file_path, original_name, mime_type, file_size_kb)
          VALUES (?,?,?,?,?)`,

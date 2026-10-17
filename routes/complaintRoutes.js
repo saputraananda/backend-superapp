@@ -19,6 +19,16 @@ import {
 import { requireAuth } from "../middleware/auth.js";
 import { uploadComplaintDoc } from "../middleware/upload.js";
 
+function uploadDocuments(req, res, next) {
+  uploadComplaintDoc.array("documents", 10)(req, res, (err) => {
+    if (!err) return next();
+    let message = err.message || "Gagal mengunggah lampiran.";
+    if (err.code === "LIMIT_FILE_SIZE") message = "Ukuran lampiran terlalu besar (maks 5 MB per file).";
+    else if (err.code === "LIMIT_FILE_COUNT" || err.code === "LIMIT_UNEXPECTED_FILE") message = "Maksimal 10 lampiran.";
+    return res.status(400).json({ message });
+  });
+}
+
 const router = express.Router();
 
 // Meta (types, categories, topics, outlets)
@@ -43,13 +53,13 @@ router.get("/:id",     requireAuth, getComplaintById);
 router.post(
   "/",
   requireAuth,
-  uploadComplaintDoc.array("documents", 10),
+  uploadDocuments,
   createComplaint
 );
 router.put(
   "/:id",
   requireAuth,
-  uploadComplaintDoc.array("documents", 10),
+  uploadDocuments,
   updateComplaint
 );
 router.delete("/:id",  requireAuth, deleteComplaint);
@@ -58,7 +68,7 @@ router.delete("/:id",  requireAuth, deleteComplaint);
 router.post(
   "/:id/progress",
   requireAuth,
-  uploadComplaintDoc.array("documents", 10),
+  uploadDocuments,
   addProgressLog
 );
 router.post("/:id/review", requireAuth, reviewComplaint);
