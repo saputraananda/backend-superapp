@@ -62,7 +62,10 @@ async function publishComplaintFile(file) {
       404: "endpoint POS tidak ditemukan",
       413: "file terlalu besar untuk server POS",
     }[res.status];
-    throw new Error(`Gagal menyimpan lampiran: POS membalas ${res.status}${hint ? ` (${hint})` : ""}.`);
+    let posMessage = "";
+    try { posMessage = JSON.parse(body).message || ""; } catch (_) { /* bukan JSON */ }
+    const detail = posMessage || hint;
+    throw new Error(`Gagal menyimpan lampiran "${file.originalname}": POS membalas ${res.status}${detail ? ` (${detail})` : ""}.`);
   }
   fs.unlink(file.path, () => {});
 }
