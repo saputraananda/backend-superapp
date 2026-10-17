@@ -70,15 +70,66 @@ async function publishComplaintFile(file) {
   fs.unlink(file.path, () => {});
 }
 
+/** Upload semua lampiran ke POS. Kalau satu gagal, yang sudah terkirim dihapus lagi. */
+async function publishComplaintFiles(files) {
+  const published = [];
+  try {
+    for (const file of files) {
+      await publishComplaintFile(file);
+      published.push(file);
+    }
+  } catch (err) {
+    await deleteComplaintFiles(published.map((f) => `assets/complaint_docs/${f.filename}`)).catch((e) =>
+      console.error("publishComplaintFiles rollback:", e.message)
+    );
+    files.forEach((f) => fs.unlink(f.path, () => {}));
+    throw err;
+  }
+}
+
+/** Dipanggil saat request gagal: buang lampiran request ini dari API Alora & POS supaya tidak nyangkut. */
+export async function discardComplaintUploads(files = []) {
+  if (!files.length) return;
+  files.forEach((f) => fs.unlink(f.path, () => {}));
+  await deleteComplaintFiles(files.map((f) => `assets/complaint_docs/${f.filename}`)).catch((e) =>
+    console.error("discardComplaintUploads:", e.message)
+  );
+}
+
+/** Hapus lampiran di API Alora dan POS. Throw kalau POS gagal, supaya row DB tidak dihapus duluan. */
 async function deleteComplaintFile(relativePath) {
   removeFile(relativePath);
-  const token = process.env.WASCHEN_POS_TOKEN || "";
   const filename = path.basename(String(relativePath || ""));
-  if (!token || !filename || filename === "." || filename === "..") return;
-  await fetch(`${posOrigin()}/api/internal/complaint-docs/${encodeURIComponent(filename)}`, {
-    method: "DELETE",
-    headers: { "X-Complaint-Sync-Token": token },
-  }).catch(() => {});
+  if (!filename || filename === "." || filename === "..") return;
+  const token = process.env.WASCHEN_POS_TOKEN || "";
+  if (!token) {
+    if (process.env.NODE_ENV !== "production") return;
+    throw new Error("Gagal menghapus lampiran: WASCHEN_POS_TOKEN belum di-set di server API.");
+  }
+  const url = `${posOrigin()}/api/internal/complaint-docs/${encodeURIComponent(filename)}`;
+  let res;
+  try {
+    res = await fetch(url, { method: "DELETE", headers: { "X-Complaint-Sync-Token": token } });
+  } catch (err) {
+    console.error("deleteComplaintFile fetch error:", url, err);
+    throw new Error(`Gagal menghapus lampiran: server POS tidak bisa dihubungi (${err.cause?.code || err.message}).`);
+  }
+  // 400 = nama tidak lolos aturan POS, berarti file itu memang tidak pernah tersimpan di POS
+  if (res.ok || res.status === 400) return;
+  const body = await res.text().catch(() => "");
+  console.error("deleteComplaintFile POS response:", res.status, url, body.slice(0, 500));
+  let posMessage = "";
+  try { posMessage = JSON.parse(body).message || ""; } catch (_) { /* bukan JSON */ }
+  throw new Error(`Gagal menghapus lampiran "${filename}": POS membalas ${res.status}${posMessage ? ` (${posMessage})` : ""}.`);
+}
+
+/** Hapus banyak lampiran; semua dicoba, lalu throw kalau ada yang gagal. Aman diulang. */
+async function deleteComplaintFiles(relativePaths) {
+  const results = await Promise.allSettled(relativePaths.map((p) => deleteComplaintFile(p)));
+  const failed = results.filter((r) => r.status === "rejected");
+  if (failed.length) {
+    throw new Error(`${failed[0].reason.message} Data belum dihapus, silakan coba lagi.`);
+  }
 }
 
 function getLastCutoffPeriods(count = 6) {
@@ -558,6 +609,9 @@ export const createComplaint = async (req, res) => {
       return res.status(400).json({ message: "Semua field wajib diisi." });
     }
 
+    const files = req.files || [];
+    await publishComplaintFiles(files);
+
     const [insertResult] = await complaintQuery(
       `INSERT INTO tr_complaint
          (type_id, category_id, topic_id, outlet_id, complaint_name, nota_number,
@@ -574,9 +628,7 @@ export const createComplaint = async (req, res) => {
     const complaintId = insertResult.insertId;
 
     // Save documents
-    const files = req.files || [];
     for (const file of files) {
-      await publishComplaintFile(file);
       await complaintQuery(
         `INSERT INTO tr_complaint_document (complaint_id, file_path, original_name, mime_type, file_size_kb)
          VALUES (?,?,?,?,?)`,
@@ -631,6 +683,25 @@ export const updateComplaint = async (req, res) => {
       return res.status(400).json({ message: "Semua field wajib diisi." });
     }
 
+    // Hapus lampiran lama dulu; kalau POS gagal, row tetap ada dan bisa dicoba lagi
+    let deletedDocIds = [];
+    try { deletedDocIds = JSON.parse(req.body.deleted_doc_ids || "[]"); } catch (_) { }
+    deletedDocIds = (Array.isArray(deletedDocIds) ? deletedDocIds : []).map(Number).filter(Boolean);
+    if (deletedDocIds.length) {
+      const [delDocs] = await complaintQuery(
+        `SELECT file_path FROM tr_complaint_document WHERE doc_id IN (${deletedDocIds.map(() => "?").join(",")}) AND complaint_id=?`,
+        [...deletedDocIds, id]
+      );
+      await deleteComplaintFiles(delDocs.map((d) => d.file_path));
+      await complaintQuery(
+        `DELETE FROM tr_complaint_document WHERE doc_id IN (${deletedDocIds.map(() => "?").join(",")}) AND complaint_id=?`,
+        [...deletedDocIds, id]
+      );
+    }
+
+    const files = req.files || [];
+    await publishComplaintFiles(files);
+
     await complaintQuery(
       `UPDATE tr_complaint SET
          type_id=?, category_id=?, topic_id=?, outlet_id=?,
@@ -660,28 +731,11 @@ export const updateComplaint = async (req, res) => {
     }
 
     // Handle new file uploads
-    const files = req.files || [];
     for (const file of files) {
-      await publishComplaintFile(file);
       await complaintQuery(
         `INSERT INTO tr_complaint_document (complaint_id, file_path, original_name, mime_type, file_size_kb)
          VALUES (?,?,?,?,?)`,
         [id, `assets/complaint_docs/${file.filename}`, file.originalname, file.mimetype, Math.round(file.size / 1024)]
-      );
-    }
-
-    // Handle deleted docs
-    let deletedDocIds = [];
-    try { deletedDocIds = JSON.parse(req.body.deleted_doc_ids || "[]"); } catch (_) { }
-    if (deletedDocIds.length) {
-      const [delDocs] = await complaintQuery(
-        `SELECT file_path FROM tr_complaint_document WHERE doc_id IN (${deletedDocIds.map(() => "?").join(",")}) AND complaint_id=?`,
-        [...deletedDocIds.map(Number), id]
-      );
-      await Promise.all(delDocs.map((d) => deleteComplaintFile(d.file_path)));
-      await complaintQuery(
-        `DELETE FROM tr_complaint_document WHERE doc_id IN (${deletedDocIds.map(() => "?").join(",")}) AND complaint_id=?`,
-        [...deletedDocIds.map(Number), id]
       );
     }
 
@@ -707,7 +761,7 @@ export const deleteComplaint = async (req, res) => {
        JOIN tr_complaint_progress_log pl ON pl.log_id = pd.log_id
        WHERE pl.complaint_id = ?`, [id]
     );
-    await Promise.all([...docs, ...pdocs].map((d) => deleteComplaintFile(d.file_path)));
+    await deleteComplaintFiles([...docs, ...pdocs].map((d) => d.file_path));
 
     await complaintQuery("DELETE FROM tr_complaint WHERE complaint_id=?", [id]);
     res.json({ message: "Komplain berhasil dihapus." });
@@ -742,17 +796,7 @@ export const addProgressLog = async (req, res) => {
 
     // Upload lampiran dulu, supaya log tidak tersimpan tanpa lampiran kalau upload gagal
     const files = req.files || [];
-    const published = [];
-    try {
-      for (const file of files) {
-        await publishComplaintFile(file);
-        published.push(file);
-      }
-    } catch (err) {
-      await Promise.all(published.map((f) => deleteComplaintFile(`assets/complaint_docs/${f.filename}`)));
-      files.forEach((f) => fs.unlink(f.path, () => {}));
-      throw err;
-    }
+    await publishComplaintFiles(files);
 
     const [logResult] = await complaintQuery(
       `INSERT INTO tr_complaint_progress_log
@@ -849,7 +893,7 @@ export const deleteProgressLog = async (req, res) => {
       "SELECT file_path FROM tr_complaint_progress_document WHERE log_id = ?",
       [logId]
     );
-    await Promise.all(pdocs.map((d) => deleteComplaintFile(d.file_path)));
+    await deleteComplaintFiles(pdocs.map((d) => d.file_path));
 
     // Delete database records
     await complaintQuery("DELETE FROM tr_complaint_progress_log WHERE log_id = ?", [logId]);

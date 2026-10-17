@@ -15,11 +15,16 @@ import {
   reviewComplaint,
   getComplaintPeriods,
   getComplaintSameDayComparison,
+  discardComplaintUploads,
 } from "../controllers/complaintController.js";
 import { requireAuth } from "../middleware/auth.js";
 import { uploadComplaintDoc } from "../middleware/upload.js";
 
 function uploadDocuments(req, res, next) {
+  // Request gagal (validasi, DB, POS) → lampiran yang sudah ter-upload dibuang supaya tidak nyangkut
+  res.on("finish", () => {
+    if (res.statusCode >= 400) discardComplaintUploads(req.files || []);
+  });
   uploadComplaintDoc.array("documents", 10)(req, res, (err) => {
     if (!err) return next();
     let message = err.message || "Gagal mengunggah lampiran.";
