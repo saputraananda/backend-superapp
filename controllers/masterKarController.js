@@ -49,7 +49,7 @@ export const getDashboardSummary = async (req, res) => {
     const params = req.query.company_id ? [req.query.company_id] : [];
 
     const [[{ total }]]             = await safeQuery(`SELECT COUNT(*) as total FROM mst_employee e WHERE e.is_deleted = 0 ${companyFilter}`, params);
-    const [[{ active }]]            = await safeQuery(`SELECT COUNT(*) as active FROM mst_employee e WHERE e.is_deleted = 0 AND e.exit_date IS NULL AND e.employment_status_id IS NOT NULL ${companyFilter}`, params);
+    const [[{ active }]]            = await safeQuery(`SELECT COUNT(*) as active FROM mst_employee e WHERE e.is_deleted = 0 AND e.exit_date IS NULL ${companyFilter}`, params);
     const [[{ resigned }]]          = await safeQuery(`SELECT COUNT(*) as resigned FROM mst_employee e WHERE e.is_deleted = 0 AND e.exit_date IS NOT NULL ${companyFilter}`, params);
     const [[{ contract_ending }]]   = await safeQuery(
       `SELECT COUNT(*) as contract_ending FROM mst_employee e
@@ -223,10 +223,10 @@ export const listEmployees = async (req, res) => {
     if (department_id) { conditions.push("e.department_id = ?"); params.push(department_id); }
 
     // Status filters
-    if (status === "active")   conditions.push("e.exit_date IS NULL AND e.employment_status_id IS NOT NULL");
+    if (status === "active")   conditions.push("e.exit_date IS NULL");
     if (status === "resigned") conditions.push("e.exit_date IS NOT NULL");
     if (status === "contract_ending") {
-      conditions.push("e.contract_end_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY)");
+      conditions.push("e.exit_date IS NULL AND e.contract_end_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY)");
     }
     if (status === "incomplete_profile") {
       conditions.push("(e.phone_number IS NULL OR e.address IS NULL OR e.ktp_number IS NULL OR e.bank_account_number IS NULL)");
