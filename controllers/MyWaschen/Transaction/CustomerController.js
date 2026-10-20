@@ -1,4 +1,5 @@
 import { safeMyWaschenQuery } from "../../../db/pool.js";
+import { posFileUrl } from "../../../utils/waschenPosUpload.js";
 
 const SORT_COLUMNS = [
   "id", "customer_code", "name", "phone", "email", "city",
@@ -218,6 +219,32 @@ export const getCustomerById = async (req, res) => {
     res.json({ success: true, data: rows[0] });
   } catch (err) {
     console.error("getCustomerById error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+
+/** Riwayat top-up / aktivasi membership + bukti pembayaran. */
+export const getCustomerMembershipPayments = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [rows] = await safeMyWaschenQuery(
+      `SELECT d.id, d.amount, d.payment_method, d.payment_proof_url, d.notes, d.created_at,
+              mp.name AS package_name, mp.tier AS package_tier
+       FROM tr_customer_deposit d
+       LEFT JOIN tr_membership m ON m.id = d.membership_id
+       LEFT JOIN mst_membership_package mp ON mp.id = m.package_id
+       WHERE d.customer_id = ? AND d.type = 'Topup' AND d.membership_id IS NOT NULL
+       ORDER BY d.created_at DESC, d.id DESC
+       LIMIT 50`,
+      [id]
+    );
+    res.json({
+      success: true,
+      data: rows.map((r) => ({ ...r, payment_proof_url: posFileUrl(r.payment_proof_url) })),
+    });
+  } catch (err) {
+    console.error("getCustomerMembershipPayments error:", err);
     res.status(500).json({ success: false, message: err.message });
   }
 };

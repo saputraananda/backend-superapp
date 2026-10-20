@@ -167,6 +167,7 @@ export const getOvertimeDetail = async (req, res) => {
          t.order_no,
          t.barcode,
          c.name AS customer_name,
+         COALESCE(NULLIF(TRIM(c.full_address), ''), NULLIF(TRIM(c.address), '')) AS customer_address,
          d.service_name,
          d.qty,
          d.unit,

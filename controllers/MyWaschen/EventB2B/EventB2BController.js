@@ -261,7 +261,7 @@ export const getEventCustomers = async (req, res) => {
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
 
     const groupedSql = `
-      SELECT c.id, c.customer_code, c.name, c.phone, c.email, c.address, c.city,
+      SELECT c.id, c.customer_code, c.name, c.phone, c.email, c.address, c.full_address, c.city,
              COUNT(*) AS order_count,
              COALESCE(SUM(t.grand_total), 0) AS billed,
              COALESCE(SUM(t.paid_amount), 0) AS paid,
@@ -273,7 +273,7 @@ export const getEventCustomers = async (req, res) => {
       JOIN mst_customer c ON c.id = t.customer_id
       LEFT JOIN mst_outlet o ON o.id = t.outlet_id
       WHERE ${where.join(" AND ")}
-      GROUP BY c.id, c.customer_code, c.name, c.phone, c.email, c.address, c.city
+      GROUP BY c.id, c.customer_code, c.name, c.phone, c.email, c.address, c.full_address, c.city
       ${outstandingOnly ? "HAVING outstanding > 0" : ""}`;
 
     const [[countRows], [rows], [totalsRows]] = await Promise.all([

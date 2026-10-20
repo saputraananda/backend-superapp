@@ -1,5 +1,6 @@
 import { safeMyWaschenQuery, safeQuery } from "../../../db/pool.js";
 import { buildProduksiPhotoUrl } from "../HRIS/hrisAssetHelpers.js";
+import { posFileUrl, uploadDeleteRequestAttachment } from "../../../utils/waschenPosUpload.js";
 
 function resolvePaymentStatus(paidAmount, grandTotal) {
   const paid = Number(paidAmount) || 0;
@@ -97,6 +98,7 @@ function mapTransactionRow(row) {
     deleteApprovalStatus: row.delete_approval_status,
     deleteRequestedAt: row.delete_requested_at,
     deleteReason: row.delete_reason,
+    deleteAttachmentUrl: posFileUrl(row.delete_attachment_url),
     isRefundRequested: Boolean(row.is_refund_requested),
     refundApprovalStatus: row.refund_approval_status,
     refundRequestedAt: row.refund_requested_at,
@@ -177,7 +179,7 @@ async function fetchEmployeeNameMap(ids) {
 const TXN_SELECT = `
   SELECT t.*,
          c.name AS customer_name, c.phone AS customer_phone, c.customer_code,
-         c.address AS customer_address,
+         COALESCE(NULLIF(TRIM(c.full_address), ''), NULLIF(TRIM(c.address), '')) AS customer_address,
          COALESCE(c.deposit_balance, 0) AS deposit_balance,
          o.outlet_code, o.name AS outlet_name, o.full_name AS outlet_full_name,
          o.address AS outlet_address,
@@ -627,13 +629,16 @@ export const updateTransactionPayment = async (req, res) => {
   }
 };
 
-/** PATCH /waschen/transactions/:id/request-delete */
+/** PATCH /waschen/transactions/:id/request-delete — wajib lampiran foto/PDF (field `attachment`) */
 export const requestDeleteTransaction = async (req, res) => {
   try {
     const { id } = req.params;
     const reason = String(req.body?.reason || "").trim();
     if (!reason) {
       return res.status(400).json({ success: false, message: "Alasan pengajuan hapus wajib diisi" });
+    }
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: "Lampiran foto/dokumen wajib disertakan untuk pengajuan hapus nota" });
     }
 
     const [rows] = await safeMyWaschenQuery(
@@ -647,15 +652,19 @@ export const requestDeleteTransaction = async (req, res) => {
       return res.status(400).json({ success: false, message: "Nota sudah dalam pengajuan hapus" });
     }
 
+    // Simpan di server POS (satu folder dengan lampiran dari kasir POS)
+    const attachmentPath = await uploadDeleteRequestAttachment(req.file);
+
     await safeMyWaschenQuery(
       `UPDATE tr_transaction SET
          is_delete_requested = 1,
          delete_approval_status = 0,
          delete_requested_at = NOW(),
          delete_reason = ?,
+         delete_attachment_url = ?,
          updated_at = NOW()
        WHERE id = ?`,
-      [reason, rows[0].id]
+      [reason, attachmentPath, rows[0].id]
     );
 
     res.json({

@@ -71,7 +71,8 @@ async function loadVerifiedTransactions(shiftId) {
   const [rows] = await safeMyWaschenQuery(
     `SELECT v.id, v.shift_id, v.transaction_id, v.verified_by, v.verified_at,
             t.order_no, t.grand_total, t.payment_method, t.payment_status,
-            c.name AS customer_name
+            c.name AS customer_name,
+            COALESCE(NULLIF(TRIM(c.full_address), ''), NULLIF(TRIM(c.address), '')) AS customer_address
      FROM tr_shift_txn_verify v
      JOIN tr_transaction t ON t.id = v.transaction_id
      LEFT JOIN mst_customer c ON c.id = t.customer_id
@@ -90,6 +91,7 @@ async function loadVerifiedTransactions(shiftId) {
     paymentMethod: r.payment_method,
     paymentStatus: r.payment_status,
     customerName: r.customer_name,
+    customerAddress: r.customer_address,
   }));
 }
 
