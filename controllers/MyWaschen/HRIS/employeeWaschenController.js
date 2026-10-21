@@ -115,6 +115,76 @@ export const listWaschenEmployees = async (req, res) => {
   }
 };
 
+export const exportWaschenEmployees = async (req, res) => {
+  try {
+    const [rows] = await safeQuery(
+      `
+        SELECT
+          e.employee_id, e.employee_code, e.full_name, e.gender,
+          e.birth_place, e.birth_date, e.blood_type, e.address,
+          e.ktp_number, e.family_card_number, e.phone_number, e.email, e.private_email,
+          e.join_date, e.contract_end_date, e.exit_date, e.exit_reason,
+          e.school_name, e.major_name, e.marital_status,
+          e.bpjs_health_number, e.bpjs_employment_number, e.npwp_number,
+          e.bank_account_number, e.emergency_contact, e.notes, e.mother_name,
+          e.profile_path, e.profile_name,
+          e.ktp_path, e.ktp_name,
+          e.kk_path, e.kk_name,
+          e.npwp_path, e.npwp_name,
+          e.bpjs_path, e.bpjs_name,
+          e.bpjs_tk_path, e.bpjs_tk_name,
+          e.ijazah_path, e.ijazah_name,
+          e.sertifikat_path, e.sertifikat_name,
+          e.rekomkerja_path, e.rekomkerja_name,
+          e.created_at,
+          u.username, c.company_name, d.department_name, p.position_name,
+          j.job_level_name, es.employment_status_name, ed.education_level_name,
+          r.religion_name, b.bank_name
+        FROM mst_employee e
+        LEFT JOIN users                 u  ON u.email                = e.email
+        LEFT JOIN mst_company           c  ON e.company_id           = c.company_id
+        LEFT JOIN mst_department        d  ON e.department_id        = d.department_id
+        LEFT JOIN mst_position          p  ON e.position_id          = p.position_id
+        LEFT JOIN mst_job_level         j  ON e.job_level_id         = j.job_level_id
+        LEFT JOIN mst_employment_status es ON e.employment_status_id = es.employment_status_id
+        LEFT JOIN mst_education_level   ed ON e.education_level_id   = ed.education_level_id
+        LEFT JOIN mst_religion          r  ON e.religion_id          = r.religion_id
+        LEFT JOIN mst_bank              b  ON e.bank_id              = b.bank_id
+        WHERE e.company_id = 5 AND e.is_deleted = 0 AND e.exit_date IS NULL
+        ORDER BY e.full_name ASC, e.employee_id ASC
+      `,
+    );
+
+    const [roleRows] = await safeMyWaschenQuery(
+      "SELECT employee_id, role, is_leader, outlet_id FROM mst_role"
+    );
+    const roleMap = {};
+    for (const rr of roleRows) roleMap[rr.employee_id] = rr;
+
+    const [outletRows] = await safeQuery("SELECT id, name FROM mst_outlet");
+    const outletMap = {};
+    for (const o of outletRows) outletMap[o.id] = o.name;
+
+    const data = rows.map((r) => {
+      const rr = roleMap[r.employee_id];
+      return {
+        ...r,
+        waschen_role: rr?.role ?? null,
+        is_leader: rr?.is_leader ?? null,
+        outlet_name: rr?.outlet_id ? (outletMap[rr.outlet_id] ?? "") : "",
+      };
+    });
+
+    return res.json({ success: true, total: data.length, data });
+  } catch (error) {
+    console.error("[exportWaschenEmployees] Error:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Gagal mengambil data export karyawan Waschen",
+    });
+  }
+};
+
 export const getAssignableEmployees = async (req, res) => {
   try {
     // Employees from company 5 not yet in mst_role (active)
