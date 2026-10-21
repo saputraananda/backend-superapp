@@ -207,6 +207,27 @@ export const approveDayOff = async (req, res) => {
   }
 };
 
+export const updateDayOffBackup = async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const [rows] = await safeMyWaschenQuery("SELECT * FROM tr_employee_day_off WHERE day_off_id = ?", [id]);
+    if (!rows.length) return res.status(404).json({ success: false, message: "Data tidak ditemukan" });
+    if (rows[0].status !== "disetujui") {
+      return res.status(409).json({ success: false, message: "Backup hanya bisa diubah pada libur yang sudah disetujui HRD" });
+    }
+    const offDate = toISODate(rows[0].off_date);
+    const backupId = await resolveBackupId(req.body.backup_employee_id, rows[0].employee_id, offDate);
+
+    await safeMyWaschenQuery(
+      "UPDATE tr_employee_day_off SET backup_employee_id = ? WHERE day_off_id = ?",
+      [backupId, id],
+    );
+    return res.json({ success: true, message: "Backup diperbarui" });
+  } catch (err) {
+    return res.status(err.statusCode || 500).json({ success: false, message: err.message || "Gagal memperbarui backup" });
+  }
+};
+
 export const rejectDayOff = async (req, res) => {
   try {
     const actor = getActor(req);
