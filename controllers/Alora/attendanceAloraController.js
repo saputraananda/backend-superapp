@@ -1342,6 +1342,19 @@ export const createManualAttendance = async (req, res) => {
 			}
 		}
 
+		// Hitung status keterlambatan (batas toleransi 08:30)
+		const thresholdStr = `${workDate} 08:30:00`;
+		const isUnder830 = clockInTime <= thresholdStr;
+		let lateMinutes = null;
+		let lateCategory = null;
+		let lateStatus = null;
+		if (!isUnder830) {
+			const diffMs = new Date(clockInTime) - new Date(thresholdStr);
+			lateMinutes = Math.max(1, Math.floor(diffMs / 60000));
+			lateCategory = "unexpected";
+			lateStatus = "Terlambat";
+		}
+
 		const hasClockOut = Boolean(clockOutTime);
 
 		await safeAloraMobileQuery(
@@ -1352,6 +1365,9 @@ export const createManualAttendance = async (req, res) => {
 				clock_in,
 				clock_out,
 				duration_hours,
+				late_category,
+				late_minutes,
+				late_status,
 				clock_in_location_name,
 				clock_out_location_name,
 				punch_location_context_in,
@@ -1362,6 +1378,7 @@ export const createManualAttendance = async (req, res) => {
 				updated_at
 			) VALUES (
 				?, ?, 'regular', ?, ?, ?,
+				?, ?, ?,
 				'Input Manual HR', ?,
 				'office', ?,
 				1, ?,
@@ -1373,6 +1390,9 @@ export const createManualAttendance = async (req, res) => {
 				clockInTime,
 				clockOutTime || null,
 				durationHours,
+				lateCategory,
+				lateMinutes,
+				lateStatus,
 				hasClockOut ? "Input Manual HR" : null,
 				hasClockOut ? "office" : null,
 				hasClockOut ? 1 : null,
@@ -1395,6 +1415,7 @@ export const createManualAttendance = async (req, res) => {
 /**
  * PUT /alora/attendance/:id/manual
  * Update jam masuk / keluar absensi oleh HR.
+ * Jika jam masuk <= 08:30, status keterlambatan otomatis di-reset menjadi Hadir (tidak terlambat).
  */
 export const updateManualAttendance = async (req, res) => {
 	try {
@@ -1403,7 +1424,10 @@ export const updateManualAttendance = async (req, res) => {
 		if (!id) return res.status(400).json({ success: false, message: "ID absensi tidak valid" });
 
 		const [rows] = await safeAloraMobileQuery(
-			`SELECT id, employee_id, attendance_date FROM tr_worker_attendance WHERE id = ? LIMIT 1`,
+			`SELECT id, employee_id, attendance_date, late_category, late_reason, late_status
+			 FROM tr_worker_attendance
+			 WHERE id = ?
+			 LIMIT 1`,
 			[id]
 		);
 		if (rows.length === 0) {
@@ -1429,6 +1453,23 @@ export const updateManualAttendance = async (req, res) => {
 			if (diffSec > 0) durationHours = Number((diffSec / 3600).toFixed(2));
 		}
 
+		// Kalkulasi keterlambatan berdasarkan batas toleransi 08:30
+		const thresholdStr = `${workDate} 08:30:00`;
+		const isUnder830 = clockInTime <= thresholdStr;
+
+		let lateCategoryUpdate = null;
+		let lateReasonUpdate = null;
+		let lateMinutesUpdate = null;
+		let lateStatusUpdate = null;
+
+		if (!isUnder830) {
+			const diffMs = new Date(clockInTime) - new Date(thresholdStr);
+			lateMinutesUpdate = Math.max(1, Math.floor(diffMs / 60000));
+			lateCategoryUpdate = record.late_category || "unexpected";
+			lateReasonUpdate = record.late_reason || null;
+			lateStatusUpdate = record.late_status || "Terlambat";
+		}
+
 		const hasClockOut = Boolean(clockOutTime);
 
 		await safeAloraMobileQuery(
@@ -1436,6 +1477,13 @@ export const updateManualAttendance = async (req, res) => {
 			 SET clock_in = ?,
 			     clock_out = ?,
 			     duration_hours = ?,
+			     late_category = ?,
+			     late_reason = ?,
+			     late_minutes = ?,
+			     late_status = ?,
+			     late_supervisor_id = CASE WHEN ? IS NULL THEN NULL ELSE late_supervisor_id END,
+			     late_supervisor_approved_at = CASE WHEN ? IS NULL THEN NULL ELSE late_supervisor_approved_at END,
+			     late_supervisor_rejection_reason = CASE WHEN ? IS NULL THEN NULL ELSE late_supervisor_rejection_reason END,
 			     clock_out_location_name = COALESCE(clock_out_location_name, ?),
 			     punch_location_context_out = COALESCE(punch_location_context_out, ?),
 			     clock_out_inside_radius = COALESCE(clock_out_inside_radius, ?),
@@ -1445,6 +1493,13 @@ export const updateManualAttendance = async (req, res) => {
 				clockInTime,
 				clockOutTime || null,
 				durationHours,
+				lateCategoryUpdate,
+				lateReasonUpdate,
+				lateMinutesUpdate,
+				lateStatusUpdate,
+				lateCategoryUpdate,
+				lateCategoryUpdate,
+				lateCategoryUpdate,
 				hasClockOut ? "Input Manual HR" : null,
 				hasClockOut ? "office" : null,
 				hasClockOut ? 1 : null,
