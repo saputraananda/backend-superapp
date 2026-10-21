@@ -369,24 +369,39 @@ export const uploadIKMBriefing = multer({
 // Upload Complaint (semua ekstensi, max 5 MB per file)
 // =========================
 const COMPLAINT_DOC_DIR = path.join(BASE_DIR, "complaint_docs");
-if (!fs.existsSync(COMPLAINT_DOC_DIR)) fs.mkdirSync(COMPLAINT_DOC_DIR, { recursive: true });
 
 const complaintDocStorage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, COMPLAINT_DOC_DIR),
+  destination: (_req, _file, cb) => {
+    try {
+      fs.mkdirSync(COMPLAINT_DOC_DIR, { recursive: true });
+      cb(null, COMPLAINT_DOC_DIR);
+    } catch (err) {
+      cb(err);
+    }
+  },
   filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname);
+    const ext = path.extname(file.originalname).toLowerCase();
+    // POS mewajibkan nama diawali huruf/angka
     const baseName = path
-      .basename(file.originalname, ext)
+      .basename(file.originalname, path.extname(file.originalname))
       .replace(/[^a-zA-Z0-9_\-]/g, "_")
-      .slice(0, 60);
+      .replace(/^[_\-]+/, "")
+      .slice(0, 60) || "lampiran";
     const unique = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     cb(null, `${baseName}_${unique}${ext}`);
   },
 });
 
+// Harus sama dengan ALLOWED_EXT di POS (my-waschen-new/api/routes/complaintInternal.routes.js)
+const COMPLAINT_DOC_EXT = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".pdf", ".heic", ".heif"];
+
 export const uploadComplaintDoc = multer({
   storage: complaintDocStorage,
-  fileFilter: (_req, file, cb) => cb(null, true), // semua ekstensi
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname || "").toLowerCase();
+    if (COMPLAINT_DOC_EXT.includes(ext)) return cb(null, true);
+    cb(new Error(`Lampiran "${file.originalname}" tidak didukung. Hanya gambar (jpg, png, gif, webp, heic) atau PDF.`));
+  },
   limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB per file
 });
 

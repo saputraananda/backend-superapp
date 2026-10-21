@@ -55,12 +55,7 @@ export const getPiutang = async (req, res) => {
       dateEnd   = endDate;
     } else {
       if (!asOfDate) {
-        const y = new Date();
-        y.setDate(y.getDate() - 1);
-        const yy = y.getFullYear();
-        const mm = String(y.getMonth() + 1).padStart(2, "0");
-        const dd = String(y.getDate()).padStart(2, "0");
-        asOfDate = `${yy}-${mm}-${dd}`;
+        asOfDate = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jakarta" }).format(new Date());
       }
       ({ dateStart, dateEnd } = computeDateRange(asOfDate));
     }

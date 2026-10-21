@@ -51,7 +51,7 @@ export const DEFAULT_INTERNAL_SETTINGS = {
   show_datetime: 1,
   show_customer_name: 1,
   show_customer_phone: 1,
-  show_customer_address: 0,
+  show_customer_address: 1,
   show_cashier: 1,
   show_item_price: 0,
   show_item_detail: 1,

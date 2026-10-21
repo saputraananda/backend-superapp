@@ -2,6 +2,7 @@ import express from "express";
 import {
   getCustomers,
   getCustomerById,
+  getCustomerMembershipPayments,
   createCustomer,
   updateCustomer,
   deleteCustomer,
@@ -10,6 +11,7 @@ import {
 const router = express.Router();
 
 router.get("/", getCustomers);
+router.get("/:id/membership-payments", getCustomerMembershipPayments);
 router.get("/:id", getCustomerById);
 router.post("/", createCustomer);
 router.put("/:id", updateCustomer);

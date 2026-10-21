@@ -8,7 +8,7 @@ import {
     listMy, listDepartment, listApproval, listAll, listGaReview, getDetail,
     listFinanceReview, listPaymentPending,
     listCredit, getPaymentHistory, addInstallment,
-    createPR, updatePR, deletePR, deleteAttachment, addAttachments, updateHeaderInfo,
+    createPR, updatePR, deletePR, deleteAttachment, addAttachments, updateHeaderInfo, updateItemInfo,
     approvePR, rejectPR,
     approveGA, rejectGA, getPOData,
     approveFinance, rejectFinance,
@@ -30,8 +30,7 @@ router.post("/classifications", requireAuth, createClassification);
 router.get("/employee-options", requireAuth, getEmployeeOptions);
 
 // ── Dashboard & list ──
-router.get("/dashboard",            requireAuth, getDashboard);
-router.get("/me",                   requireAuth, listMy);
+router.get("/dashboard",            requireAuth, getDashboard);router.get("/me",                   requireAuth, listMy);
 router.get("/department",           requireAuth, listDepartment);
 router.get("/approval",             requireAuth, listApproval);
 router.get("/all",                  requireAuth, listAll);
@@ -55,6 +54,7 @@ router.delete("/:id", requireAuth, deletePR);
 router.delete("/attachment/:attachmentId", requireAuth, deleteAttachment);
 router.post("/:id/attachments", requireAuth, uploadPurchase.array("attachments", 10), addAttachments);
 router.put("/:id/header-info",  requireAuth, updateHeaderInfo);
+router.put("/:id/item-info",    requireAuth, updateItemInfo);
 
 // ── Approval flow ──
 router.post("/:id/approve",         requireAuth, approvePR);

@@ -103,33 +103,17 @@ export async function reservedAmount(employeeId, excludeId = null) {
   return out;
 }
 
+/** Sekarang = beban cutoff berjalan; Sisa = Limit - Sekarang. Bulan berikutnya beban turun sesuai termin. */
 export async function buildKasbonSummary(employeeId, excludeId = null) {
   const emp = await getEmployeeSalary(employeeId);
   const salary = Number(emp?.take_home_pay) || 0;
   const limit = Math.floor(salary / 2);
   const cutoff = currentCutoff();
   const reserved = await reservedAmount(employeeId, excludeId);
-  const exclude = excludeId ? " AND k.id <> ?" : "";
-  const dueParams = excludeId ? [employeeId, cutoff.end, excludeId] : [employeeId, cutoff.end];
-  const pendingParams = excludeId ? [employeeId, excludeId] : [employeeId];
-  const [dueRows] = await safeMyWaschenQuery(
-    `SELECT COALESCE(SUM(p.amount), 0) AS due
-     FROM tr_kasbon_payment p
-     JOIN tr_kasbon k ON k.id = p.kasbon_id
-     WHERE k.employee_id = ? AND k.status = 'disetujui'
-       AND p.status = 'belum' AND p.due_date <= ?${exclude}`,
-    dueParams
-  );
-  const [pendingRows] = await safeMyWaschenQuery(
-    `SELECT COALESCE(SUM(k.amount_requested), 0) AS hold
-     FROM tr_kasbon k
-     WHERE k.employee_id = ? AND k.status IN ('pengajuan','proses')${exclude}`,
-    pendingParams
-  );
   return {
     basicSalary: salary,
     limit,
-    sekarang: (Number(dueRows[0].due) || 0) + (Number(pendingRows[0].hold) || 0),
+    sekarang: reserved.total,
     reserved: reserved.total,
     reservedKasbon: reserved.kasbon,
     reservedPinjaman: reserved.pinjaman,

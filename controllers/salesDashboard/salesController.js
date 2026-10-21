@@ -14,6 +14,37 @@ const EXCLUDED_NOTAS = [
   'ORC251027100046038','KZZ251119154110977',
 ];
 
+function todayWIB() {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jakarta" }).format(new Date());
+}
+
+/** H-1 WIB. Hari berjalan belum ditutup, jadi tidak masuk capaian. */
+function yesterdayWIB() {
+  const d = new Date(`${todayWIB()}T12:00:00`);
+  d.setDate(d.getDate() - 1);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function fillDailyTrend(rows, dateStart, dateEnd) {
+  const byDate = new Map(rows.map((r) => [r.date, r.sales]));
+  const out = [];
+  const cur = new Date(`${dateStart}T12:00:00`);
+  const end = new Date(`${dateEnd}T12:00:00`);
+  while (cur <= end) {
+    const date = [
+      cur.getFullYear(),
+      String(cur.getMonth() + 1).padStart(2, "0"),
+      String(cur.getDate()).padStart(2, "0"),
+    ].join("-");
+    out.push({ day: String(cur.getDate()), date, sales: byDate.get(date) ?? 0 });
+    cur.setDate(cur.getDate() + 1);
+  }
+  return out;
+}
+
 // Compute billing period (26th–25th) from a reference date
 function computeDateRange(asOfDate) {
   const d = new Date(asOfDate + "T12:00:00");
@@ -82,24 +113,14 @@ export const getPenjualan = async (req, res) => {
       dateStart = startDate;
       dateEnd   = endDate;
     } else {
-      if (!asOfDate) {
-        const y = new Date();
-        y.setDate(y.getDate() - 1);
-        const yy = y.getFullYear();
-        const mm = String(y.getMonth() + 1).padStart(2, "0");
-        const dd = String(y.getDate()).padStart(2, "0");
-        asOfDate = `${yy}-${mm}-${dd}`;
-      }
+      if (!asOfDate) asOfDate = yesterdayWIB();
       effectiveAsOfDate = asOfDate;
       ({ dateStart, dateEnd } = computeDateRange(asOfDate));
     }
 
-    // Cap effectiveAsOfDate to yesterday (today's data may be incomplete)
-    // For past months this has no effect; for current month it shows proportional progress
+    // Periode berjalan dipotong ke H-1 (WIB). Hari ini belum masuk.
     {
-      const y = new Date();
-      y.setDate(y.getDate() - 1);
-      const yesterday = `${y.getFullYear()}-${String(y.getMonth() + 1).padStart(2, "0")}-${String(y.getDate()).padStart(2, "0")}`;
+      const yesterday = yesterdayWIB();
       if (effectiveAsOfDate > yesterday) effectiveAsOfDate = yesterday;
       if (effectiveAsOfDate < dateStart) effectiveAsOfDate = dateStart;
     }
@@ -388,15 +409,15 @@ ORDER BY tanggal`;
     ]);
 
     const mapTrend = (r) => ({
-      day: String(parseInt(r.tanggal.split("-")[2])),
-      date: r.tanggal,
+      day: String(parseInt(String(r.tanggal).slice(8, 10), 10)),
+      date: String(r.tanggal).slice(0, 10),
       sales: Number(r.sales),
     });
 
     res.json({
       outlets: outletRows,
-      trend:        trendRows.map(mapTrend),
-      trendWaschen: trendWaschenRows.map(mapTrend),
+      trend:        fillDailyTrend(trendRows.map(mapTrend), dateStart, effectiveAsOfDate),
+      trendWaschen: fillDailyTrend(trendWaschenRows.map(mapTrend), dateStart, effectiveAsOfDate),
       meta: { asOfDate: effectiveAsOfDate, dateStart, dateEnd },
     });
   } catch (err) {

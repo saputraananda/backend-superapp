@@ -1,4 +1,4 @@
-import { safeMyWaschenQuery } from "../../../db/pool.js";
+import { myWaschenPool, safeMyWaschenQuery } from "../../../db/pool.js";
 import { defaultCutoffDateRange } from "../cutoffHelpers.js";
 import {
   getEmployeeNameMap,
@@ -13,7 +13,7 @@ import { notifyWaschenRealtime } from "../../../utils/notifyWaschenRealtime.js";
  * MEMORY — LEMBUR Alsa HRIS (pantau + ACC/reject + detail pengerjaan)
  * =============================================================================
  * - Karyawan Start/Close di mobile → status 'berlangsung' lalu 'pengajuan'
- * - ACC/reject hanya untuk 'pengajuan' (bukan saat masih berlangsung)
+ * - ACC/reject/hapus hanya untuk 'pengajuan' (bukan saat masih berlangsung)
  * - Filter style sama Perizinan/Kasbon (cutoff 26–25, outlet, role, status, search)
  * - Detail: item/nota di jendela start_at–end_at
  * =============================================================================
@@ -167,6 +167,7 @@ export const getOvertimeDetail = async (req, res) => {
          t.order_no,
          t.barcode,
          c.name AS customer_name,
+         COALESCE(NULLIF(TRIM(c.full_address), ''), NULLIF(TRIM(c.address), '')) AS customer_address,
          d.service_name,
          d.qty,
          d.unit,
@@ -314,5 +315,43 @@ export const rejectOvertime = async (req, res) => {
     return res.json({ success: true, message: "Lembur ditolak" });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+export const deleteOvertime = async (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return res.status(422).json({ success: false, message: "ID tidak valid" });
+  const conn = await myWaschenPool.getConnection();
+  try {
+    const [rows] = await conn.query(`SELECT id, status, outlet_id, employee_id FROM tr_overtime WHERE id = ? LIMIT 1`, [id]);
+    const ot = rows?.[0];
+    if (!ot) return res.status(404).json({ success: false, message: "Pengajuan tidak ditemukan" });
+    if (ot.status !== "pengajuan") {
+      return res.status(403).json({ success: false, message: "Hanya status pengajuan yang dapat dihapus" });
+    }
+
+    await conn.beginTransaction();
+    await conn.query(
+      `UPDATE tr_item_progress
+       SET overtime_id = NULL,
+           work_time_flag = IF(work_time_flag IN ('overtime_pending','overtime'), 'outside_hours', work_time_flag)
+       WHERE overtime_id = ?`,
+      [id],
+    );
+    await conn.query(`DELETE FROM tr_overtime WHERE id = ?`, [id]);
+    await conn.commit();
+    await notifyWaschenRealtime({
+      domain: "overtime",
+      outletId: ot.outlet_id,
+      employeeId: ot.employee_id,
+      action: "delete",
+    });
+    return res.json({ success: true, message: "Pengajuan lembur dihapus" });
+  } catch (err) {
+    try { await conn.rollback(); } catch { /* belum ada transaksi */ }
+    console.error("deleteOvertime:", err);
+    return res.status(500).json({ success: false, message: "Gagal menghapus pengajuan lembur" });
+  } finally {
+    conn.release();
   }
 };

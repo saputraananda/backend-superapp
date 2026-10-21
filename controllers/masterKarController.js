@@ -49,7 +49,7 @@ export const getDashboardSummary = async (req, res) => {
     const params = req.query.company_id ? [req.query.company_id] : [];
 
     const [[{ total }]]             = await safeQuery(`SELECT COUNT(*) as total FROM mst_employee e WHERE e.is_deleted = 0 ${companyFilter}`, params);
-    const [[{ active }]]            = await safeQuery(`SELECT COUNT(*) as active FROM mst_employee e WHERE e.is_deleted = 0 AND e.exit_date IS NULL AND e.employment_status_id IS NOT NULL ${companyFilter}`, params);
+    const [[{ active }]]            = await safeQuery(`SELECT COUNT(*) as active FROM mst_employee e WHERE e.is_deleted = 0 AND e.exit_date IS NULL ${companyFilter}`, params);
     const [[{ resigned }]]          = await safeQuery(`SELECT COUNT(*) as resigned FROM mst_employee e WHERE e.is_deleted = 0 AND e.exit_date IS NOT NULL ${companyFilter}`, params);
     const [[{ contract_ending }]]   = await safeQuery(
       `SELECT COUNT(*) as contract_ending FROM mst_employee e
@@ -223,10 +223,10 @@ export const listEmployees = async (req, res) => {
     if (department_id) { conditions.push("e.department_id = ?"); params.push(department_id); }
 
     // Status filters
-    if (status === "active")   conditions.push("e.exit_date IS NULL AND e.employment_status_id IS NOT NULL");
+    if (status === "active")   conditions.push("e.exit_date IS NULL");
     if (status === "resigned") conditions.push("e.exit_date IS NOT NULL");
     if (status === "contract_ending") {
-      conditions.push("e.contract_end_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY)");
+      conditions.push("e.exit_date IS NULL AND e.contract_end_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY)");
     }
     if (status === "incomplete_profile") {
       conditions.push("(e.phone_number IS NULL OR e.address IS NULL OR e.ktp_number IS NULL OR e.bank_account_number IS NULL)");
@@ -395,16 +395,15 @@ export const updateEmployee = async (req, res) => {
       username, mother_name, email, private_email, take_home_pay,
     } = req.body;
 
-    if (!employee_code?.trim()) {
-      return res.status(400).json({ message: "Nomor Induk Karyawan wajib diisi." });
-    }
-
-    const [[existing]] = await safeQuery(
-      "SELECT employee_id FROM mst_employee WHERE employee_code = ? AND employee_id != ? AND is_deleted = 0",
-      [employee_code, id]
-    );
-    if (existing) {
-      return res.status(400).json({ message: "Nomor Induk Karyawan sudah digunakan oleh karyawan lain." });
+    const employeeCode = employee_code?.trim() || null;
+    if (employeeCode) {
+      const [[existing]] = await safeQuery(
+        "SELECT employee_id FROM mst_employee WHERE employee_code = ? AND employee_id != ? AND is_deleted = 0",
+        [employeeCode, id]
+      );
+      if (existing) {
+        return res.status(400).json({ message: "Nomor Induk Karyawan sudah digunakan oleh karyawan lain." });
+      }
     }
 
     // Validasi email unik jika diisi
@@ -474,7 +473,7 @@ export const updateEmployee = async (req, res) => {
         education_level_id, school_name, major_name || null, religion_id, marital_status,
         bpjs_health_number, bpjs_employment_number, npwp_number,
         bank_id, bank_account_number, salaryValue,
-        emergency_contact, notes, employee_code,
+        emergency_contact, notes, employeeCode,
         mother_name || null, newEmail, private_email || null, id,
       ]
     );

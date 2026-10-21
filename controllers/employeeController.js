@@ -354,8 +354,22 @@ export const getMasterData = async (req, res) => {
     const [educationLevels]    = await safeQuery("SELECT * FROM mst_education_level WHERE is_active = 1");
     const [religions]          = await safeQuery("SELECT * FROM mst_religion WHERE is_active = 1");
     const [banks]              = await safeQuery("SELECT * FROM mst_bank WHERE is_active = 1");
+    const [latestEmployeeCodes] = await safeQuery(
+      `SELECT e.company_id, e.employee_code
+       FROM mst_employee e
+       INNER JOIN (
+         SELECT company_id, MAX(employee_id) AS max_id
+         FROM mst_employee
+         WHERE is_deleted = 0
+           AND company_id IS NOT NULL
+           AND employee_code IS NOT NULL
+           AND TRIM(employee_code) <> ''
+         GROUP BY company_id
+       ) t ON t.max_id = e.employee_id
+       ORDER BY e.company_id`
+    );
 
-    res.json({ companies, departments, positions, jobLevels, employmentStatuses, educationLevels, religions, banks });
+    res.json({ companies, departments, positions, jobLevels, employmentStatuses, educationLevels, religions, banks, latestEmployeeCodes });
   } catch (error) {
     console.error("Get master data error:", error);
     res.status(500).json({ message: error.message });

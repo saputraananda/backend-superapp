@@ -1,5 +1,6 @@
 import { safeMyWaschenQuery, safeQuery } from "../../../db/pool.js";
 import { buildProduksiPhotoUrl } from "../HRIS/hrisAssetHelpers.js";
+import { posFileUrl, uploadDeleteRequestAttachment } from "../../../utils/waschenPosUpload.js";
 
 function resolvePaymentStatus(paidAmount, grandTotal) {
   const paid = Number(paidAmount) || 0;
@@ -80,6 +81,7 @@ function mapTransactionRow(row) {
     paidAt: row.paid_at,
     workStatus: num(row.work_status, 10),
     isDelivery: Boolean(row.is_delivery),
+    isEvent: Number(row.is_event) === 1,
     deliveryAddress: row.delivery_address || null,
     deliveryNotes: row.delivery_notes || null,
     orderDate: row.order_date,
@@ -96,6 +98,7 @@ function mapTransactionRow(row) {
     deleteApprovalStatus: row.delete_approval_status,
     deleteRequestedAt: row.delete_requested_at,
     deleteReason: row.delete_reason,
+    deleteAttachmentUrl: posFileUrl(row.delete_attachment_url),
     isRefundRequested: Boolean(row.is_refund_requested),
     refundApprovalStatus: row.refund_approval_status,
     refundRequestedAt: row.refund_requested_at,
@@ -176,7 +179,7 @@ async function fetchEmployeeNameMap(ids) {
 const TXN_SELECT = `
   SELECT t.*,
          c.name AS customer_name, c.phone AS customer_phone, c.customer_code,
-         c.address AS customer_address,
+         COALESCE(NULLIF(TRIM(c.full_address), ''), NULLIF(TRIM(c.address), '')) AS customer_address,
          COALESCE(c.deposit_balance, 0) AS deposit_balance,
          o.outlet_code, o.name AS outlet_name, o.full_name AS outlet_full_name,
          o.address AS outlet_address,
@@ -203,9 +206,13 @@ export const getTransactions = async (req, res) => {
     const workMax = req.query.workMax !== undefined && req.query.workMax !== "" ? Number(req.query.workMax) : null;
     const includeDeleted = String(req.query.includeDeleted || "") === "1";
     const listType = String(req.query.listType || "active").trim(); // active | delete | refund
+    // Menu Event B2B: hanya nota outlet event (tr_transaction.is_event = 1)
+    const eventOnly = String(req.query.eventOnly || "") === "1";
 
     const where = [];
     const params = [];
+
+    if (eventOnly) where.push("t.is_event = 1");
 
     if (listType === "delete") {
       where.push("t.is_delete_requested = 1");
@@ -340,12 +347,18 @@ export const getTransactionById = async (req, res) => {
          ORDER BY FIELD(p.stage, 'frontliner', 'washing', 'ironing'), p.id ASC, b.bag_no ASC`,
         [row.id]
       ),
-      // Rincian jenis pakaian per plastik (Tim Cuci)
+      // Rincian jenis pakaian per plastik — versi terbaru per item saja
+      // (Frontliner/Delivery bisa merinci lebih dulu, Tim Cuci boleh mengubah; keduanya tersimpan).
       safeMyWaschenQuery(
-        `SELECT k.transaction_detail_id, k.bag_no, k.item_name, k.qty_pcs
+        `SELECT k.transaction_detail_id, k.bag_no, k.item_name, k.qty_pcs, p.stage AS kg_stage, p.employee_name AS kg_employee_name
          FROM tr_item_kg_detail k
          JOIN tr_transaction_detail d ON d.id = k.transaction_detail_id
+         LEFT JOIN tr_item_progress p ON p.id = k.progress_id
          WHERE d.transaction_id = ?
+           AND k.progress_id = (
+             SELECT MAX(k2.progress_id) FROM tr_item_kg_detail k2
+             WHERE k2.transaction_detail_id = k.transaction_detail_id
+           )
          ORDER BY k.bag_no ASC, k.id ASC`,
         [row.id]
       ),
@@ -363,7 +376,14 @@ export const getTransactionById = async (req, res) => {
     }
     const kgByDetail = {};
     for (const k of kgRows) {
-      (kgByDetail[k.transaction_detail_id] ||= []).push({ bag_no: k.bag_no, item_name: k.item_name, qty_pcs: k.qty_pcs });
+      (kgByDetail[k.transaction_detail_id] ||= []).push({
+        bag_no: k.bag_no,
+        item_name: k.item_name,
+        qty_pcs: k.qty_pcs,
+        source_stage: k.kg_stage,
+        source_label: PROGRESS_STAGE_LABELS[k.kg_stage] || k.kg_stage || null,
+        source_employee_name: k.kg_employee_name,
+      });
     }
 
     const empMap = await fetchEmployeeNameMap([
@@ -622,13 +642,16 @@ export const updateTransactionPayment = async (req, res) => {
   }
 };
 
-/** PATCH /waschen/transactions/:id/request-delete */
+/** PATCH /waschen/transactions/:id/request-delete — wajib lampiran foto/PDF (field `attachment`) */
 export const requestDeleteTransaction = async (req, res) => {
   try {
     const { id } = req.params;
     const reason = String(req.body?.reason || "").trim();
     if (!reason) {
       return res.status(400).json({ success: false, message: "Alasan pengajuan hapus wajib diisi" });
+    }
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: "Lampiran foto/dokumen wajib disertakan untuk pengajuan hapus nota" });
     }
 
     const [rows] = await safeMyWaschenQuery(
@@ -642,15 +665,19 @@ export const requestDeleteTransaction = async (req, res) => {
       return res.status(400).json({ success: false, message: "Nota sudah dalam pengajuan hapus" });
     }
 
+    // Simpan di server POS (satu folder dengan lampiran dari kasir POS)
+    const attachmentPath = await uploadDeleteRequestAttachment(req.file);
+
     await safeMyWaschenQuery(
       `UPDATE tr_transaction SET
          is_delete_requested = 1,
          delete_approval_status = 0,
          delete_requested_at = NOW(),
          delete_reason = ?,
+         delete_attachment_url = ?,
          updated_at = NOW()
        WHERE id = ?`,
-      [reason, rows[0].id]
+      [reason, attachmentPath, rows[0].id]
     );
 
     res.json({

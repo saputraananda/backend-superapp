@@ -7,6 +7,7 @@ import {
   addWaschenEmployee,
   updateEmployeeRole,
   getWaschenEmployee,
+  exportWaschenEmployees,
 } from "../../../controllers/MyWaschen/HRIS/employeeWaschenController.js";
 import {
   listWaschenPayslips,
@@ -27,6 +28,7 @@ const payslipUpload = multer({
 });
 
 router.get("/", requireAuth, listWaschenEmployees);
+router.get("/export", requireAuth, exportWaschenEmployees);
 router.get("/assignable", requireAuth, getAssignableEmployees);
 router.post("/", requireAuth, addWaschenEmployee);
 router.get("/:id/payslips", requireAuth, listWaschenPayslips);

@@ -234,6 +234,43 @@ export const rejectDayOff = async (req, res) => {
   }
 };
 
+export const deleteDayOff = async (req, res) => {
+  try {
+    const actor = getActor(req);
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(422).json({ success: false, message: "Data tidak valid" });
+    }
+    const [rows] = await safeMyWaschenQuery("SELECT * FROM tr_employee_day_off WHERE day_off_id = ?", [id]);
+    if (!rows.length) return res.status(404).json({ success: false, message: "Data tidak ditemukan" });
+    const row = rows[0];
+
+    await safeMyWaschenQuery(
+      `INSERT INTO tr_day_off_change_log (day_off_id, employee_id, action, old_off_date, new_off_date, note, changed_by)
+       VALUES (?, ?, 'cancel', ?, NULL, 'Dihapus admin', ?)`,
+      [id, row.employee_id, row.off_date, actor.employee_id || 0],
+    );
+
+    const removeRow = () => safeMyWaschenQuery("DELETE FROM tr_employee_day_off WHERE day_off_id = ?", [id]);
+    try {
+      await removeRow();
+    } catch (err) {
+      if (err.code !== "ER_ROW_IS_REFERENCED_2" && err.errno !== 1451) throw err;
+      await safeMyWaschenQuery("DELETE FROM tr_day_off_change_log WHERE day_off_id = ?", [id]);
+      await removeRow();
+    }
+
+    const [left] = await safeMyWaschenQuery("SELECT day_off_id FROM tr_employee_day_off WHERE day_off_id = ?", [id]);
+    if (left.length) {
+      return res.status(500).json({ success: false, message: "Gagal menghapus jadwal libur" });
+    }
+    return res.json({ success: true, message: "Jadwal libur dihapus" });
+  } catch (err) {
+    console.error("deleteDayOff:", err);
+    return res.status(500).json({ success: false, message: err.message || "Gagal menghapus jadwal libur" });
+  }
+};
+
 export const rescheduleDayOff = async (req, res) => {
   try {
     const actor = getActor(req);

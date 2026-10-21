@@ -17,6 +17,16 @@ function parseKg(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+// Kg ditagihkan = kg aktual + kg perjanjian RS.
+// Kg aktual = kg valet, kecuali kg admin (opsional) lebih besar.
+// Kosong (null) selama kg aktual belum diisi.
+function computeKgTotal(row) {
+  const kgs = [parseKg(row.total_kg_valet), parseKg(row.total_kg_admin)].filter((n) => n != null);
+  if (!kgs.length) return null;
+  const actual = Math.max(...kgs);
+  return actual + (parseKg(row.kg_agreement) ?? 0);
+}
+
 function parseExpress(v) {
   return v === true || v === 1 || v === "1" ? 1 : 0;
 }
@@ -24,7 +34,7 @@ function parseExpress(v) {
 export const getHospitals = async (req, res) => {
   try {
     const [rows] = await safeIKMQuery(
-      "SELECT id, hospital_name, billing_by_kg, allow_express FROM mst_hospital ORDER BY hospital_name ASC"
+      "SELECT id, hospital_name, billing_by_kg, allow_express, kg_agreement FROM mst_hospital ORDER BY hospital_name ASC"
     );
     res.json({ success: true, data: rows });
   } catch (err) {
@@ -116,7 +126,7 @@ export const getLinenTransactions = async (req, res) => {
     const fetchSql = `
       SELECT tr.id, tr.form_number, tr.hospital_id, tr.user_pickup, tr.user_delivery, tr.pickup_date, tr.delivery_date, tr.status, tr.notes_pickup, tr.notes_delivery,
              tr.total_kg_valet, tr.is_express, tr.total_kg_admin,
-             h.hospital_name, h.billing_by_kg, h.allow_express,
+             h.hospital_name, h.billing_by_kg, h.allow_express, h.kg_agreement,
              COALESCE(SUM(d.qty_kotor), 0) AS total_kotor,
              COALESCE(SUM(d.qty_bersih), 0) AS total_bersih,
              (COALESCE(SUM(d.qty_kotor), 0) - COALESCE(SUM(d.qty_bersih), 0)) AS kurang_kirim
@@ -132,6 +142,8 @@ export const getLinenTransactions = async (req, res) => {
     `;
 
     const [rows] = await safeIKMQuery(fetchSql, [...selectParams, lm, offset]);
+
+    rows.forEach(r => { r.kg_total = computeKgTotal(r); });
 
     if (rows.length) {
       const employeeIds = [...new Set(rows.flatMap(r => [r.user_pickup, r.user_delivery]).filter(Boolean))];
@@ -185,7 +197,7 @@ export const getLinenTransactionById = async (req, res) => {
               tr.pickup_date, tr.delivery_date, tr.status, tr.notes_pickup, tr.notes_delivery,
               tr.total_kg_valet, tr.is_express, tr.total_kg_admin,
               h.hospital_name, h.billing_by_kg, h.allow_express,
-              h.price_per_kg, h.express_price_per_kg
+              h.price_per_kg, h.express_price_per_kg, h.kg_agreement
        FROM tr_linen_transaction tr
        LEFT JOIN mst_hospital h ON h.id = tr.hospital_id
        WHERE tr.id = ?`,
@@ -197,6 +209,7 @@ export const getLinenTransactionById = async (req, res) => {
     }
 
     const header = headers[0];
+    header.kg_total = computeKgTotal(header);
     const employeeIds = [header.user_pickup, header.user_delivery].filter(Boolean);
     if (employeeIds.length) {
       const ph = employeeIds.map(() => "?").join(",");
@@ -870,7 +883,7 @@ export const getRekapKgLinen = async (req, res) => {
     }
 
     const [hospitals] = await safeIKMQuery(
-      `SELECT id, hospital_name, billing_by_kg, price_per_kg, express_price_per_kg FROM mst_hospital WHERE id = ?`,
+      `SELECT id, hospital_name, billing_by_kg, price_per_kg, express_price_per_kg, kg_agreement FROM mst_hospital WHERE id = ?`,
       [Number(hospital_id)]
     );
     if (!hospitals.length) {
@@ -903,6 +916,12 @@ export const getRekapKgLinen = async (req, res) => {
       [Number(hospital_id), `${startDate} 00:00:00`, `${endDate} 23:59:59`]
     );
 
+    const kgAgreement = parseKg(hospitals[0].kg_agreement);
+    details.forEach((row) => {
+      row.kg_agreement = kgAgreement;
+      row.kg_total = computeKgTotal(row);
+    });
+
     const dailyMap = new Map();
     details.forEach((row) => {
       const key = row.tx_date;
@@ -912,6 +931,8 @@ export const getRekapKgLinen = async (req, res) => {
           tx_count: 0,
           total_kg_valet: 0,
           total_kg_admin: 0,
+          total_kg_agreement: 0,
+          total_kg_tagih: 0,
           express_count: 0,
           total_kotor: 0,
           total_bersih: 0,
@@ -921,6 +942,10 @@ export const getRekapKgLinen = async (req, res) => {
       agg.tx_count += 1;
       agg.total_kg_valet += Number(row.total_kg_valet || 0);
       agg.total_kg_admin += Number(row.total_kg_admin || 0);
+      if (row.kg_total != null) {
+        agg.total_kg_agreement += kgAgreement ?? 0;
+        agg.total_kg_tagih += row.kg_total;
+      }
       agg.express_count += Number(row.is_express) === 1 ? 1 : 0;
       agg.total_kotor += Number(row.total_kotor || 0);
       agg.total_bersih += Number(row.total_bersih || 0);
@@ -934,6 +959,87 @@ export const getRekapKgLinen = async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+export const getRekapSewaLinen = async (req, res) => {
+  try {
+    const startDate = toISODateString(req.query.startDate);
+    const endDate = toISODateString(req.query.endDate);
+    if (!startDate || !endDate || startDate > endDate) {
+      return res.status(400).json({ success: false, message: "Tanggal awal dan akhir harus diisi" });
+    }
+    const hospitalId = req.query.hospital_id ? toPositiveInt(req.query.hospital_id) : null;
+    if (req.query.hospital_id && !hospitalId) {
+      return res.status(400).json({ success: false, message: "Rumah sakit tidak valid" });
+    }
+
+    let hospitalSql = "SELECT id, hospital_name FROM mst_hospital";
+    const hospitalParams = [];
+    if (hospitalId) {
+      hospitalSql += " WHERE id = ?";
+      hospitalParams.push(hospitalId);
+    }
+    hospitalSql += " ORDER BY hospital_name ASC";
+    const [hospitals] = await safeIKMQuery(hospitalSql, hospitalParams);
+    if (!hospitals.length) {
+      return res.json({ success: true, hospitals: [], linens: [], movements: [], usage: [] });
+    }
+
+    const hospitalIds = hospitals.map((row) => row.id);
+    const ph = hospitalIds.map(() => "?").join(",");
+    const [linens] = await safeIKMQuery(
+      `SELECT hl.id AS hospital_linen_id, hl.hospital_id, hl.hospital_linen_name,
+              hl.rental_price, hl.stock_in_rs,
+              l.linen_name AS master_linen_name, sz.size_name, cl.color_name, mt.material_name
+       FROM mst_hospital_linen hl
+       LEFT JOIN mst_linen l ON l.id = hl.linen_id
+       LEFT JOIN mst_size sz ON l.size_id = sz.id
+       LEFT JOIN mst_color cl ON l.color_id = cl.id
+       LEFT JOIN mst_material mt ON l.material_id = mt.id
+       WHERE hl.is_active = 1 AND COALESCE(hl.is_commercial, 0) = 0
+         AND hl.ownership_type = 'SEWA' AND hl.hospital_id IN (${ph})
+       ORDER BY hl.hospital_id ASC, hl.hospital_linen_name ASC, l.linen_name ASC`,
+      hospitalIds
+    );
+    const [movements] = await safeIKMQuery(
+      `SELECT b.hospital_id, d.hospital_linen_id,
+              DATE_FORMAT(b.bast_date, '%Y-%m-%d') AS move_date,
+              COALESCE(SUM(d.qty_pengiriman), 0) AS qty_pengiriman,
+              COALESCE(SUM(d.qty_penarikan), 0) AS qty_penarikan
+       FROM tr_bast_linen_sewa b
+       JOIN tr_bast_linen_sewa_detail d ON d.bast_id = b.id
+       WHERE b.hospital_id IN (${ph}) AND b.bast_date >= ?
+       GROUP BY b.hospital_id, d.hospital_linen_id, DATE_FORMAT(b.bast_date, '%Y-%m-%d')`,
+      [...hospitalIds, `${startDate} 00:00:00`]
+    );
+    const [usage] = await safeIKMQuery(
+      `SELECT tr.hospital_id, d.hospital_linen_id,
+              DATE_FORMAT(tr.pickup_date, '%Y-%m-%d') AS tx_date,
+              COALESCE(SUM(d.qty_kotor), 0) AS total_qty_kotor
+       FROM tr_linen_transaction tr
+       JOIN tr_linen_transaction_detail d ON d.transaction_id = tr.id
+       JOIN mst_hospital_linen hl ON hl.id = d.hospital_linen_id
+       WHERE tr.hospital_id IN (${ph})
+         AND hl.ownership_type = 'SEWA' AND COALESCE(hl.is_commercial, 0) = 0
+         AND tr.pickup_date >= ? AND tr.pickup_date <= ?
+       GROUP BY tr.hospital_id, d.hospital_linen_id, DATE_FORMAT(tr.pickup_date, '%Y-%m-%d')`,
+      [...hospitalIds, `${startDate} 00:00:00`, `${endDate} 23:59:59`]
+    );
+
+    res.json({
+      success: true,
+      hospitals,
+      linens: linens.map((row) => {
+        const parts = [row.master_linen_name, row.size_name, row.color_name, row.material_name].filter(Boolean);
+        return { ...row, linen_display_name: row.hospital_linen_name || parts.join(" ") };
+      }),
+      movements,
+      usage,
+    });
+  } catch (err) {
+    console.error("rekap sewa linen:", err);
+    res.status(500).json({ success: false, message: "Gagal memuat rekap sewa linen" });
   }
 };
 

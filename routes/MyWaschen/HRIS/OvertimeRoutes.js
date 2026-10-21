@@ -5,6 +5,7 @@ import {
   getOvertimeDetail,
   approveOvertime,
   rejectOvertime,
+  deleteOvertime,
 } from "../../../controllers/MyWaschen/HRIS/OvertimeController.js";
 
 const router = express.Router();
@@ -13,4 +14,5 @@ router.get("/", getOvertimeList);
 router.get("/:id", getOvertimeDetail);
 router.patch("/:id/approve", approveOvertime);
 router.patch("/:id/reject", rejectOvertime);
+router.delete("/:id", deleteOvertime);
 export default router;
