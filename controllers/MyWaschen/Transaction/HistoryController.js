@@ -347,12 +347,18 @@ export const getTransactionById = async (req, res) => {
          ORDER BY FIELD(p.stage, 'frontliner', 'washing', 'ironing'), p.id ASC, b.bag_no ASC`,
         [row.id]
       ),
-      // Rincian jenis pakaian per plastik (Tim Cuci)
+      // Rincian jenis pakaian per plastik — versi terbaru per item saja
+      // (Frontliner/Delivery bisa merinci lebih dulu, Tim Cuci boleh mengubah; keduanya tersimpan).
       safeMyWaschenQuery(
-        `SELECT k.transaction_detail_id, k.bag_no, k.item_name, k.qty_pcs
+        `SELECT k.transaction_detail_id, k.bag_no, k.item_name, k.qty_pcs, p.stage AS kg_stage, p.employee_name AS kg_employee_name
          FROM tr_item_kg_detail k
          JOIN tr_transaction_detail d ON d.id = k.transaction_detail_id
+         LEFT JOIN tr_item_progress p ON p.id = k.progress_id
          WHERE d.transaction_id = ?
+           AND k.progress_id = (
+             SELECT MAX(k2.progress_id) FROM tr_item_kg_detail k2
+             WHERE k2.transaction_detail_id = k.transaction_detail_id
+           )
          ORDER BY k.bag_no ASC, k.id ASC`,
         [row.id]
       ),
@@ -370,7 +376,14 @@ export const getTransactionById = async (req, res) => {
     }
     const kgByDetail = {};
     for (const k of kgRows) {
-      (kgByDetail[k.transaction_detail_id] ||= []).push({ bag_no: k.bag_no, item_name: k.item_name, qty_pcs: k.qty_pcs });
+      (kgByDetail[k.transaction_detail_id] ||= []).push({
+        bag_no: k.bag_no,
+        item_name: k.item_name,
+        qty_pcs: k.qty_pcs,
+        source_stage: k.kg_stage,
+        source_label: PROGRESS_STAGE_LABELS[k.kg_stage] || k.kg_stage || null,
+        source_employee_name: k.kg_employee_name,
+      });
     }
 
     const empMap = await fetchEmployeeNameMap([
