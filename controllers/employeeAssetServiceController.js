@@ -79,8 +79,11 @@ export const uploadEmployeeAssetService = async (req, res) => {
     );
 
     // Samakan dengan uploadProfilePhoto di Alsa: avatar users ikut diperbarui
-    if (isPhoto && rows[0].email) {
-      await safeQuery("UPDATE users SET avatar = ? WHERE email = ?", [publicPath, rows[0].email]);
+    if (isPhoto) {
+      await safeQuery(
+        "UPDATE users SET avatar = ? WHERE (email = ? AND ? IS NOT NULL) OR id = ?",
+        [publicPath, rows[0].email, rows[0].email, employeeId]
+      );
     }
 
     deleteOldFile(rows[0].old_path, dir);
@@ -128,8 +131,11 @@ export const deleteEmployeeAssetService = async (req, res) => {
       [employeeId]
     );
 
-    if (isPhoto && rows[0].email) {
-      await safeQuery("UPDATE users SET avatar = NULL WHERE email = ?", [rows[0].email]);
+    if (isPhoto) {
+      await safeQuery(
+        "UPDATE users SET avatar = NULL WHERE (email = ? AND ? IS NOT NULL) OR id = ?",
+        [rows[0].email, rows[0].email, employeeId]
+      );
     }
 
     deleteOldFile(rows[0].old_path, dir);

@@ -4,6 +4,11 @@ import { safeAloraMobileQuery, safeQuery } from "../../db/pool.js";
 import { ALORA_MOBILE_ATT_DIR, ALORA_MOBILE_BASE } from "../../middleware/upload.js";
 import { getAloraMobileApiBaseUrl, proxyAloraMobileFile } from "./utils/aloraMobileApiAssets.js";
 import { resolveFinalStatus } from "./utils/attendanceStatusResolver.js";
+import {
+	ALORA_COMPANY_CONDITION,
+	ALORA_ACTIVE_EMPLOYEE_CONDITION,
+	ALORA_HRD_POSITION_IDS,
+} from "./utils/aloraEmployeeAccess.js";
 
 const ALLOWED_STATUS_LABELS = new Set([
 	"Belum check-in",
@@ -1166,3 +1171,322 @@ export const serveAttendancePhoto = async (req, res) => {
 		});
 	}
 };
+
+/**
+ * Validasi otorisasi divisi HR untuk pengelolaan absensi manual.
+ */
+async function assertAttendanceHrd(req) {
+	const currentEmpId = req.session?.employeeId;
+	const userRole = String(req.session?.userRole || "").toLowerCase();
+	if (["admin", "superadmin"].includes(userRole)) {
+		return { currentEmpId: currentEmpId || null };
+	}
+
+	if (!currentEmpId) {
+		const error = new Error("Sesi karyawan tidak valid atau belum login");
+		error.statusCode = 401;
+		throw error;
+	}
+
+	const [rows] = await safeQuery(
+		`SELECT e.employee_id, e.position_id, e.department_id, d.department_name
+		 FROM mst_employee e
+		 LEFT JOIN mst_department d ON d.department_id = e.department_id
+		 WHERE e.employee_id = ? AND e.is_deleted = 0 LIMIT 1`,
+		[currentEmpId]
+	);
+	if (!rows || rows.length === 0) {
+		const error = new Error("Data karyawan tidak ditemukan");
+		error.statusCode = 404;
+		throw error;
+	}
+
+	const emp = rows[0];
+	const positionId = Number(emp.position_id);
+	const deptName = String(emp.department_name || "").toLowerCase();
+	const isHrd =
+		ALORA_HRD_POSITION_IDS.includes(positionId) ||
+		deptName.includes("human resource") ||
+		deptName.includes("hr");
+
+	if (!isHrd) {
+		const error = new Error("Hanya divisi HR yang memiliki izin untuk mengelola absensi manual");
+		error.statusCode = 403;
+		throw error;
+	}
+
+	return { currentEmpId, employee: emp };
+}
+
+/**
+ * Normalisasi format waktu ke format MySQL DATETIME (YYYY-MM-DD HH:mm:ss).
+ */
+function parseTimeToDatetime(val, dateStr) {
+	if (!val) return null;
+	const s = String(val).trim();
+	if (/^\d{2}:\d{2}(:\d{2})?$/.test(s)) {
+		return `${dateStr} ${s.length === 5 ? `${s}:00` : s}`;
+	}
+	const norm = s.replace("T", " ").slice(0, 19);
+	if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2})?$/.test(norm)) {
+		return norm.length === 16 ? `${norm}:00` : norm;
+	}
+	return null;
+}
+
+/**
+ * GET /alora/attendance/active-employees
+ * Mengambil daftar karyawan aktif Alora (sama seperti di Saldo Karyawan).
+ */
+export const getActiveAloraAttendanceEmployees = async (req, res) => {
+	try {
+		await assertAttendanceHrd(req);
+		const [rows] = await safeQuery(
+			`SELECT
+				e.employee_id,
+				e.employee_code,
+				e.full_name,
+				p.position_name,
+				d.department_name
+			FROM mst_employee e
+			LEFT JOIN mst_position p ON p.position_id = e.position_id
+			LEFT JOIN mst_department d ON d.department_id = e.department_id
+			WHERE e.is_deleted = 0
+				AND ${ALORA_COMPANY_CONDITION}
+				AND ${ALORA_ACTIVE_EMPLOYEE_CONDITION}
+			ORDER BY e.full_name ASC
+			LIMIT 3000`
+		);
+
+		return res.json({
+			success: true,
+			employees: rows.map((r) => ({
+				employee_id: Number(r.employee_id),
+				employee_code: r.employee_code || null,
+				full_name: r.full_name || `ID ${r.employee_id}`,
+				position_name: r.position_name || "-",
+				department_name: r.department_name || "-",
+			})),
+		});
+	} catch (error) {
+		console.error("[getActiveAloraAttendanceEmployees] Error:", error);
+		return res.status(error.statusCode || 500).json({
+			success: false,
+			message: error.message || "Gagal mengambil daftar karyawan",
+		});
+	}
+};
+
+/**
+ * POST /alora/attendance/manual
+ * Input absensi manual oleh HR (karyawan, tanggal kerja, jam masuk, jam keluar opsional).
+ */
+export const createManualAttendance = async (req, res) => {
+	try {
+		await assertAttendanceHrd(req);
+
+		const employeeId = toPositiveInt(req.body.employee_id);
+		if (!employeeId) {
+			return res.status(400).json({ success: false, message: "Karyawan wajib dipilih" });
+		}
+
+		// Verifikasi karyawan aktif Alora
+		const [empRows] = await safeQuery(
+			`SELECT e.employee_id, e.full_name
+			 FROM mst_employee e
+			 WHERE e.employee_id = ?
+			   AND e.is_deleted = 0
+			   AND ${ALORA_COMPANY_CONDITION}
+			   AND ${ALORA_ACTIVE_EMPLOYEE_CONDITION}
+			 LIMIT 1`,
+			[employeeId]
+		);
+		if (empRows.length === 0) {
+			return res.status(404).json({ success: false, message: "Karyawan tidak ditemukan atau tidak aktif" });
+		}
+
+		const workDate = toISODateString(req.body.work_date);
+		if (!workDate) {
+			return res.status(400).json({ success: false, message: "Tanggal kerja tidak valid (format: YYYY-MM-DD)" });
+		}
+
+		const clockInTime = parseTimeToDatetime(req.body.check_in_time, workDate);
+		const clockOutTime = parseTimeToDatetime(req.body.check_out_time, workDate);
+
+		if (!clockInTime) {
+			return res.status(400).json({ success: false, message: "Jam masuk (absen in) wajib diisi" });
+		}
+
+		if (clockOutTime && new Date(clockOutTime) <= new Date(clockInTime)) {
+			return res.status(400).json({ success: false, message: "Jam keluar harus lebih besar dari jam masuk" });
+		}
+
+		// Cek duplikasi absensi pada tanggal tersebut
+		const [existing] = await safeAloraMobileQuery(
+			`SELECT id FROM tr_worker_attendance WHERE employee_id = ? AND attendance_date = ? LIMIT 1`,
+			[employeeId, workDate]
+		);
+		if (existing.length > 0) {
+			return res.status(409).json({
+				success: false,
+				message: `Record absensi untuk karyawan ini pada tanggal ${workDate} sudah ada`,
+			});
+		}
+
+		// Hitung durasi jam
+		let durationHours = null;
+		if (clockOutTime) {
+			const diffSec = (new Date(clockOutTime) - new Date(clockInTime)) / 1000;
+			if (diffSec > 0) {
+				durationHours = Number((diffSec / 3600).toFixed(2));
+			}
+		}
+
+		const hasClockOut = Boolean(clockOutTime);
+
+		await safeAloraMobileQuery(
+			`INSERT INTO tr_worker_attendance (
+				employee_id,
+				attendance_date,
+				attendance_mode,
+				clock_in,
+				clock_out,
+				duration_hours,
+				clock_in_location_name,
+				clock_out_location_name,
+				punch_location_context_in,
+				punch_location_context_out,
+				clock_in_inside_radius,
+				clock_out_inside_radius,
+				created_at,
+				updated_at
+			) VALUES (
+				?, ?, 'regular', ?, ?, ?,
+				'Input Manual HR', ?,
+				'office', ?,
+				1, ?,
+				NOW(), NOW()
+			)`,
+			[
+				employeeId,
+				workDate,
+				clockInTime,
+				clockOutTime || null,
+				durationHours,
+				hasClockOut ? "Input Manual HR" : null,
+				hasClockOut ? "office" : null,
+				hasClockOut ? 1 : null,
+			]
+		);
+
+		return res.status(201).json({
+			success: true,
+			message: "Absensi manual berhasil disimpan",
+		});
+	} catch (error) {
+		console.error("[createManualAttendance] Error:", error);
+		return res.status(error.statusCode || 500).json({
+			success: false,
+			message: error.message || "Gagal menyimpan absensi manual",
+		});
+	}
+};
+
+/**
+ * PUT /alora/attendance/:id/manual
+ * Update jam masuk / keluar absensi oleh HR.
+ */
+export const updateManualAttendance = async (req, res) => {
+	try {
+		await assertAttendanceHrd(req);
+		const id = toPositiveInt(req.params.id);
+		if (!id) return res.status(400).json({ success: false, message: "ID absensi tidak valid" });
+
+		const [rows] = await safeAloraMobileQuery(
+			`SELECT id, employee_id, attendance_date FROM tr_worker_attendance WHERE id = ? LIMIT 1`,
+			[id]
+		);
+		if (rows.length === 0) {
+			return res.status(404).json({ success: false, message: "Data absensi tidak ditemukan" });
+		}
+		const record = rows[0];
+		const workDate = record.attendance_date ? String(record.attendance_date).slice(0, 10) : new Date().toISOString().slice(0, 10);
+
+		const clockInTime = parseTimeToDatetime(req.body.check_in_time, workDate);
+		const clockOutTime = parseTimeToDatetime(req.body.check_out_time, workDate);
+
+		if (!clockInTime) {
+			return res.status(400).json({ success: false, message: "Jam masuk (absen in) wajib diisi" });
+		}
+
+		if (clockOutTime && new Date(clockOutTime) <= new Date(clockInTime)) {
+			return res.status(400).json({ success: false, message: "Jam keluar harus lebih besar dari jam masuk" });
+		}
+
+		let durationHours = null;
+		if (clockOutTime) {
+			const diffSec = (new Date(clockOutTime) - new Date(clockInTime)) / 1000;
+			if (diffSec > 0) durationHours = Number((diffSec / 3600).toFixed(2));
+		}
+
+		const hasClockOut = Boolean(clockOutTime);
+
+		await safeAloraMobileQuery(
+			`UPDATE tr_worker_attendance
+			 SET clock_in = ?,
+			     clock_out = ?,
+			     duration_hours = ?,
+			     clock_out_location_name = COALESCE(clock_out_location_name, ?),
+			     punch_location_context_out = COALESCE(punch_location_context_out, ?),
+			     clock_out_inside_radius = COALESCE(clock_out_inside_radius, ?),
+			     updated_at = NOW()
+			 WHERE id = ?`,
+			[
+				clockInTime,
+				clockOutTime || null,
+				durationHours,
+				hasClockOut ? "Input Manual HR" : null,
+				hasClockOut ? "office" : null,
+				hasClockOut ? 1 : null,
+				id,
+			]
+		);
+
+		return res.json({ success: true, message: "Data absensi berhasil diperbarui" });
+	} catch (error) {
+		console.error("[updateManualAttendance] Error:", error);
+		return res.status(error.statusCode || 500).json({
+			success: false,
+			message: error.message || "Gagal memperbarui data absensi",
+		});
+	}
+};
+
+/**
+ * DELETE /alora/attendance/:id/manual
+ * Hapus record absensi oleh HR.
+ */
+export const deleteManualAttendance = async (req, res) => {
+	try {
+		await assertAttendanceHrd(req);
+		const id = toPositiveInt(req.params.id);
+		if (!id) return res.status(400).json({ success: false, message: "ID absensi tidak valid" });
+
+		const [resDel] = await safeAloraMobileQuery(
+			`DELETE FROM tr_worker_attendance WHERE id = ? LIMIT 1`,
+			[id]
+		);
+		if (resDel.affectedRows === 0) {
+			return res.status(404).json({ success: false, message: "Data absensi tidak ditemukan" });
+		}
+
+		return res.json({ success: true, message: "Data absensi berhasil dihapus" });
+	} catch (error) {
+		console.error("[deleteManualAttendance] Error:", error);
+		return res.status(error.statusCode || 500).json({
+			success: false,
+			message: error.message || "Gagal menghapus data absensi",
+		});
+	}
+};
+

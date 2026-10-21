@@ -577,10 +577,10 @@ export const uploadEmployeeDoc = async (req, res) => {
     );
 
     // Update user avatar jika profile photo
-    if (docType === "profile" && emp.email) {
+    if (docType === "profile") {
       await safeQuery(
-        "UPDATE users SET avatar = ? WHERE email = ?",
-        [filePath, emp.email]
+        "UPDATE users SET avatar = ? WHERE (email = ? AND ? IS NOT NULL) OR id = ?",
+        [filePath, emp.email, emp.email, id]
       );
     }
 
@@ -622,10 +622,10 @@ export const deleteEmployeeDoc = async (req, res) => {
     );
 
     // Update user avatar jika profile photo
-    if (docType === "profile" && emp.email) {
+    if (docType === "profile") {
       await safeQuery(
-        "UPDATE users SET avatar = NULL WHERE email = ?",
-        [emp.email]
+        "UPDATE users SET avatar = NULL WHERE (email = ? AND ? IS NOT NULL) OR id = ?",
+        [emp.email, emp.email, id]
       );
     }
 
