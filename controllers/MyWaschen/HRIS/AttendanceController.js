@@ -58,6 +58,23 @@ async function getGroomingPhotoCountMap(attendanceIds = []) {
   return map;
 }
 
+// Waschen Mobile mengizinkan absen di lokasi non-outlet (Head Office, IKM, dll.) dari
+// mst_location_absen. outlet_id absensi = id lokasi tsb, jadi tidak ada di mst_outlet.
+async function getAbsenLocationMap(outletIds = []) {
+  const ids = [...new Set(outletIds.map(Number).filter((id) => id > 0))];
+  const map = new Map();
+  if (!ids.length) return map;
+  const ph = ids.map(() => "?").join(",");
+  try {
+    const [rows] = await safeMyWaschenQuery(
+      `SELECT id, location_id, location_name FROM mst_location_absen WHERE id IN (${ph})`,
+      ids,
+    );
+    rows.forEach((r) => map.set(Number(r.id), { code: r.location_id || null, name: r.location_name || null }));
+  } catch (_) { /* tabel opsional */ }
+  return map;
+}
+
 const formatTime = (dt) => {
 
   if (!dt) return null;
@@ -207,6 +224,9 @@ export const getAttendanceList = async (req, res) => {
 
     const search = String(req.query.search || "").trim().toLowerCase();
 
+    // Default 1000 (riwayat); dashboard HR boleh minta lebih untuk satu periode cutoff penuh
+    const limit = Math.min(Math.max(Number(req.query.limit) || 1000, 1), 10000);
+
     const roleEmployeeIds = await resolveMstRoleEmployeeIds(outletId, role);
 
     if (roleEmployeeIds && roleEmployeeIds.length === 0) {
@@ -271,7 +291,7 @@ export const getAttendanceList = async (req, res) => {
          FROM tr_attendance a
          ${where}
          ORDER BY a.work_date DESC, a.check_in_time DESC
-         LIMIT 1000`,
+         LIMIT ${limit}`,
         params,
       );
       attRows = rows;
@@ -286,7 +306,7 @@ export const getAttendanceList = async (req, res) => {
          FROM tr_attendance a
          ${where}
          ORDER BY a.work_date DESC, a.check_in_time DESC
-         LIMIT 1000`,
+         LIMIT ${limit}`,
         params,
       );
       attRows = rows;
@@ -349,7 +369,13 @@ export const getAttendanceList = async (req, res) => {
     const roleMap = await getEmployeeRoleMap(empIds);
     const photoCountMap = await getGroomingPhotoCountMap(attRows.map((r) => r.attendance_id));
 
-    let attendance = attRows.map((r) => mapAttendanceRow(req, r, empMap, roleMap, photoCountMap));
+    const locationMap = await getAbsenLocationMap(attRows.map((r) => r.outlet_id));
+
+    let attendance = attRows.map((r) => {
+      const row = mapAttendanceRow(req, r, empMap, roleMap, photoCountMap);
+      const loc = locationMap.get(Number(r.outlet_id));
+      return loc ? { ...row, absen_location_code: loc.code, absen_location_name: loc.name } : row;
+    });
 
     // Perbaiki data lama Frontliner/Delivery yang masih tersimpan sebagai tidak_wajib
     const fixIds = attendance

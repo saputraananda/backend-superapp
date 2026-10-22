@@ -4,6 +4,7 @@ import {
   getDayOffList,
   adminAssignDayOff,
   approveDayOff,
+  updateDayOffBackup,
   rejectDayOff,
   rescheduleDayOff,
   deleteDayOff,
@@ -14,6 +15,7 @@ router.use(requireAuth);
 router.get("/", getDayOffList);
 router.post("/", adminAssignDayOff);
 router.patch("/:id/approve", approveDayOff);
+router.patch("/:id/backup", updateDayOffBackup);
 router.patch("/:id/reject", rejectDayOff);
 router.patch("/:id/reschedule", rescheduleDayOff);
 router.delete("/:id", deleteDayOff);
