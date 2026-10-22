@@ -2,23 +2,25 @@ import { Router } from "express";
 import { requireAuth } from "../middleware/auth.js";
 import { uploadDocAlora } from "../middleware/upload.js";
 import {
-  getDashboard,
+  getDashboard, getDashboardOverview,
   listDocuments, getDocument, createDocument, updateDocument, deleteDocument,
   deleteAttachment,
   listTransactions, getTransaction, createTransaction, updateTransaction,
   returnDocument, approveTransaction, deleteTransaction,
-  lookupEmployees, lookupDepartments, lookupCompanies, lookupDocuments,
+  lookupEmployees, lookupDepartments, lookupCompanies, lookupOutlets, lookupDocuments,
 } from "../controllers/docAloraController.js";
 
 const router = Router();
 
 // ── Dashboard ──
 router.get("/dashboard", requireAuth, getDashboard);
+router.get("/dashboard/overview", requireAuth, getDashboardOverview);
 
 // ── Lookup (dropdown) ──
 router.get("/lookup/employees",   requireAuth, lookupEmployees);
 router.get("/lookup/departments", requireAuth, lookupDepartments);
 router.get("/lookup/companies",   requireAuth, lookupCompanies);
+router.get("/lookup/outlets",     requireAuth, lookupOutlets);
 router.get("/lookup/documents",   requireAuth, lookupDocuments);
 
 // ── Master Document CRUD ──
