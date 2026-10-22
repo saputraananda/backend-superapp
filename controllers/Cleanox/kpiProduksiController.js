@@ -80,7 +80,7 @@ async function loadServiceDurationMap() {
   try {
     const [rows] = await cleanoxPool.query(
       `SELECT id, name, durasi_cuci_menit, durasi_jemur_menit, durasi_packing_menit,
-              durasi_blower_menit, total_durasi_kerja_menit, sla_hari, kategori_kpi
+              durasi_blower_menit, total_durasi_kerja_menit, delay_time_menit, sla_hari, kategori_kpi
        FROM mst_services`
     );
     const map = new Map();
@@ -94,6 +94,7 @@ async function loadServiceDurationMap() {
         durasi_packing_menit: Number(r.durasi_packing_menit) || 0,
         durasi_blower_menit: Number(r.durasi_blower_menit) || 0,
         total_durasi_kerja_menit: Number(r.total_durasi_kerja_menit) || 0,
+        delay_time_menit: r.delay_time_menit != null ? Number(r.delay_time_menit) : 15,
         sla_hari: Number(r.sla_hari) || 0,
       };
       map.set(rawName, data);
@@ -229,10 +230,11 @@ export const getKpiSummary = async (req, res) => {
 
     for (const r of rows) {
       const svc = resolveItemDuration(r.nama_item, serviceMap);
-      const cuciJemurMins = (svc.durasi_cuci_menit || 0) + (svc.durasi_jemur_menit || 0) || (svc.total_durasi_kerja_menit || 30);
-      const packingMins = svc.durasi_packing_menit || (svc.total_durasi_kerja_menit ? Math.round(svc.total_durasi_kerja_menit * 0.2) : 15);
-      const pickupMins = DURATION_PICKUP_MENIT;
-      const pengMins = DURATION_PENGANTARAN_MENIT;
+      const delayMins = svc.delay_time_menit != null ? Number(svc.delay_time_menit) : 15;
+      const cuciJemurMins = ((svc.durasi_cuci_menit || 0) + (svc.durasi_jemur_menit || 0) || (svc.total_durasi_kerja_menit || 30)) + delayMins;
+      const packingMins = (svc.durasi_packing_menit || (svc.total_durasi_kerja_menit ? Math.round(svc.total_durasi_kerja_menit * 0.2) : 15)) + delayMins;
+      const pickupMins = DURATION_PICKUP_MENIT + delayMins;
+      const pengMins = DURATION_PENGANTARAN_MENIT + delayMins;
 
       const stages = [
         { names: parseJson(r.pickup_by), key: "pickup", mins: pickupMins },
@@ -1053,7 +1055,8 @@ const HOME_SERVICE_TOP_SERVICES_PER_WORKER = 3;
 async function loadHomeServiceDoneData(dateStart, dateEnd) {
   const [rows] = await cleanoxPool.query(
     `SELECT a.transaction_id, a.employee_name, a.completed_at,
-            t.transaction_no, t.customer_name, t.service_date, t.status
+            t.transaction_no, t.customer_name, t.service_date, t.status,
+            t.service_mode, t.waktu_jalan_menit
      FROM tr_worker_assignments a
      INNER JOIN tr_transactions t ON t.id = a.transaction_id
      WHERE DATE(t.service_date) BETWEEN DATE(?) AND DATE(?)
@@ -1077,6 +1080,8 @@ async function loadHomeServiceDoneData(dateStart, dateEnd) {
         customer_name: row.customer_name,
         service_date: row.service_date,
         status: row.status,
+        service_mode: row.service_mode || "home_service",
+        waktu_jalan_menit: row.waktu_jalan_menit != null ? Number(row.waktu_jalan_menit) : 40,
         team: [],
         _completedAts: [],
         completed_at: null,
@@ -1135,11 +1140,16 @@ async function buildHomeServiceLayananSummary({ assignments, items, txById }) {
       });
     }
     const emp = empMap.get(a.employee_name);
+    const tx = txById.get(a.transaction_id);
+    const txWaktuJalan = tx?.waktu_jalan_menit != null ? Number(tx.waktu_jalan_menit) : 40;
     const txItems = itemsByTx.get(a.transaction_id) || [];
     for (const item of txItems) {
       const serviceName = normalizeServiceName(item.service_name);
       const svc = resolveItemDuration(serviceName, serviceMap);
-      const itemMins = svc.total_durasi_kerja_menit || 60;
+      const standardMins = svc.total_durasi_kerja_menit || 60;
+      const delayMins = svc.delay_time_menit != null ? Number(svc.delay_time_menit) : 15;
+      const waktuJalanMins = txWaktuJalan;
+      const itemMins = standardMins + delayMins + waktuJalanMins;
       emp.total_layanan += 1;
       emp.total_minutes += itemMins;
       emp.serviceCounts.set(serviceName, (emp.serviceCounts.get(serviceName) || 0) + 1);
@@ -1253,7 +1263,10 @@ async function buildHomeServiceLayananDetail(employeeName, { assignments, items,
     for (const item of itemsByTx.get(a.transaction_id) || []) {
       const serviceName = normalizeServiceName(item.service_name);
       const svc = resolveItemDuration(serviceName, serviceMap);
-      const itemMins = svc.total_durasi_kerja_menit || 60;
+      const standardMins = svc.total_durasi_kerja_menit || 60;
+      const delayMins = svc.delay_time_menit != null ? Number(svc.delay_time_menit) : 15;
+      const waktuJalanMins = tx.waktu_jalan_menit != null ? Number(tx.waktu_jalan_menit) : 40;
+      const itemMins = standardMins + delayMins + waktuJalanMins;
       result.push({
         transaction_item_id: item.id,
         transaction_id: a.transaction_id,
@@ -1264,6 +1277,9 @@ async function buildHomeServiceLayananDetail(employeeName, { assignments, items,
         completed_at: tx.completed_at,
         status: tx.status,
         team: tx.team,
+        standard_minutes: standardMins,
+        delay_minutes: delayMins,
+        waktu_jalan_minutes: waktuJalanMins,
         duration_minutes: itemMins,
         duration_hours: Number((itemMins / 60).toFixed(2)),
       });

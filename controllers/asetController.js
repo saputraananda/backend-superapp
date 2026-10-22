@@ -32,6 +32,8 @@ export const getAsetThumb = async (req, res) => {
   try {
     if (!fs.existsSync(thumbPath)) {
       const { default: sharp } = await import("sharp");
+      sharp.concurrency(1);
+      sharp.cache(false);
       await sharp(origPath)
         .resize(420, 315, { fit: "cover", withoutEnlargement: true })
         .webp({ quality: 70 })

@@ -56,6 +56,15 @@ const initDb = async () => {
       console.warn("⚠️ [initDb] Could not modify duration_unit column:", err.message);
     }
 
+    // Ensure delay_time_menit column exists
+    try {
+      await safeCleanoxQuery(`
+        ALTER TABLE mst_services ADD COLUMN delay_time_menit INT NOT NULL DEFAULT 15 AFTER total_durasi_kerja_menit
+      `);
+    } catch (err) {
+      // Column may already exist
+    }
+
     // Seed default categories
     const [cats] = await safeCleanoxQuery("SELECT COUNT(*) as count FROM mst_category");
     if (cats[0].count === 0) {
@@ -113,6 +122,7 @@ export const createService = async (req, res) => {
     durasi_packing_menit = 0,
     durasi_blower_menit = 0,
     total_durasi_kerja_menit = 0,
+    delay_time_menit = 15,
     sla_hari = 0,
     kategori_kpi = null,
   } = req.body;
@@ -135,6 +145,7 @@ export const createService = async (req, res) => {
   if (total === 0 && (cuci > 0 || jemur > 0 || packing > 0)) {
     total = cuci + jemur + packing;
   }
+  const delayTime = delay_time_menit !== undefined && delay_time_menit !== "" ? Number(delay_time_menit) || 0 : 15;
   const sla = Number(sla_hari) || 0;
 
   try {
@@ -144,9 +155,9 @@ export const createService = async (req, res) => {
         name, price, satuan_id, satuan_name, category_id,
         duration_value, duration_unit,
         durasi_cuci_menit, durasi_jemur_menit, durasi_packing_menit, durasi_blower_menit,
-        total_durasi_kerja_menit, sla_hari, kategori_kpi
+        total_durasi_kerja_menit, delay_time_menit, sla_hari, kategori_kpi
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
       [
         name,
@@ -161,6 +172,7 @@ export const createService = async (req, res) => {
         packing,
         blower,
         total,
+        delayTime,
         sla,
         kategori_kpi || null,
       ]
@@ -192,6 +204,7 @@ export const updateService = async (req, res) => {
     durasi_packing_menit,
     durasi_blower_menit,
     total_durasi_kerja_menit,
+    delay_time_menit,
     sla_hari,
     kategori_kpi,
   } = req.body;
@@ -214,6 +227,7 @@ export const updateService = async (req, res) => {
   if (total === 0 && cuci !== undefined && (cuci > 0 || jemur > 0 || packing > 0)) {
     total = (cuci || 0) + (jemur || 0) + (packing || 0);
   }
+  const delayTime = delay_time_menit !== undefined ? (Number(delay_time_menit) >= 0 ? Number(delay_time_menit) : 15) : undefined;
   const sla = sla_hari !== undefined ? Number(sla_hari) || 0 : undefined;
 
   try {
@@ -227,6 +241,7 @@ export const updateService = async (req, res) => {
           durasi_packing_menit = COALESCE(?, durasi_packing_menit),
           durasi_blower_menit = COALESCE(?, durasi_blower_menit),
           total_durasi_kerja_menit = COALESCE(?, total_durasi_kerja_menit),
+          delay_time_menit = COALESCE(?, delay_time_menit),
           sla_hari = COALESCE(?, sla_hari),
           kategori_kpi = COALESCE(?, kategori_kpi)
       WHERE id = ?
@@ -245,6 +260,7 @@ export const updateService = async (req, res) => {
         packing,
         blower,
         total,
+        delayTime,
         sla,
         kategori_kpi !== undefined ? kategori_kpi : null,
         id,
