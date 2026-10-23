@@ -15,6 +15,15 @@ export function posFileUrl(url) {
 
 /** @returns {Promise<string>} public path POS, contoh: /uploads/assets/delete-request/x.jpg */
 export async function uploadDeleteRequestAttachment(file) {
+  return pushFileToPos("/api/internal/delete-request-docs", file);
+}
+
+/** Bukti pembayaran refund dari admin → /uploads/assets/refund-approval/x.jpg */
+export async function uploadRefundApprovalProof(file) {
+  return pushFileToPos("/api/internal/refund-approval-docs", file);
+}
+
+async function pushFileToPos(endpoint, file) {
   const token = process.env.WASCHEN_POS_TOKEN || "";
   if (!token) {
     throw new Error("Gagal menyimpan lampiran: WASCHEN_POS_TOKEN belum di-set di server API.");
@@ -26,7 +35,7 @@ export async function uploadDeleteRequestAttachment(file) {
     file.originalname || "lampiran",
   );
 
-  const url = `${posOrigin()}/api/internal/delete-request-docs`;
+  const url = `${posOrigin()}${endpoint}`;
   let res;
   try {
     res = await fetch(url, { method: "POST", headers: { "X-Complaint-Sync-Token": token }, body });
