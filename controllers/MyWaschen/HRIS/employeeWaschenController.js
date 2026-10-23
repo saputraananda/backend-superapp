@@ -15,9 +15,11 @@ export const listWaschenEmployees = async (req, res) => {
     const sortByKey = String(req.query.sortBy || "full_name");
     const sortBy = SORT_COLUMNS[sortByKey] || SORT_COLUMNS.full_name;
     const sortDir = String(req.query.sortDir || "asc").toLowerCase() === "desc" ? "DESC" : "ASC";
-    const filterRole = req.query.role ? String(req.query.role) : null;
-    const filterOutletId = req.query.outletId ? Number(req.query.outletId) : null;
-    const filterIsLeader = req.query.isLeader !== undefined && req.query.isLeader !== "" ? Number(req.query.isLeader) : null;
+    // Multi filter: nilai dipisah koma. Token "none" = belum ditentukan.
+    const csv = (v) => String(v ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+    const filterRoles = csv(req.query.role);
+    const filterOutletIds = csv(req.query.outletId);
+    const filterLeaders = csv(req.query.isLeader);
 
     // Fetch mst_role entries (produksi/frontliner from company 5)
     const [roleRows] = await safeMyWaschenQuery(
@@ -95,14 +97,14 @@ export const listWaschenEmployees = async (req, res) => {
     }));
 
     // Apply post-merge filters (role/outlet/leader live in separate DB)
-    if (filterRole !== null) {
-      data = data.filter((d) => d.waschen_role === filterRole);
+    if (filterRoles.length) {
+      data = data.filter((d) => filterRoles.includes(d.waschen_role ?? "none"));
     }
-    if (filterOutletId !== null) {
-      data = data.filter((d) => Number(d.outlet_id) === filterOutletId);
+    if (filterOutletIds.length) {
+      data = data.filter((d) => filterOutletIds.includes(d.outlet_id == null ? "none" : String(d.outlet_id)));
     }
-    if (filterIsLeader !== null) {
-      data = data.filter((d) => Number(d.is_leader) === filterIsLeader);
+    if (filterLeaders.length) {
+      data = data.filter((d) => filterLeaders.includes(d.is_leader == null ? "none" : String(Number(d.is_leader))));
     }
 
     return res.json({ success: true, total: data.length, data });

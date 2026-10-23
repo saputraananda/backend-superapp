@@ -562,8 +562,8 @@ async function buildPayroll(query, { employeeId = null, withDetail = false } = {
   const employees = await loadEmployees({
     startDate,
     endDate,
-    outletId: query.outletId ? Number(query.outletId) : null,
-    role: query.role ? String(query.role).trim() : "",
+    outletId: query.outletId || null,
+    role: query.role || "",
     employeeId,
     search: employeeId ? "" : query.search,
   });

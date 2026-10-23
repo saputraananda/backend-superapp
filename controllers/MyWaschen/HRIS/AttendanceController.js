@@ -2,7 +2,7 @@ import { safeMyWaschenQuery } from "../../../db/pool.js";
 
 import { defaultCutoffDateRange } from "../cutoffHelpers.js";
 
-import { getEmployeeNameMap, toISODate, resolveMstRoleEmployeeIds, appendEmployeeIdInClause, toMySQLDatetime, resolveEmployeeUserId, resolveEmployeeOutletId, validateOutletId } from "./hrisHelpers.js";
+import { getEmployeeNameMap, toISODate, toFilterList, resolveMstRoleEmployeeIds, appendEmployeeIdInClause, toMySQLDatetime, resolveEmployeeUserId, resolveEmployeeOutletId, validateOutletId } from "./hrisHelpers.js";
 
 import { buildAttendancePhotoUrl, getWaschenMobileAttendanceDir } from "./hrisAssetHelpers.js";
 
@@ -216,9 +216,10 @@ export const getAttendanceList = async (req, res) => {
 
     const employeeId = req.query.employeeId ? Number(req.query.employeeId) : null;
 
-    const outletId = req.query.outletId ? Number(req.query.outletId) : null;
+    // Multi-pilih: outletId=1,2 & role=Frontliner,Produksi (diurai resolveMstRoleEmployeeIds)
+    const outletId = req.query.outletId || null;
 
-    const role = req.query.role ? String(req.query.role).trim() : "";
+    const role = req.query.role || "";
 
     const onlyIncomplete = String(req.query.onlyIncomplete || "") === "1";
 
@@ -847,8 +848,8 @@ export const getCleanlinessList = async (req, res) => {
     const defaults = defaultCutoffDateRange();
     const startDate = toISODate(req.query.startDate) || defaults.dateFrom;
     const endDate = toISODate(req.query.endDate) || defaults.dateTo;
-    const outletId = req.query.outletId ? Number(req.query.outletId) : null;
-    const role = req.query.role ? String(req.query.role).trim() : "";
+    const outletIds = toFilterList(req.query.outletId).map(Number).filter((n) => n > 0);
+    const roleCodes = toFilterList(req.query.role);
 
     const cond = [];
     const params = [];
@@ -860,13 +861,13 @@ export const getCleanlinessList = async (req, res) => {
       cond.push("c.work_date <= ?");
       params.push(endDate);
     }
-    if (outletId) {
-      cond.push("c.outlet_id = ?");
-      params.push(outletId);
+    if (outletIds.length) {
+      cond.push(`c.outlet_id IN (${outletIds.map(() => "?").join(",")})`);
+      params.push(...outletIds);
     }
-    if (role) {
-      cond.push("c.role_code = ?");
-      params.push(role);
+    if (roleCodes.length) {
+      cond.push(`c.role_code IN (${roleCodes.map(() => "?").join(",")})`);
+      params.push(...roleCodes);
     }
     const where = cond.length ? `WHERE ${cond.join(" AND ")}` : "";
 

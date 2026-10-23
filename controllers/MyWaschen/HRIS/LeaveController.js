@@ -26,9 +26,10 @@ export const getLeaveList = async (req, res) => {
 
     const employeeId = req.query.employeeId ? Number(req.query.employeeId) : null;
 
-    const outletId = req.query.outletId ? Number(req.query.outletId) : null;
+    // Multi-pilih: outletId=1,2 & role=Frontliner,Produksi (diurai resolveMstRoleEmployeeIds)
+    const outletId = req.query.outletId || null;
 
-    const role = req.query.role ? String(req.query.role).trim() : "";
+    const role = req.query.role || "";
 
     const search = String(req.query.search || "").trim();
 

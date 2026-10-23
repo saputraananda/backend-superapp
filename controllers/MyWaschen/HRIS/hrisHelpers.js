@@ -50,7 +50,7 @@ export async function getWaschenEmployeeIds() {
 }
 
 // "1,2" / ["1","2"] / 1 → ["1","2"] / ["1"]
-function toFilterList(value) {
+export function toFilterList(value) {
   if (value == null || value === "") return [];
   const list = Array.isArray(value) ? value : String(value).split(",");
   return list.map((s) => String(s).trim()).filter(Boolean);

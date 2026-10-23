@@ -63,8 +63,9 @@ export const getOvertimeList = async (req, res) => {
     const endDate = toISODate(req.query.endDate) || defaults.dateTo;
     const status = req.query.status ? String(req.query.status) : "";
     const employeeId = req.query.employeeId ? Number(req.query.employeeId) : null;
-    const outletId = req.query.outletId ? Number(req.query.outletId) : null;
-    const role = req.query.role ? String(req.query.role).trim() : "";
+    // Multi-pilih: outletId=1,2 & role=Frontliner,Produksi (diurai resolveMstRoleEmployeeIds)
+    const outletId = req.query.outletId || null;
+    const role = req.query.role || "";
     const search = String(req.query.search || "").trim();
 
     const roleEmployeeIds = await resolveMstRoleEmployeeIds(outletId, role);
