@@ -1,4 +1,45 @@
 import { safeMyWaschenQuery, safeQuery } from "../../../db/pool.js";
+import { posFileUrl } from "../../../utils/waschenPosUpload.js";
+
+/** Batas upload bukti setoran tunai: H+1 dari tanggal closing (sama dengan POS). */
+const DEPOSIT_DUE_DAYS = 1;
+
+/** YYYY-MM-DD menurut kalender WIB. */
+function wibDateKey(value) {
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Jakarta",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(d);
+}
+
+function dayDiff(laterKey, earlierKey) {
+  if (!laterKey || !earlierKey) return 0;
+  return Math.round((Date.parse(`${laterKey}T00:00:00Z`) - Date.parse(`${earlierKey}T00:00:00Z`)) / 86400000);
+}
+
+/** Status setoran tunai closing Final: null jika bukan closing Final. */
+function buildDepositInfo(row, nameMap) {
+  if (row.status !== "Closed" || row.close_type !== "Final" || !row.closed_at) return null;
+  const uploaded = Boolean(row.deposit_proof_url);
+  const refKey = uploaded
+    ? wibDateKey(row.deposit_uploaded_at) || wibDateKey(new Date())
+    : wibDateKey(new Date());
+  const lateDays = Math.max(0, dayDiff(refKey, wibDateKey(row.closed_at)) - DEPOSIT_DUE_DAYS);
+  return {
+    status: uploaded ? "uploaded" : "pending",
+    isLate: lateDays > 0,
+    lateDays,
+    proofUrl: posFileUrl(row.deposit_proof_url),
+    notes: row.deposit_notes || null,
+    uploadedAt: row.deposit_uploaded_at || null,
+    uploadedBy: row.deposit_uploaded_by || null,
+    uploadedByName: formatEmployeeLabel(row.deposit_uploaded_by, nameMap),
+  };
+}
 
 function num(v, fallback = 0) {
   const n = Number(v);
@@ -54,6 +95,7 @@ async function enrichShiftRow(row, nameMap) {
     openerName: formatEmployeeLabel(row.cashier_employee_id, nameMap),
     closedByName: formatEmployeeLabel(row.closed_by_employee_id, nameMap),
     lastActiveName: formatEmployeeLabel(row.last_active_employee_id, nameMap),
+    deposit: buildDepositInfo(row, nameMap),
     outletCode: row.outlet_code,
     outletName: row.outlet_name,
     outletFullName: row.outlet_full_name,
@@ -116,6 +158,7 @@ export async function getDailyReportList(req, res) {
       r.cashier_employee_id,
       r.closed_by_employee_id,
       r.last_active_employee_id,
+      r.deposit_uploaded_by,
     ]);
     const nameMap = await getEmployeeNameMap(empIds);
 
@@ -153,6 +196,7 @@ export async function getDailyReportById(req, res) {
       row.cashier_employee_id,
       row.closed_by_employee_id,
       row.last_active_employee_id,
+      row.deposit_uploaded_by,
     ]);
     const data = await enrichShiftRow(row, nameMap);
     data.verifiedTransactions = await loadVerifiedTransactions(id);
@@ -229,6 +273,7 @@ export async function updateDailyReportShift(req, res) {
       row.cashier_employee_id,
       row.closed_by_employee_id,
       row.last_active_employee_id,
+      row.deposit_uploaded_by,
     ]);
     const data = await enrichShiftRow(row, nameMap);
     data.verifiedTransactions = await loadVerifiedTransactions(id);
