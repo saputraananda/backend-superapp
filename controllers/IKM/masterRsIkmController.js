@@ -24,7 +24,7 @@ const pricesEqual = (a, b) => {
   return Number(a) === Number(b);
 };
 
-async function resolveActor(req) {
+export async function resolveActor(req) {
   let userId = null;
   let username = "system";
   let fullName = "System Admin";
