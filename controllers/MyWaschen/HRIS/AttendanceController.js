@@ -5,6 +5,7 @@ import { defaultCutoffDateRange } from "../cutoffHelpers.js";
 import { getEmployeeNameMap, toISODate, toFilterList, resolveMstRoleEmployeeIds, appendEmployeeIdInClause, toMySQLDatetime, resolveEmployeeUserId, resolveEmployeeOutletId, validateOutletId } from "./hrisHelpers.js";
 
 import { buildAttendancePhotoUrl, getWaschenMobileAttendanceDir } from "./hrisAssetHelpers.js";
+import { loadShiftMap, evaluateShift, requiresShift } from "./attendanceShift.js";
 
 import fs from "fs";
 import path from "path";
@@ -101,7 +102,7 @@ function attendanceStatusLabel(row) {
 
   if (!hasIn) return "Belum check-in";
 
-  if (!hasOut) return "Belum check-out";
+  if (!hasOut) return "Belum Out";
 
   if (!hasInPhoto || !hasOutPhoto) return "Foto belum lengkap";
 
@@ -151,7 +152,7 @@ async function tryDeleteAttendancePhoto(photoName) {
 
 
 
-function mapAttendanceRow(req, r, empMap, roleMap = null, photoCountMap = null) {
+function mapAttendanceRow(req, r, empMap, roleMap = null, photoCountMap = null, shiftMap = null) {
   const statusLabel = attendanceStatusLabel(r);
   const role = roleMap?.get(Number(r.employee_id)) || r.role_code || r.role || null;
   const stored = r.grooming_status || null;
@@ -199,6 +200,8 @@ function mapAttendanceRow(req, r, empMap, roleMap = null, photoCountMap = null) 
     // Catatan absen Waschen Mobile. null bila kolom belum ada / belum diisi.
     check_in_note: r.check_in_note || null,
     check_out_note: r.check_out_note || null,
+    // Shift Frontliner + telat/pulang cepat (menit). Frontliner tanpa shift = Pagi.
+    ...(shiftMap ? evaluateShift(r, role, shiftMap) : {}),
   };
 }
 
@@ -288,7 +291,7 @@ export const getAttendanceList = async (req, res) => {
                 a.check_out_time, a.check_out_lat, a.check_out_lng,
                 a.check_out_photo_path, a.check_out_photo_name,
                 a.grooming_status, a.grooming_incomplete_reason, a.grooming_locked_at,
-                a.check_in_note, a.check_out_note
+                a.check_in_note, a.check_out_note, a.shift_code
          FROM tr_attendance a
          ${where}
          ORDER BY a.work_date DESC, a.check_in_time DESC
@@ -371,9 +374,10 @@ export const getAttendanceList = async (req, res) => {
     const photoCountMap = await getGroomingPhotoCountMap(attRows.map((r) => r.attendance_id));
 
     const locationMap = await getAbsenLocationMap(attRows.map((r) => r.outlet_id));
+    const shiftMap = await loadShiftMap();
 
     let attendance = attRows.map((r) => {
-      const row = mapAttendanceRow(req, r, empMap, roleMap, photoCountMap);
+      const row = mapAttendanceRow(req, r, empMap, roleMap, photoCountMap, shiftMap);
       const loc = locationMap.get(Number(r.outlet_id));
       return loc ? { ...row, absen_location_code: loc.code, absen_location_name: loc.name } : row;
     });
@@ -522,7 +526,7 @@ export const createAttendance = async (req, res) => {
               a.check_out_time, a.check_out_lat, a.check_out_lng,
               a.check_out_photo_path, a.check_out_photo_name,
               a.grooming_status, a.grooming_incomplete_reason, a.grooming_locked_at,
-              a.check_in_note, a.check_out_note
+              a.check_in_note, a.check_out_note, a.shift_code
        FROM tr_attendance a WHERE a.attendance_id = ? LIMIT 1`,
       [result.insertId],
     );
@@ -531,7 +535,7 @@ export const createAttendance = async (req, res) => {
     return res.status(201).json({
       success: true,
       message: "Absensi berhasil ditambahkan",
-      data: mapAttendanceRow(req, rows[0], empMap, roleMap),
+      data: mapAttendanceRow(req, rows[0], empMap, roleMap, null, await loadShiftMap()),
     });
   } catch (err) {
     console.error("createAttendance:", err);
@@ -583,6 +587,20 @@ export const updateAttendance = async (req, res) => {
       params.push(outletId);
     }
 
+    // Shift hanya untuk Frontliner; '' / null = kosongkan (dianggap Pagi).
+    if ("shift_code" in req.body) {
+      const roleMap = await getEmployeeRoleMap([row.employee_id]);
+      if (!requiresShift(roleMap.get(Number(row.employee_id)))) {
+        return res.status(422).json({ success: false, message: "Shift hanya berlaku untuk Frontliner" });
+      }
+      const code = req.body.shift_code ? String(req.body.shift_code).trim() : null;
+      if (code && !(await loadShiftMap()).has(code)) {
+        return res.status(422).json({ success: false, message: "Shift tidak valid" });
+      }
+      updates.push("shift_code = ?");
+      params.push(code);
+    }
+
     const hasCheckIn = "check_in_time" in req.body;
     const hasCheckOut = "check_out_time" in req.body;
     let finalCheckIn = row.check_in_time;
@@ -627,7 +645,9 @@ export const updateAttendance = async (req, res) => {
               a.check_in_time, a.check_in_lat, a.check_in_lng,
               a.check_in_photo_path, a.check_in_photo_name,
               a.check_out_time, a.check_out_lat, a.check_out_lng,
-              a.check_out_photo_path, a.check_out_photo_name
+              a.check_out_photo_path, a.check_out_photo_name,
+              a.grooming_status, a.grooming_incomplete_reason, a.grooming_locked_at,
+              a.check_in_note, a.check_out_note, a.shift_code
        FROM tr_attendance a WHERE a.attendance_id = ? LIMIT 1`,
       [id],
     );
@@ -638,7 +658,7 @@ export const updateAttendance = async (req, res) => {
     return res.json({
       success: true,
       message: "Absensi berhasil diperbarui",
-      data: mapAttendanceRow(req, rows[0], empMap, roleMap, photoCountMap),
+      data: mapAttendanceRow(req, rows[0], empMap, roleMap, photoCountMap, await loadShiftMap()),
     });
   } catch (err) {
     console.error("updateAttendance:", err);
@@ -756,7 +776,7 @@ export const getAttendanceDetail = async (req, res) => {
     const empMap = await getEmployeeNameMap([att.employee_id]);
     const roleMap = await getEmployeeRoleMap([att.employee_id]);
     const photoCountMap = await getGroomingPhotoCountMap([att.attendance_id]);
-    const base = mapAttendanceRow(req, att, empMap, roleMap, photoCountMap);
+    const base = mapAttendanceRow(req, att, empMap, roleMap, photoCountMap, await loadShiftMap());
 
     let groomingPhotos = [];
     try {

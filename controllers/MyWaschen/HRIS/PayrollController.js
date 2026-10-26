@@ -7,7 +7,10 @@
 //
 // Aturan hitung (selaras dengan halaman HRIS lain):
 //   Hadir            = tanggal dengan check-in
-//   Terlambat        = check-in setelah 08:00 (sama dengan Dashboard HR); tidak dihitung
+//   Terlambat        = check-in setelah 08:00; Frontliner ikut jam mulai shift (Pagi/Siang,
+//                      shift kosong = Pagi) — attendanceShift.js
+//   Pulang cepat     = Frontliner check-out sebelum jam selesai shift
+//                      Sama dengan Dashboard HR. Telat tidak dihitung
 //                      bila hari itu ada izin/sakit/cuti ½ hari pagi yang disetujui
 //   Durasi kerja     = check-out − check-in (hanya absensi yang lengkap)
 //   Off              = jadwal libur berstatus 'disetujui' (HRD)
@@ -24,9 +27,9 @@
 import { safeQuery, safeMyWaschenQuery } from "../../../db/pool.js";
 import { defaultCutoffDateRange } from "../cutoffHelpers.js";
 import { toISODate, resolveMstRoleEmployeeIds, getEmployeeNameMap } from "./hrisHelpers.js";
+import { loadShiftMap, evaluateShift } from "./attendanceShift.js";
 
 const WASCHEN_COMPANY_ID = 5;
-const JAM_MASUK = "08:00:00";
 const OFF_WAITING = ["pengajuan", "disetujui_leader", "ditolak_leader"]; // menunggu keputusan HRD
 const MAX_RANGE_DAYS = 93;
 
@@ -152,15 +155,13 @@ async function loadActivity(ids, startDate, endDate) {
       `SELECT employee_id, role, outlet_id, is_leader FROM mst_role WHERE employee_id IN (${inIds})`, ids),
     safeMyWaschenQuery(
       `SELECT attendance_id, employee_id, outlet_id, work_date, check_in_time, check_out_time,
-              check_in_note, check_out_note,
+              check_in_note, check_out_note, shift_code,
               CASE WHEN check_in_time IS NOT NULL AND check_out_time > check_in_time
-                   THEN TIMESTAMPDIFF(MINUTE, check_in_time, check_out_time) END AS work_min,
-              CASE WHEN check_in_time IS NOT NULL
-                   THEN GREATEST(0, TIMESTAMPDIFF(MINUTE, TIMESTAMP(work_date, ?), check_in_time)) ELSE 0 END AS late_min
+                   THEN TIMESTAMPDIFF(MINUTE, check_in_time, check_out_time) END AS work_min
        FROM tr_attendance
        WHERE employee_id IN (${inIds}) AND work_date BETWEEN ? AND ?
        ORDER BY work_date ASC, check_in_time ASC`,
-      [JAM_MASUK, ...ids, startDate, endDate]),
+      [...ids, startDate, endDate]),
     safeMyWaschenQuery(
       `SELECT day_off_id, employee_id, off_date, status, reason, backup_employee_id
        FROM tr_employee_day_off
@@ -225,8 +226,14 @@ async function loadActivity(ids, startDate, endDate) {
   outlets.forEach((o) => placeMap.set(Number(o.id), { id: Number(o.id), code: o.outlet_code || null, name: o.name, is_outlet: true }));
   locations.forEach((l) => placeMap.set(Number(l.id), { id: Number(l.id), code: l.location_id || null, name: l.location_name, is_outlet: false }));
 
+  const roleById = new Map(roles.map((r) => [Number(r.employee_id), r]));
+  const shiftMap = await loadShiftMap();
+  attendance.forEach((r) => {
+    Object.assign(r, evaluateShift(r, roleById.get(Number(r.employee_id))?.role, shiftMap));
+  });
+
   return {
-    roles: new Map(roles.map((r) => [Number(r.employee_id), r])),
+    roles: roleById,
     attendance: group(attendance),
     offsOwn: group(dayOffs),
     offsBackup: group(dayOffs.filter((d) => d.backup_employee_id), "backup_employee_id"),
@@ -331,6 +338,26 @@ function buildEmployee(emp, ctx, startDate, endDate, withDetail) {
     lateMinutes += late;
     lateMax = Math.max(lateMax, late);
     lateByDate.set(d, late);
+  });
+
+  // Pulang cepat — check-out terakhir per tanggal (Frontliner, sebelum jam selesai shift).
+  // Dikecualikan bila izin ½ hari siang disetujui.
+  let earlyCount = 0;
+  let earlyMinutes = 0;
+  let earlyExcused = 0;
+  const earlyByDate = new Map();
+  hadirDates.forEach((d) => {
+    const recs = byDate.get(d).filter((r) => r.check_out_time);
+    const last = recs[recs.length - 1];
+    const early = num(last?.early_min);
+    if (early <= 0) return;
+    if (leaveByDate.get(d)?.duration === "half_day_afternoon") {
+      earlyExcused += 1;
+      return;
+    }
+    earlyCount += 1;
+    earlyMinutes += early;
+    earlyByDate.set(d, early);
   });
 
   // Kasbon & pinjaman
@@ -470,6 +497,7 @@ function buildEmployee(emp, ctx, startDate, endDate, withDetail) {
       rejected: leaves.filter((l) => l.status === "ditolak").length,
     },
     late: { count: lateCount, minutes: lateMinutes, max: lateMax, excused: lateExcused },
+    early: { count: earlyCount, minutes: earlyMinutes, excused: earlyExcused },
     kasbon: kasbonSum,
     pinjaman: pinjamanSum,
     no_info_days: noInfoDates.length,
@@ -504,6 +532,9 @@ function buildEmployee(emp, ctx, startDate, endDate, withDetail) {
       no_checkout: recs.some((r) => !r.check_out_time),
       late_minutes: lateByDate.get(d) || 0,
       late_excused: Boolean(first && leave?.duration === "half_day_morning" && num(first.late_min) > 0),
+      early_minutes: earlyByDate.get(d) || 0,
+      shift_name: first?.shift_name || null,
+      shift_assumed: Boolean(first?.shift_assumed),
       location: first ? placeOf(ctx, first.outlet_id) : null,
       outside_home: Boolean(first && homeOutletId && Number(first.outlet_id) !== homeOutletId),
       overtime_minutes: otByDate.get(d) || 0,
