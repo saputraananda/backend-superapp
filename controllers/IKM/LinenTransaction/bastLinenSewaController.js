@@ -407,8 +407,10 @@ export const getBast = async (req, res) => {
       `SELECT d.id, d.hospital_linen_id, d.room_id, d.stock_before, d.qty_pengiriman, d.qty_penarikan, d.notes,
               d.ukuran, d.bahan, d.warna,
               hl.hospital_linen_name, l.linen_name AS master_linen_name,
-              sz.size_name, cl.color_name, mt.material_name
+              sz.size_name, cl.color_name, mt.material_name, rr.room_name AS line_room_name
        FROM tr_bast_linen_sewa_detail d
+       JOIN tr_bast_linen_sewa hb ON hb.id = d.bast_id
+       LEFT JOIN mst_rooms_rs rr ON rr.id = COALESCE(d.room_id, hb.room_id)
        LEFT JOIN mst_hospital_linen hl ON hl.id = d.hospital_linen_id
        LEFT JOIN mst_linen l ON l.id = hl.linen_id
        LEFT JOIN mst_size sz ON l.size_id = sz.id
