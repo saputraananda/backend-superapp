@@ -7,6 +7,8 @@ import {
 	createManualAttendance,
 	updateManualAttendance,
 	deleteManualAttendance,
+	getLateCompensationInfo,
+	compensateLateAttendance,
 } from "../../controllers/Alora/attendanceAloraController.js";
 import {
 	getPendingApprovals,
@@ -24,6 +26,8 @@ router.get("/active-employees", requireAuth, getActiveAloraAttendanceEmployees);
 router.post("/manual", requireAuth, createManualAttendance);
 router.put("/:id/manual", requireAuth, updateManualAttendance);
 router.delete("/:id/manual", requireAuth, deleteManualAttendance);
+router.get("/:id/compensation-info", requireAuth, getLateCompensationInfo);
+router.post("/:id/compensate-late", requireAuth, compensateLateAttendance);
 router.get("/", requireAuth, getAttendanceReport);
 router.post("/:id/bod-attachment", requireAuth, bodUploadMiddleware, uploadBodAttachment);
 router.post("/:id/approve-supervisor", requireAuth, approveSupervisor);

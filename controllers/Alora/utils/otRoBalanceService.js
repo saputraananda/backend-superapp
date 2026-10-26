@@ -284,6 +284,7 @@ export async function appendOvertimeLedger({
 	sessionId = null,
 	lemburRoId = null,
 	leaveId = null,
+	attendanceId = null,
 	mutationType,
 	hours,
 	note = null,
@@ -294,9 +295,9 @@ export async function appendOvertimeLedger({
 	const balanceAfter = roundHours(current + delta);
 	const [result] = await safeAloraMobileQuery(
 		`INSERT INTO tr_overtime_ledger
-       (employee_id, session_id, lembur_ro_id, leave_id, mutation_type, hours, balance_after, note)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		[employeeId, sessionId, lemburRoId, leaveId, mutationType, amount, balanceAfter, note]
+       (employee_id, session_id, lembur_ro_id, leave_id, attendance_id, mutation_type, hours, balance_after, note)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		[employeeId, sessionId, lemburRoId, leaveId, attendanceId, mutationType, amount, balanceAfter, note]
 	);
 	return { id: result.insertId, balanceAfter };
 }

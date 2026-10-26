@@ -5,6 +5,12 @@ import { ALORA_MOBILE_ATT_DIR, ALORA_MOBILE_BASE } from "../../middleware/upload
 import { getAloraMobileApiBaseUrl, proxyAloraMobileFile } from "./utils/aloraMobileApiAssets.js";
 import { resolveFinalStatus } from "./utils/attendanceStatusResolver.js";
 import {
+	getOvertimeUsableBalance,
+	getReplaceOffUsableBalance,
+	appendOvertimeLedger,
+	appendReplaceOffLedger,
+} from "./utils/otRoBalanceService.js";
+import {
 	ALORA_COMPANY_CONDITION,
 	ALORA_ACTIVE_EMPLOYEE_CONDITION,
 	ALORA_HRD_POSITION_IDS,
@@ -724,6 +730,11 @@ export const getAttendanceReport = async (req, res) => {
 					mode_reason,
 					duration_hours,
 					approval_status,
+					is_late_waived,
+					late_compensation_type,
+					late_compensation_hours,
+					late_waived_by,
+					late_waived_at,
 					created_at,
 					updated_at
 				FROM tr_worker_attendance
@@ -910,6 +921,11 @@ export const getAttendanceReport = async (req, res) => {
 				late_reason: row.late_reason || null,
 				late_minutes: row.late_minutes != null ? Number(row.late_minutes) : null,
 				late_status: row.late_status || null,
+				is_late_waived: Boolean(row.is_late_waived),
+				late_compensation_type: row.late_compensation_type || null,
+				late_compensation_hours: row.late_compensation_hours != null ? Number(row.late_compensation_hours) : null,
+				late_waived_by: row.late_waived_by != null ? Number(row.late_waived_by) : null,
+				late_waived_at: row.late_waived_at || null,
 				final_status: finalStatus.status_label,
 				final_status_code: finalStatus.primary_status,
 				late_flag: finalStatus.late_flag,
@@ -1544,4 +1560,187 @@ export const deleteManualAttendance = async (req, res) => {
 		});
 	}
 };
+
+/**
+ * GET /alora/attendance/:id/compensation-info
+ * Mendapatkan info keterlambatan absensi dan saldo usable Lembur & RO karyawan.
+ */
+export const getLateCompensationInfo = async (req, res) => {
+	try {
+		await assertAttendanceHrd(req);
+		const id = toPositiveInt(req.params.id);
+		if (!id) return res.status(400).json({ success: false, message: "ID absensi tidak valid" });
+
+		const [rows] = await safeAloraMobileQuery(
+			`SELECT id, employee_id, attendance_date, clock_in, late_minutes, late_reason, late_category,
+			        is_late_waived, late_compensation_type, late_compensation_hours, late_waived_at, late_waived_by
+			 FROM tr_worker_attendance WHERE id = ? LIMIT 1`,
+			[id]
+		);
+		if (!rows || rows.length === 0) {
+			return res.status(404).json({ success: false, message: "Data absensi tidak ditemukan" });
+		}
+
+		const att = rows[0];
+		const lateMinutes = Number(att.late_minutes || 0);
+		if (lateMinutes <= 0 && !att.is_late_waived) {
+			return res.status(400).json({ success: false, message: "Absensi ini tidak tercatat memiliki keterlambatan" });
+		}
+
+		const hoursNeeded = Math.round((lateMinutes / 60) * 100) / 100;
+		const workDate = toDateOnlyJakarta(att.attendance_date);
+
+		// Profil karyawan
+		const [empRows] = await safeQuery(
+			`SELECT employee_id, employee_code, full_name FROM mst_employee WHERE employee_id = ? LIMIT 1`,
+			[att.employee_id]
+		);
+		const emp = empRows?.[0] || {};
+
+		// Saldo usable
+		const usableOvertime = await getOvertimeUsableBalance(att.employee_id, workDate);
+		const usableReplaceOff = await getReplaceOffUsableBalance(att.employee_id, workDate);
+
+		return res.json({
+			success: true,
+			data: {
+				attendance_id: att.id,
+				employee_id: att.employee_id,
+				employee_code: emp.employee_code || null,
+				employee_name: emp.full_name || `Karyawan #${att.employee_id}`,
+				attendance_date: workDate,
+				clock_in: att.clock_in,
+				late_minutes: lateMinutes,
+				hours_needed: hoursNeeded,
+				is_late_waived: Boolean(att.is_late_waived),
+				late_compensation_type: att.late_compensation_type || null,
+				late_compensation_hours: att.late_compensation_hours != null ? Number(att.late_compensation_hours) : null,
+				late_waived_at: att.late_waived_at || null,
+				usable_overtime_hours: usableOvertime,
+				usable_replace_off_hours: usableReplaceOff,
+				can_compensate_overtime: usableOvertime >= hoursNeeded,
+				can_compensate_replace_off: usableReplaceOff >= hoursNeeded,
+			},
+		});
+	} catch (error) {
+		console.error("[getLateCompensationInfo] Error:", error);
+		return res.status(error.statusCode || 500).json({
+			success: false,
+			message: error.message || "Gagal mengambil data kompensasi keterlambatan",
+		});
+	}
+};
+
+/**
+ * POST /alora/attendance/:id/compensate-late
+ * Memotong saldo RO atau Lembur untuk menghilangkan keterlambatan absensi (hanya HR).
+ */
+export const compensateLateAttendance = async (req, res) => {
+	try {
+		const hrAuth = await assertAttendanceHrd(req);
+		const id = toPositiveInt(req.params.id);
+		if (!id) return res.status(400).json({ success: false, message: "ID absensi tidak valid" });
+
+		const { source, note } = req.body || {};
+		if (!["overtime", "replace_off"].includes(source)) {
+			return res.status(400).json({
+				success: false,
+				message: "Sumber saldo kompensasi harus berupa 'overtime' atau 'replace_off'",
+			});
+		}
+
+		const [rows] = await safeAloraMobileQuery(
+			`SELECT id, employee_id, attendance_date, late_minutes, is_late_waived
+			 FROM tr_worker_attendance WHERE id = ? LIMIT 1`,
+			[id]
+		);
+		if (!rows || rows.length === 0) {
+			return res.status(404).json({ success: false, message: "Data absensi tidak ditemukan" });
+		}
+
+		const att = rows[0];
+		if (Boolean(att.is_late_waived)) {
+			return res.status(400).json({
+				success: false,
+				message: "Keterlambatan absensi ini sudah pernah dikompensasi / ditutup",
+			});
+		}
+
+		const lateMinutes = Number(att.late_minutes || 0);
+		if (lateMinutes <= 0) {
+			return res.status(400).json({
+				success: false,
+				message: "Absensi ini tidak memiliki menit keterlambatan untuk dikompensasi",
+			});
+		}
+
+		const hoursNeeded = Math.round((lateMinutes / 60) * 100) / 100;
+		const workDate = toDateOnlyJakarta(att.attendance_date);
+		const actionNote = note?.trim() || `Tutup keterlambatan ${lateMinutes}m (${hoursNeeded}j) tgl ${workDate}`;
+
+		let ledgerResult;
+		if (source === "overtime") {
+			const currentBalance = await getOvertimeUsableBalance(att.employee_id, workDate);
+			if (currentBalance < hoursNeeded) {
+				return res.status(400).json({
+					success: false,
+					message: `Saldo lembur tidak mencukupi. Dibutuhkan: ${hoursNeeded} jam, Tersedia: ${currentBalance} jam`,
+				});
+			}
+			ledgerResult = await appendOvertimeLedger({
+				employeeId: att.employee_id,
+				attendanceId: att.id,
+				mutationType: "used",
+				hours: hoursNeeded,
+				note: actionNote,
+			});
+		} else {
+			const currentBalance = await getReplaceOffUsableBalance(att.employee_id, workDate);
+			if (currentBalance < hoursNeeded) {
+				return res.status(400).json({
+					success: false,
+					message: `Saldo RO tidak mencukupi. Dibutuhkan: ${hoursNeeded} jam, Tersedia: ${currentBalance} jam`,
+				});
+			}
+			ledgerResult = await appendReplaceOffLedger({
+				employeeId: att.employee_id,
+				attendanceId: att.id,
+				mutationType: "used",
+				hours: hoursNeeded,
+				note: actionNote,
+			});
+		}
+
+		await safeAloraMobileQuery(
+			`UPDATE tr_worker_attendance
+			 SET is_late_waived = 1,
+			     late_compensation_type = ?,
+			     late_compensation_hours = ?,
+			     late_waived_by = ?,
+			     late_waived_at = NOW(),
+			     updated_at = NOW()
+			 WHERE id = ?`,
+			[source, hoursNeeded, hrAuth.currentEmpId || null, att.id]
+		);
+
+		return res.json({
+			success: true,
+			message: `Keterlambatan ${lateMinutes} menit berhasil ditutup menggunakan ${source === "replace_off" ? "Saldo RO" : "Saldo Lembur"} (${hoursNeeded} jam)`,
+			data: {
+				attendance_id: att.id,
+				source,
+				hours_deducted: hoursNeeded,
+				balance_after: ledgerResult?.balanceAfter ?? null,
+				is_late_waived: true,
+			},
+		});
+	} catch (error) {
+		console.error("[compensateLateAttendance] Error:", error);
+		return res.status(error.statusCode || 500).json({
+			success: false,
+			message: error.message || "Gagal melakukan kompensasi keterlambatan",
+		});
+	}
+};
+
 
