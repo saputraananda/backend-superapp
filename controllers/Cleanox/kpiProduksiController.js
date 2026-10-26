@@ -642,11 +642,17 @@ export const getAvailablePeriods = async (req, res) => {
       activeYear = jktYear;
     }
 
-    const exists = rows.some((r) => Number(r.yr) === activeYear && Number(r.mo) === activeMonth);
-    if (!exists) {
-      rows.push({ yr: activeYear, mo: activeMonth });
-      rows.sort((a, b) => b.yr - a.yr || b.mo - a.mo);
+    // Selalu pastikan bulan kalender saat ini (jktMonth) ada di list periode
+    if (!rows.some((r) => Number(r.yr) === jktYear && Number(r.mo) === jktMonth)) {
+      rows.push({ yr: jktYear, mo: jktMonth });
     }
+
+    // Jika sudah lewat cutoff (tgl >= 26), pastikan periode cutoff berikutnya (activeMonth) juga ada
+    if (!rows.some((r) => Number(r.yr) === activeYear && Number(r.mo) === activeMonth)) {
+      rows.push({ yr: activeYear, mo: activeMonth });
+    }
+
+    rows.sort((a, b) => b.yr - a.yr || b.mo - a.mo);
 
     return res.json({ periods: rows });
   } catch (err) {
@@ -946,6 +952,20 @@ export const exportSlaItems = async (_req, res) => {
 /* ── Cleanox Only — helpers ─────────────────────────────── */
 const ONLY_KPI_KEYS = ["pickup", "cuci_jemur", "packing", "pengantaran"];
 
+const extractWorkerNames = (raw) => {
+  const parsed = parseJson(raw);
+  if (!Array.isArray(parsed)) return [];
+  return parsed
+    .map((item) => {
+      if (typeof item === "string") return item.trim();
+      if (item && typeof item === "object") {
+        return String(item.employee_name || item.name || item.full_name || "").trim();
+      }
+      return "";
+    })
+    .filter((n) => n && n !== "Admin");
+};
+
 const getTakehomeStageBundle = (progressRow) => {
   if (!progressRow) {
     return {
@@ -956,8 +976,8 @@ const getTakehomeStageBundle = (progressRow) => {
 
   const pengantaranAt = progressRow.pengantaran_at || progressRow.diantar_at || null;
   const pengantaranBy = [
-    ...parseJson(progressRow.pengantaran_by),
-    ...(progressRow.pengantaran_at ? [] : parseJson(progressRow.diantar_by)),
+    ...extractWorkerNames(progressRow.pengantaran_by),
+    ...(progressRow.pengantaran_at ? [] : extractWorkerNames(progressRow.diantar_by)),
   ];
 
   return {
@@ -968,9 +988,9 @@ const getTakehomeStageBundle = (progressRow) => {
       pengantaran: pengantaranAt,
     },
     by: {
-      pickup: parseJson(progressRow.diambil_by),
-      cuci_jemur: parseJson(progressRow.dicuci_by),
-      packing: parseJson(progressRow.packing_by),
+      pickup: extractWorkerNames(progressRow.diambil_by),
+      cuci_jemur: extractWorkerNames(progressRow.dicuci_by),
+      packing: extractWorkerNames(progressRow.packing_by),
       pengantaran: pengantaranBy,
     },
   };
@@ -1349,11 +1369,17 @@ export const getKpiOnlyAvailablePeriods = async (_req, res) => {
       activeYear = jktYear;
     }
 
-    const exists = rows.some((r) => Number(r.yr) === activeYear && Number(r.mo) === activeMonth);
-    if (!exists) {
-      rows.push({ yr: activeYear, mo: activeMonth });
-      rows.sort((a, b) => b.yr - a.yr || b.mo - a.mo);
+    // Selalu pastikan bulan kalender saat ini (jktMonth) ada di list periode
+    if (!rows.some((r) => Number(r.yr) === jktYear && Number(r.mo) === jktMonth)) {
+      rows.push({ yr: jktYear, mo: jktMonth });
     }
+
+    // Jika sudah lewat cutoff (tgl >= 26), pastikan periode cutoff berikutnya (activeMonth) juga ada
+    if (!rows.some((r) => Number(r.yr) === activeYear && Number(r.mo) === activeMonth)) {
+      rows.push({ yr: activeYear, mo: activeMonth });
+    }
+
+    rows.sort((a, b) => b.yr - a.yr || b.mo - a.mo);
 
     return res.json({
       periods: rows.map((r) => ({ yr: Number(r.yr), mo: Number(r.mo) })),
@@ -1387,6 +1413,8 @@ export const getKpiOnlySummary = async (req, res) => {
       const summary = await buildHomeServiceLayananSummary(data);
       return res.json(summary);
     }
+
+    const durationMap = await loadServiceDurationMap();
 
     const [txRows] = await cleanoxPool.query(
       `SELECT t.id, t.transaction_no, t.customer_name, t.service_date, t.service_mode,
@@ -1500,7 +1528,7 @@ export const getKpiOnlySummary = async (req, res) => {
         let cuciJemurMins = 0;
         let packingMins = 0;
         for (const item of txItems) {
-          const svc = resolveItemDuration(item.service_name, serviceMap);
+          const svc = resolveItemDuration(item.service_name, durationMap);
           cuciJemurMins += (svc.durasi_cuci_menit || 0) + (svc.durasi_jemur_menit || 0) || (svc.total_durasi_kerja_menit || 30);
           packingMins += svc.durasi_packing_menit || 15;
         }
@@ -1602,6 +1630,8 @@ export const getKpiOnlySummary = async (req, res) => {
       packing_done: overallDone.packing,
       pengantaran_done: overallDone.pengantaran,
       target_hours_per_worker: TARGET_HOURS_PER_MONTH,
+      total_hours: Number(sumWorkingHours.toFixed(2)),
+      total_minutes: Math.round(sumWorkingHours * 60),
       total_working_hours: Number(sumWorkingHours.toFixed(2)),
       avg_working_hours: list.length > 0 ? Number((sumWorkingHours / list.length).toFixed(2)) : 0,
       avg_achievement_pct: list.length > 0 ? Number(((sumWorkingHours / list.length / TARGET_HOURS_PER_MONTH) * 100).toFixed(1)) : 0,
@@ -1616,11 +1646,11 @@ export const getKpiOnlySummary = async (req, res) => {
       { stage: "pickup_to_delivery", ...summarizeHours(pickupToDelivery) },
     ].filter((a) => a.sample_count > 0);
 
-    const serviceMap = new Map();
+    const topServicesMap = new Map();
     for (const item of itemRows) {
       const serviceName = normalizeServiceName(item.service_name);
-      if (!serviceMap.has(serviceName)) {
-        serviceMap.set(serviceName, {
+      if (!topServicesMap.has(serviceName)) {
+        topServicesMap.set(serviceName, {
           service_name: serviceName,
           volume: 0,
           revenue: 0,
@@ -1628,7 +1658,7 @@ export const getKpiOnlySummary = async (req, res) => {
           _cycle_count: 0,
         });
       }
-      const svc = serviceMap.get(serviceName);
+      const svc = topServicesMap.get(serviceName);
       svc.volume += 1;
       const rev = Number(item.line_total || 0);
       if (Number.isFinite(rev)) svc.revenue += rev;
@@ -1643,7 +1673,7 @@ export const getKpiOnlySummary = async (req, res) => {
       }
     }
 
-    const topServices = Array.from(serviceMap.values())
+    const topServices = Array.from(topServicesMap.values())
       .map((s) => ({
         service_name: s.service_name,
         volume: s.volume,
