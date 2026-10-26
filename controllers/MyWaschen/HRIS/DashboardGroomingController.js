@@ -1,6 +1,6 @@
 import { safeMyWaschenQuery } from "../../../db/pool.js";
 import { defaultCutoffDateRange } from "../cutoffHelpers.js";
-import { getEmployeeNameMap, toISODate } from "./hrisHelpers.js";
+import { getEmployeeNameMap, toISODate, toFilterList } from "./hrisHelpers.js";
 import { buildAttendancePhotoUrl } from "./hrisAssetHelpers.js";
 
 const GROOMING_ROLES = ["Frontliner", "Delivery Staff"];
@@ -42,20 +42,20 @@ export const getGroomingDashboard = async (req, res) => {
     const defaults = defaultCutoffDateRange();
     const startDate = toISODate(req.query.startDate) || defaults.dateFrom;
     const endDate = toISODate(req.query.endDate) || defaults.dateTo;
-    const outletId = req.query.outletId ? Number(req.query.outletId) : null;
-    const role = req.query.role ? String(req.query.role).trim() : "";
+    const outletIds = toFilterList(req.query.outletId).map(Number).filter((n) => n > 0);
+    const reqRoles = toFilterList(req.query.role);
 
-    const roles = role
-      ? (GROOMING_ROLES.includes(role) ? [role] : [])
+    const roles = reqRoles.length
+      ? GROOMING_ROLES.filter((r) => reqRoles.includes(r))
       : GROOMING_ROLES;
     if (!roles.length) return res.json(emptyBody);
 
     const rolePh = roles.map(() => "?").join(",");
     const cond = ["a.work_date >= ?", "a.work_date <= ?", `r.role IN (${rolePh})`];
     const params = [startDate, endDate, ...roles];
-    if (outletId) {
-      cond.push("a.outlet_id = ?");
-      params.push(outletId);
+    if (outletIds.length) {
+      cond.push(`a.outlet_id IN (${outletIds.map(() => "?").join(",")})`);
+      params.push(...outletIds);
     }
 
     let att = [];

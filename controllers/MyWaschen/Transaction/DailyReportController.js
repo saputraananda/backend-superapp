@@ -1,4 +1,45 @@
 import { safeMyWaschenQuery, safeQuery } from "../../../db/pool.js";
+import { posFileUrl } from "../../../utils/waschenPosUpload.js";
+
+/** Batas upload bukti setoran tunai: H+1 dari tanggal closing (sama dengan POS). */
+const DEPOSIT_DUE_DAYS = 1;
+
+/** YYYY-MM-DD menurut kalender WIB. */
+function wibDateKey(value) {
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Jakarta",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(d);
+}
+
+function dayDiff(laterKey, earlierKey) {
+  if (!laterKey || !earlierKey) return 0;
+  return Math.round((Date.parse(`${laterKey}T00:00:00Z`) - Date.parse(`${earlierKey}T00:00:00Z`)) / 86400000);
+}
+
+/** Status setoran tunai closing Final: null jika bukan closing Final. */
+function buildDepositInfo(row, nameMap) {
+  if (row.status !== "Closed" || row.close_type !== "Final" || !row.closed_at) return null;
+  const uploaded = Boolean(row.deposit_proof_url);
+  const refKey = uploaded
+    ? wibDateKey(row.deposit_uploaded_at) || wibDateKey(new Date())
+    : wibDateKey(new Date());
+  const lateDays = Math.max(0, dayDiff(refKey, wibDateKey(row.closed_at)) - DEPOSIT_DUE_DAYS);
+  return {
+    status: uploaded ? "uploaded" : "pending",
+    isLate: lateDays > 0,
+    lateDays,
+    proofUrl: posFileUrl(row.deposit_proof_url),
+    notes: row.deposit_notes || null,
+    uploadedAt: row.deposit_uploaded_at || null,
+    uploadedBy: row.deposit_uploaded_by || null,
+    uploadedByName: formatEmployeeLabel(row.deposit_uploaded_by, nameMap),
+  };
+}
 
 function num(v, fallback = 0) {
   const n = Number(v);
@@ -54,6 +95,7 @@ async function enrichShiftRow(row, nameMap) {
     openerName: formatEmployeeLabel(row.cashier_employee_id, nameMap),
     closedByName: formatEmployeeLabel(row.closed_by_employee_id, nameMap),
     lastActiveName: formatEmployeeLabel(row.last_active_employee_id, nameMap),
+    deposit: buildDepositInfo(row, nameMap),
     outletCode: row.outlet_code,
     outletName: row.outlet_name,
     outletFullName: row.outlet_full_name,
@@ -67,47 +109,58 @@ const SHIFT_SELECT = `
   LEFT JOIN mst_outlet o ON o.id = s.outlet_id
 `;
 
-async function loadVerifiedTransactions(shiftId) {
+/** Nota yang dibayar (DP/Lunas/Pelunasan) di rentang shift, sama dengan POS. Nota baru outstanding tidak masuk. */
+async function loadShiftTransactions(shift) {
   const [rows] = await safeMyWaschenQuery(
-    `SELECT v.id, v.shift_id, v.transaction_id, v.verified_by, v.verified_at,
-            t.order_no, t.grand_total, t.payment_method, t.payment_status,
+    `SELECT t.id, t.order_no, t.payment_status,
             c.name AS customer_name,
-            COALESCE(NULLIF(TRIM(c.full_address), ''), NULLIF(TRIM(c.address), '')) AS customer_address
-     FROM tr_shift_txn_verify v
-     JOIN tr_transaction t ON t.id = v.transaction_id
+            COALESCE(NULLIF(TRIM(c.full_address), ''), NULLIF(TRIM(c.address), '')) AS customer_address,
+            p.paid_here, p.methods, p.last_paid_at,
+            CASE WHEN v.id IS NOT NULL THEN 1 ELSE 0 END AS is_verified,
+            v.verified_by, v.verified_at
+     FROM (
+       SELECT transaction_id, SUM(amount) AS paid_here,
+              GROUP_CONCAT(DISTINCT payment_method SEPARATOR ', ') AS methods,
+              MAX(created_at) AS last_paid_at
+       FROM tr_payment_log
+       WHERE log_type IN ('DP','Lunas','Pelunasan')
+         AND created_at >= ? AND created_at <= COALESCE(?, NOW())
+       GROUP BY transaction_id
+     ) p
+     JOIN tr_transaction t ON t.id = p.transaction_id
      LEFT JOIN mst_customer c ON c.id = t.customer_id
-     WHERE v.shift_id = ?
-     ORDER BY v.verified_at ASC`,
-    [shiftId]
+     LEFT JOIN tr_shift_txn_verify v ON v.transaction_id = t.id AND v.shift_id = ?
+     WHERE t.outlet_id = ? AND t.is_delete_requested = 0
+     ORDER BY p.last_paid_at ASC`,
+    [shift.opened_at, shift.closed_at || null, shift.id, shift.outlet_id]
   );
   return rows.map((r) => ({
     id: r.id,
-    shiftId: r.shift_id,
-    transactionId: r.transaction_id,
-    verifiedBy: r.verified_by,
-    verifiedAt: r.verified_at,
     orderNo: r.order_no,
-    grandTotal: num(r.grand_total),
-    paymentMethod: r.payment_method,
     paymentStatus: r.payment_status,
     customerName: r.customer_name,
     customerAddress: r.customer_address,
+    paidHere: num(r.paid_here),
+    paymentMethod: r.methods || null,
+    lastPaidAt: r.last_paid_at,
+    isVerified: Number(r.is_verified) === 1,
+    verifiedBy: r.verified_by,
+    verifiedAt: r.verified_at,
   }));
 }
-
 /** GET /waschen/daily-report */
 export async function getDailyReportList(req, res) {
   try {
-    const outletId = req.query.outletId ? Number(req.query.outletId) : null;
+    const outletIds = String(req.query.outletId || "").split(",").map(Number).filter((n) => Number.isInteger(n) && n > 0);
     const today = new Date().toISOString().slice(0, 10);
     const dateFrom = String(req.query.dateFrom || req.query.date || today).slice(0, 10);
     const dateTo = String(req.query.dateTo || req.query.date || dateFrom).slice(0, 10);
 
     const params = [dateFrom, dateTo];
     let sql = `${SHIFT_SELECT} WHERE DATE(s.opened_at) >= ? AND DATE(s.opened_at) <= ?`;
-    if (outletId) {
-      sql += " AND s.outlet_id = ?";
-      params.push(outletId);
+    if (outletIds.length) {
+      sql += ` AND s.outlet_id IN (${outletIds.map(() => "?").join(",")})`;
+      params.push(...outletIds);
     }
     sql += " ORDER BY s.outlet_id ASC, s.shift_number ASC, s.id ASC";
 
@@ -116,20 +169,21 @@ export async function getDailyReportList(req, res) {
       r.cashier_employee_id,
       r.closed_by_employee_id,
       r.last_active_employee_id,
+      r.deposit_uploaded_by,
     ]);
     const nameMap = await getEmployeeNameMap(empIds);
 
     const data = [];
     for (const row of rows) {
       const enriched = await enrichShiftRow(row, nameMap);
-      const verifiedTransactions = await loadVerifiedTransactions(row.id);
-      data.push({ ...enriched, verifiedTransactions });
+      const transactions = await loadShiftTransactions(row);
+      data.push({ ...enriched, transactions });
     }
 
     return res.json({
       success: true,
       data,
-      meta: { outletId, dateFrom, dateTo, total: data.length },
+      meta: { outletIds, dateFrom, dateTo, total: data.length },
     });
   } catch (err) {
     console.error("getDailyReportList:", err);
@@ -153,9 +207,10 @@ export async function getDailyReportById(req, res) {
       row.cashier_employee_id,
       row.closed_by_employee_id,
       row.last_active_employee_id,
+      row.deposit_uploaded_by,
     ]);
     const data = await enrichShiftRow(row, nameMap);
-    data.verifiedTransactions = await loadVerifiedTransactions(id);
+    data.transactions = await loadShiftTransactions(row);
     return res.json({ success: true, data });
   } catch (err) {
     console.error("getDailyReportById:", err);
@@ -229,9 +284,10 @@ export async function updateDailyReportShift(req, res) {
       row.cashier_employee_id,
       row.closed_by_employee_id,
       row.last_active_employee_id,
+      row.deposit_uploaded_by,
     ]);
     const data = await enrichShiftRow(row, nameMap);
-    data.verifiedTransactions = await loadVerifiedTransactions(id);
+    data.transactions = await loadShiftTransactions(row);
 
     return res.json({
       success: true,

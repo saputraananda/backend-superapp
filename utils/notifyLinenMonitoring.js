@@ -6,7 +6,7 @@
  * - LINEN_MONITORING_URL  → base URL LMS (default dari IKM_SIGNATURE_BASE_URL origin / localhost:5000)
  * - LINEN_MONITORING_NOTIFY_SECRET → harus sama dengan LMS
  */
-function resolveLinenMonitoringUrl() {
+export function resolveLinenMonitoringUrl() {
   if (process.env.LINEN_MONITORING_URL) {
     return process.env.LINEN_MONITORING_URL.replace(/\/$/, '');
   }

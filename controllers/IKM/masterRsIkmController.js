@@ -24,7 +24,7 @@ const pricesEqual = (a, b) => {
   return Number(a) === Number(b);
 };
 
-async function resolveActor(req) {
+export async function resolveActor(req) {
   let userId = null;
   let username = "system";
   let fullName = "System Admin";
@@ -506,6 +506,140 @@ export const deleteRoom = async (req, res) => {
     res.json({ message: "Ruangan berhasil dihapus" });
   } catch (err) {
     console.error("deleteRoom:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ── USER UNIT (mst_users_rs) ───────────────────────────────────────────────
+// Login di linen-monitoring-system memeriksa beberapa tabel berurutan, jadi username tidak boleh
+// sama dengan akun valet (users) atau akun umum RS/unit (mst_hospital).
+async function usernameConflict(username) {
+  const [valet] = await safeQuery(
+    "SELECT 1 FROM users WHERE username = ? OR email = ? LIMIT 1", [username, username]);
+  if (valet.length) return "Username sudah digunakan akun lain";
+  const [hosp] = await safeIKMQuery(
+    "SELECT 1 FROM mst_hospital WHERE username = ? OR username_unit = ? LIMIT 1", [username, username]);
+  if (hosp.length) return "Username sudah digunakan akun lain";
+  return null;
+}
+
+const readUnitUser = (b) => ({
+  name: (b.nurse_name || "").trim(),
+  phone: (b.phone || "").trim(),
+  username: (b.username || "").trim(),
+  password: (b.password || "").trim(),
+  role: b.role === "rs" ? "rs" : "unit",
+  roomIds: Array.isArray(b.room_ids) ? b.room_ids.map(Number).filter(Boolean) : [],
+});
+
+async function saveUnitUserRooms(userId, hospitalId, roomIds) {
+  await safeIKMQuery(`DELETE FROM mst_users_rs_rooms WHERE user_id = ?`, [userId]);
+  if (!roomIds.length) return;
+  const [valid] = await safeIKMQuery(
+    `SELECT id FROM mst_rooms_rs WHERE hospital_id = ? AND id IN (?)`,
+    [hospitalId, roomIds]
+  );
+  if (valid.length) {
+    await safeIKMQuery(`INSERT INTO mst_users_rs_rooms (user_id, room_id) VALUES ?`, [
+      valid.map((r) => [userId, r.id]),
+    ]);
+  }
+}
+
+export const getUnitUsers = async (req, res) => {
+  try {
+    const { hospitalId } = req.params;
+    const [users] = await safeIKMQuery(
+      `SELECT id, nurse_name, phone, username, password, role, is_active
+       FROM mst_users_rs WHERE hospital_id = ? ORDER BY nurse_name ASC`,
+      [hospitalId]
+    );
+    const [links] = await safeIKMQuery(
+      `SELECT ur.user_id, ur.room_id FROM mst_users_rs_rooms ur
+       INNER JOIN mst_users_rs u ON u.id = ur.user_id WHERE u.hospital_id = ?`,
+      [hospitalId]
+    );
+    res.json({
+      success: true,
+      data: users.map((u) => ({
+        ...u,
+        room_ids: links.filter((l) => l.user_id === u.id).map((l) => l.room_id),
+      })),
+    });
+  } catch (err) {
+    console.error("getUnitUsers:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+export const createUnitUser = async (req, res) => {
+  const { hospitalId } = req.params;
+  const { name, phone, username, password, role, roomIds } = readUnitUser(req.body);
+  if (!name || !username || !password)
+    return res.status(400).json({ message: "Nama, username, dan password wajib diisi" });
+  try {
+    const clash = await usernameConflict(username);
+    if (clash) return res.status(409).json({ message: clash });
+    const [r] = await safeIKMQuery(
+      `INSERT INTO mst_users_rs (hospital_id, nurse_name, phone, username, password, role) VALUES (?, ?, ?, ?, ?, ?)`,
+      [hospitalId, name, phone, username, password, role]
+    );
+    await saveUnitUserRooms(r.insertId, hospitalId, role === "rs" ? [] : roomIds);
+    res.status(201).json({ message: "User unit berhasil ditambahkan", id: r.insertId });
+  } catch (err) {
+    if (err.code === "ER_DUP_ENTRY") return res.status(409).json({ message: "Username sudah digunakan" });
+    console.error("createUnitUser:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+export const updateUnitUser = async (req, res) => {
+  const { userId } = req.params;
+  const { name, phone, username, password, role, roomIds } = readUnitUser(req.body);
+  if (!name || !username || !password)
+    return res.status(400).json({ message: "Nama, username, dan password wajib diisi" });
+  try {
+    const [exist] = await safeIKMQuery(`SELECT hospital_id, username FROM mst_users_rs WHERE id = ?`, [userId]);
+    if (!exist.length) return res.status(404).json({ message: "User tidak ditemukan" });
+    if (exist[0].username.toLowerCase() !== username.toLowerCase()) {
+      const clash = await usernameConflict(username);
+      if (clash) return res.status(409).json({ message: clash });
+    }
+    await safeIKMQuery(
+      `UPDATE mst_users_rs SET nurse_name=?, phone=?, username=?, password=?, role=? WHERE id=?`,
+      [name, phone, username, password, role, userId]
+    );
+    await saveUnitUserRooms(userId, exist[0].hospital_id, role === "rs" ? [] : roomIds);
+    res.json({ message: "User unit berhasil diperbarui" });
+  } catch (err) {
+    if (err.code === "ER_DUP_ENTRY") return res.status(409).json({ message: "Username sudah digunakan" });
+    console.error("updateUnitUser:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+export const toggleUnitUser = async (req, res) => {
+  try {
+    const [r] = await safeIKMQuery(
+      `UPDATE mst_users_rs SET is_active = IF(is_active=1,0,1) WHERE id = ?`,
+      [req.params.userId]
+    );
+    if (!r.affectedRows) return res.status(404).json({ message: "User tidak ditemukan" });
+    res.json({ message: "Status user diperbarui" });
+  } catch (err) {
+    console.error("toggleUnitUser:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+export const deleteUnitUser = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    await safeIKMQuery(`DELETE FROM mst_users_rs_rooms WHERE user_id = ?`, [userId]);
+    await safeIKMQuery(`DELETE FROM mst_users_rs WHERE id = ?`, [userId]);
+    res.json({ message: "User unit dihapus" });
+  } catch (err) {
+    console.error("deleteUnitUser:", err);
     res.status(500).json({ message: err.message });
   }
 };

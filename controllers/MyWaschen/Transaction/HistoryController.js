@@ -1,6 +1,6 @@
-import { safeMyWaschenQuery, safeQuery } from "../../../db/pool.js";
+import { safeMyWaschenQuery, safeQuery, myWaschenPool } from "../../../db/pool.js";
 import { buildProduksiPhotoUrl } from "../HRIS/hrisAssetHelpers.js";
-import { posFileUrl, uploadDeleteRequestAttachment } from "../../../utils/waschenPosUpload.js";
+import { posFileUrl, uploadDeleteRequestAttachment, uploadRefundApprovalProof } from "../../../utils/waschenPosUpload.js";
 
 function resolvePaymentStatus(paidAmount, grandTotal) {
   const paid = Number(paidAmount) || 0;
@@ -48,6 +48,29 @@ async function assertWaschenEmployee(employeeId) {
   }
 
   return { ...empRows[0], role: roleRows[0].role, outlet_id: roleRows[0].outlet_id };
+}
+
+/** Karyawan yang sedang login di Alsa (session.employeeId dari mst_employee) — approver refund / hapus nota. */
+async function sessionEmployee(req) {
+  const id = Number(req.session?.employeeId);
+  if (!Number.isFinite(id) || id <= 0) {
+    const err = new Error("Akun login tidak terhubung ke data karyawan");
+    err.status = 401;
+    throw err;
+  }
+  const [rows] = await safeQuery(
+    `SELECT employee_id, full_name, employee_code
+     FROM mst_employee
+     WHERE employee_id = ? AND is_deleted = 0 AND exit_date IS NULL
+     LIMIT 1`,
+    [id]
+  );
+  if (!rows.length) {
+    const err = new Error("Karyawan login tidak aktif");
+    err.status = 403;
+    throw err;
+  }
+  return rows[0];
 }
 
 function mapTransactionRow(row) {
@@ -99,11 +122,7 @@ function mapTransactionRow(row) {
     deleteRequestedAt: row.delete_requested_at,
     deleteReason: row.delete_reason,
     deleteAttachmentUrl: posFileUrl(row.delete_attachment_url),
-    isRefundRequested: Boolean(row.is_refund_requested),
-    refundApprovalStatus: row.refund_approval_status,
-    refundRequestedAt: row.refund_requested_at,
-    refundReason: row.refund_reason,
-    refundAmount: num(row.refund_amount),
+    refundPendingCount: num(row.refund_pending_count),
     itemCount: num(row.item_count),
   };
 }
@@ -185,7 +204,8 @@ const TXN_SELECT = `
          o.address AS outlet_address,
          ss.name AS speed_name,
          pf.name AS parfume_name,
-         (SELECT COUNT(*) FROM tr_transaction_detail td WHERE td.transaction_id = t.id) AS item_count
+         (SELECT COUNT(*) FROM tr_transaction_detail td WHERE td.transaction_id = t.id) AS item_count,
+         (SELECT COUNT(*) FROM tr_transaction_refund rf WHERE rf.transaction_id = t.id AND rf.status = 'Pending') AS refund_pending_count
   FROM tr_transaction t
   LEFT JOIN mst_customer c ON c.id = t.customer_id
   LEFT JOIN mst_outlet o ON o.id = t.outlet_id
@@ -205,7 +225,7 @@ export const getTransactions = async (req, res) => {
     const workMin = req.query.workMin !== undefined && req.query.workMin !== "" ? Number(req.query.workMin) : null;
     const workMax = req.query.workMax !== undefined && req.query.workMax !== "" ? Number(req.query.workMax) : null;
     const includeDeleted = String(req.query.includeDeleted || "") === "1";
-    const listType = String(req.query.listType || "active").trim(); // active | delete | refund
+    const listType = String(req.query.listType || "active").trim(); // active | delete (refund → GET /refunds)
     // Menu Event B2B: hanya nota outlet event (tr_transaction.is_event = 1)
     const eventOnly = String(req.query.eventOnly || "") === "1";
 
@@ -216,8 +236,6 @@ export const getTransactions = async (req, res) => {
 
     if (listType === "delete") {
       where.push("t.is_delete_requested = 1");
-    } else if (listType === "refund") {
-      where.push("t.is_refund_requested = 1");
     } else if (!includeDeleted) {
       where.push("t.is_delete_requested = 0");
     }
@@ -491,15 +509,16 @@ export const getTransactionById = async (req, res) => {
   }
 };
 
-/** PATCH /waschen/transactions/:id/payment — update / pelunasan */
+/**
+ * PATCH /waschen/transactions/:id/payment — pelunasan.
+ * Nominal dikunci = sisa tagihan (Phase 13): tanpa kembalian / refund kelebihan bayar.
+ */
 export const updateTransactionPayment = async (req, res) => {
   try {
     const { id } = req.params;
     const {
       paymentMethod,
       additionalAmount,
-      paidAmount,
-      overpaymentAction,
       notes,
       cashierEmployeeId,
       paymentProofUrl,
@@ -516,124 +535,62 @@ export const updateTransactionPayment = async (req, res) => {
     const order = orderRows[0];
     const grandTotal = num(order.grand_total);
     const currentPaid = num(order.paid_amount);
-    let newPaid = currentPaid;
-    let changeAmount = num(order.change_amount);
-    let refundAmountToSave = 0;
-    let targetStatus = order.payment_status;
-
-    if (additionalAmount !== undefined && additionalAmount !== null) {
-      const add = num(additionalAmount);
-      if (add <= 0) {
-        return res.status(400).json({ success: false, message: "Nominal tambahan bayar harus lebih dari 0" });
-      }
-      const totalPaidAttempt = currentPaid + add;
-      targetStatus = resolvePaymentStatus(totalPaidAttempt, grandTotal);
-
-      if (targetStatus === "Lunas" && totalPaidAttempt > grandTotal) {
-        const excess = Math.round((totalPaidAttempt - grandTotal) * 100) / 100;
-        if (String(overpaymentAction || "").toLowerCase() === "refund") {
-          newPaid = totalPaidAttempt;
-          changeAmount = 0;
-          refundAmountToSave = excess;
-        } else {
-          newPaid = grandTotal;
-          changeAmount = excess;
-        }
-      } else {
-        newPaid = Math.min(totalPaidAttempt, grandTotal);
-        changeAmount = 0;
-      }
-
-      await safeMyWaschenQuery(
-        `INSERT INTO tr_payment_log
-          (transaction_id, log_type, amount, payment_method, payment_proof_url, notes, cashier_employee_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [
-          order.id,
-          currentPaid <= 0 ? (targetStatus === "Lunas" ? "Lunas" : "DP") : "Pelunasan",
-          add,
-          paymentMethod || order.payment_method || "Tunai",
-          paymentProofUrl || null,
-          notes || `Pelunasan nota ${order.order_no}`,
-          cashierEmployeeId || order.cashier_employee_id || null,
-        ]
-      );
-    } else if (paidAmount !== undefined) {
-      newPaid = num(paidAmount);
-      targetStatus = resolvePaymentStatus(newPaid, grandTotal);
-      if (targetStatus === "Lunas" && newPaid > grandTotal) {
-        const excess = Math.round((newPaid - grandTotal) * 100) / 100;
-        if (String(overpaymentAction || "").toLowerCase() === "refund") {
-          refundAmountToSave = excess;
-          changeAmount = 0;
-        } else {
-          changeAmount = excess;
-          newPaid = grandTotal;
-        }
-      }
+    const remaining = Math.round(Math.max(0, grandTotal - currentPaid) * 100) / 100;
+    if (remaining <= 0) {
+      return res.status(400).json({ success: false, message: `Nota ${order.order_no} sudah lunas` });
+    }
+    if (additionalAmount !== undefined && additionalAmount !== null
+      && Math.abs(num(additionalAmount) - remaining) > 0.009) {
+      return res.status(400).json({
+        success: false,
+        message: `Nominal pelunasan harus sama dengan sisa tagihan Rp ${remaining.toLocaleString("id-ID")}`,
+      });
     }
 
-    const method = targetStatus === "Outstanding" ? "-" : paymentMethod || order.payment_method || "Tunai";
+    const method = paymentMethod || order.payment_method || "Tunai";
     const settlerId = cashierEmployeeId || order.cashier_employee_id || null;
-    const shouldStampSettler = targetStatus !== "Outstanding" && newPaid > 0;
+
+    await safeMyWaschenQuery(
+      `INSERT INTO tr_payment_log
+        (transaction_id, log_type, amount, payment_method, payment_proof_url, notes, cashier_employee_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        order.id,
+        currentPaid <= 0 ? "Lunas" : "Pelunasan",
+        remaining,
+        method,
+        paymentProofUrl || null,
+        notes || `Pelunasan nota ${order.order_no}`,
+        settlerId,
+      ]
+    );
 
     await safeMyWaschenQuery(
       `UPDATE tr_transaction SET
-         payment_status = ?,
+         payment_status = 'Lunas',
          payment_method = ?,
          paid_amount = ?,
-         change_amount = ?,
+         change_amount = 0,
          payment_proof_url = COALESCE(?, payment_proof_url),
-         paid_at = CASE
-           WHEN ? <> 'Outstanding' AND (paid_at IS NULL OR ? = 'Lunas') THEN NOW()
-           ELSE paid_at
-         END,
-         settled_by_employee_id = CASE WHEN ? THEN ? ELSE settled_by_employee_id END,
-         settled_at = CASE WHEN ? THEN NOW() ELSE settled_at END,
-         is_refund_requested = CASE WHEN ? > 0 THEN 1 ELSE is_refund_requested END,
-         refund_approval_status = CASE WHEN ? > 0 THEN 0 ELSE refund_approval_status END,
-         refund_requested_at = CASE WHEN ? > 0 THEN NOW() ELSE refund_requested_at END,
-         refund_reason = CASE WHEN ? > 0 THEN ? ELSE refund_reason END,
-         refund_amount = CASE WHEN ? > 0 THEN ? ELSE refund_amount END,
+         paid_at = NOW(),
+         settled_by_employee_id = ?,
+         settled_at = NOW(),
          updated_at = NOW()
        WHERE id = ?`,
-      [
-        targetStatus,
-        method,
-        newPaid,
-        changeAmount,
-        paymentProofUrl || null,
-        targetStatus,
-        targetStatus,
-        shouldStampSettler ? 1 : 0,
-        settlerId,
-        shouldStampSettler ? 1 : 0,
-        refundAmountToSave,
-        refundAmountToSave,
-        refundAmountToSave,
-        refundAmountToSave,
-        refundAmountToSave > 0
-          ? `Kelebihan bayar nota ${order.order_no} — gap refund Rp ${refundAmountToSave.toLocaleString("id-ID")}`
-          : null,
-        refundAmountToSave,
-        refundAmountToSave,
-        order.id,
-      ]
+      [method, grandTotal, paymentProofUrl || null, settlerId, order.id]
     );
 
     res.json({
       success: true,
-      message: `Pembayaran nota ${order.order_no} diperbarui (${targetStatus})`,
+      message: `Pembayaran nota ${order.order_no} diperbarui (Lunas)`,
       data: {
         transactionId: order.id,
         orderNo: order.order_no,
-        paymentStatus: targetStatus,
+        paymentStatus: "Lunas",
         paymentMethod: method,
-        paidAmount: newPaid,
-        changeAmount,
-        remaining: Math.max(0, grandTotal - newPaid),
-        refundRequested: refundAmountToSave > 0,
-        refundAmount: refundAmountToSave,
+        paidAmount: grandTotal,
+        changeAmount: 0,
+        remaining: 0,
       },
     });
   } catch (err) {
@@ -695,7 +652,7 @@ export const requestDeleteTransaction = async (req, res) => {
 export const approveDeleteTransaction = async (req, res) => {
   try {
     const { id } = req.params;
-    const employee = await assertWaschenEmployee(req.body?.employeeId);
+    const employee = await sessionEmployee(req);
 
     const [rows] = await safeMyWaschenQuery(
       "SELECT * FROM tr_transaction WHERE id = ? OR order_no = ? LIMIT 1",
@@ -747,55 +704,196 @@ export const approveDeleteTransaction = async (req, res) => {
   }
 };
 
-/** PATCH /waschen/transactions/:id/approve-refund */
-export const approveRefundTransaction = async (req, res) => {
+/**
+ * GET /waschen/transactions/refunds?status=&search=
+ * Pengajuan refund per nota dari POS (tr_transaction_refund, Phase 13).
+ */
+export const getRefundRequests = async (req, res) => {
   try {
-    const { id } = req.params;
-    const employee = await assertWaschenEmployee(req.body?.employeeId);
+    const status = String(req.query.status || "").trim();
+    const search = String(req.query.search || "").trim();
+    const where = [];
+    const params = [];
+    if (["Pending", "Approved", "Rejected"].includes(status)) {
+      where.push("rf.status = ?");
+      params.push(status);
+    }
+    if (search) {
+      where.push("(t.order_no LIKE ? OR c.name LIKE ? OR c.phone LIKE ? OR rf.reason LIKE ?)");
+      const like = `%${search}%`;
+      params.push(like, like, like, like);
+    }
+    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
     const [rows] = await safeMyWaschenQuery(
-      "SELECT * FROM tr_transaction WHERE id = ? OR order_no = ? LIMIT 1",
-      [id, id]
+      `SELECT rf.*,
+              t.order_no, t.outlet_id, t.grand_total, t.paid_amount, t.payment_method, t.payment_status,
+              t.customer_id, t.is_delete_requested, t.delete_approval_status,
+              c.name AS customer_name, c.phone AS customer_phone,
+              COALESCE(c.deposit_balance, 0) AS deposit_balance,
+              o.name AS outlet_name, o.full_name AS outlet_full_name
+       FROM tr_transaction_refund rf
+       JOIN tr_transaction t ON t.id = rf.transaction_id
+       LEFT JOIN mst_customer c ON c.id = t.customer_id
+       LEFT JOIN mst_outlet o ON o.id = t.outlet_id
+       ${whereSql}
+       ORDER BY (rf.status = 'Pending') DESC, rf.requested_at DESC, rf.id DESC
+       LIMIT 500`,
+      params
     );
-    if (!rows.length) {
-      return res.status(404).json({ success: false, message: "Nota tidak ditemukan" });
+
+    const names = await fetchEmployeeNameMap(
+      rows.flatMap((r) => [r.requested_by_employee_id, r.reviewed_by_employee_id])
+    );
+
+    const data = rows.map((r) => ({
+      id: r.id,
+      transactionId: r.transaction_id,
+      orderNo: r.order_no,
+      refundType: r.refund_type,
+      source: r.source,
+      amount: num(r.amount),
+      reason: r.reason,
+      paymentProofUrl: posFileUrl(r.payment_proof_url),
+      attachmentUrl: posFileUrl(r.attachment_url),
+      status: r.status,
+      requestedAt: r.requested_at,
+      requestedByName: names[r.requested_by_employee_id] || null,
+      reviewedAt: r.reviewed_at,
+      reviewedByName: names[r.reviewed_by_employee_id] || null,
+      approvePath: posFileUrl(r.approve_path),
+      approveNotes: r.approve_notes,
+      declineNotes: r.decline_notes,
+      grandTotal: num(r.grand_total),
+      paidAmount: num(r.paid_amount),
+      paymentMethod: r.payment_method,
+      paymentStatus: r.payment_status,
+      isDeleteRequested: Boolean(r.is_delete_requested),
+      customerId: r.customer_id,
+      customerName: r.customer_name,
+      customerPhone: r.customer_phone,
+      depositBalance: num(r.deposit_balance),
+      outletName: r.outlet_full_name || r.outlet_name,
+    }));
+
+    res.json({ success: true, data, meta: { count: data.length } });
+  } catch (err) {
+    console.error("getRefundRequests error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+async function loadPendingRefund(conn, refundId) {
+  const [rows] = await conn.query(
+    `SELECT rf.*, t.order_no, t.customer_id, t.outlet_id, t.payment_status
+     FROM tr_transaction_refund rf
+     JOIN tr_transaction t ON t.id = rf.transaction_id
+     WHERE rf.id = ?
+     LIMIT 1
+     FOR UPDATE`,
+    [refundId]
+  );
+  if (!rows.length) {
+    const err = new Error("Pengajuan refund tidak ditemukan");
+    err.status = 404;
+    throw err;
+  }
+  if (rows[0].status !== "Pending") {
+    const err = new Error(`Pengajuan refund sudah ${rows[0].status === "Approved" ? "disetujui" : "ditolak"}`);
+    err.status = 400;
+    throw err;
+  }
+  return rows[0];
+}
+
+/**
+ * PATCH /waschen/transactions/refunds/:refundId/approve  (multipart: notes?, attachment?)
+ * Deposit → saldo member pelanggan bertambah (tr_customer_deposit type 'Refund').
+ * Refund / Tips → status saja; uang refund diserahkan manual oleh admin.
+ * Bukti pembayaran (attachment → approve_path) WAJIB untuk jenis Refund, opsional untuk Deposit / Tips.
+ * Catatan → approve_notes.
+ */
+export const approveRefundRequest = async (req, res) => {
+  let conn;
+  try {
+    const employee = await sessionEmployee(req);
+    const notes = String(req.body?.notes || "").trim().slice(0, 500) || null;
+
+    conn = await myWaschenPool.getConnection();
+    await conn.beginTransaction();
+    const refund = await loadPendingRefund(conn, req.params.refundId);
+    const amount = num(refund.amount);
+
+    if (refund.refund_type === "Refund" && !req.file) {
+      const err = new Error("Bukti pembayaran refund wajib dilampirkan saat Approve");
+      err.status = 400;
+      throw err;
     }
-    const order = rows[0];
-    if (!order.is_refund_requested) {
-      return res.status(400).json({ success: false, message: "Nota tidak dalam pengajuan refund" });
-    }
-    if (Number(order.refund_approval_status) === 1) {
-      return res.status(400).json({ success: false, message: "Pengajuan refund sudah disetujui" });
+    const approvePath = req.file ? await uploadRefundApprovalProof(req.file) : null;
+
+    let depositMutationId = null;
+    let balanceAfter = null;
+    if (refund.refund_type === "Deposit") {
+      const [custRows] = await conn.query(
+        "SELECT id, deposit_balance FROM mst_customer WHERE id = ? LIMIT 1 FOR UPDATE",
+        [refund.customer_id]
+      );
+      if (!custRows.length) {
+        const err = new Error("Pelanggan nota ini tidak ditemukan");
+        err.status = 404;
+        throw err;
+      }
+      const balanceBefore = num(custRows[0].deposit_balance);
+      balanceAfter = balanceBefore + amount;
+      await conn.query(
+        "UPDATE mst_customer SET deposit_balance = ?, updated_at = NOW() WHERE id = ?",
+        [balanceAfter, refund.customer_id]
+      );
+      const [mut] = await conn.query(
+        `INSERT INTO tr_customer_deposit
+         (customer_id, order_id, outlet_id, cashier_employee_id, type, amount, balance_before, balance_after, payment_method, notes)
+         VALUES (?, ?, ?, ?, 'Refund', ?, ?, ?, 'Refund Nota', ?)`,
+        [
+          refund.customer_id,
+          refund.transaction_id,
+          refund.outlet_id || null,
+          employee.employee_id,
+          amount,
+          balanceBefore,
+          balanceAfter,
+          `Refund nota ${refund.order_no} jadi deposit (disetujui ${employee.full_name})`,
+        ]
+      );
+      depositMutationId = mut.insertId;
     }
 
-    const note = `[APPROVED by ${employee.employee_code} — ${employee.full_name} @ ${new Date().toISOString()}]`;
-    await safeMyWaschenQuery(
-      `UPDATE tr_transaction SET
-         refund_approval_status = 1,
-         refund_reason = CONCAT(COALESCE(refund_reason, ''), '\n', ?),
-         updated_at = NOW()
+    await conn.query(
+      `UPDATE tr_transaction_refund SET
+         status = 'Approved',
+         reviewed_by_employee_id = ?,
+         reviewed_at = NOW(),
+         approve_path = ?,
+         approve_notes = ?,
+         deposit_mutation_id = ?
        WHERE id = ?`,
-      [note, order.id]
+      [employee.employee_id, approvePath, notes, depositMutationId, refund.id]
     );
+    // Tidak menulis tr_transaction_status_log: log itu tampil di tracking pelanggan
+    // sebagai tahap cucian. Jejak approve ada di reviewed_by/reviewed_at tabel refund.
 
-    await safeMyWaschenQuery(
-      `INSERT INTO tr_transaction_status_log (transaction_id, status, employee_id, notes)
-       VALUES (?, ?, ?, ?)`,
-      [
-        order.id,
-        order.payment_status === "Lunas" ? "Selesai" : "Antrean",
-        employee.employee_id,
-        `Approve refund Rp ${num(order.refund_amount).toLocaleString("id-ID")} oleh ${employee.full_name}`,
-      ]
-    );
+    await conn.commit();
 
     res.json({
       success: true,
-      message: `Pengajuan refund nota ${order.order_no} disetujui`,
+      message: `${refund.refund_type} nota ${refund.order_no} Rp ${amount.toLocaleString("id-ID")} disetujui`
+        + (refund.refund_type === "Deposit" ? " — saldo member bertambah" : ""),
       data: {
-        transactionId: order.id,
-        orderNo: order.order_no,
-        refundAmount: num(order.refund_amount),
+        refundId: refund.id,
+        transactionId: refund.transaction_id,
+        orderNo: refund.order_no,
+        refundType: refund.refund_type,
+        amount,
+        balanceAfter,
         approvedBy: {
           employeeId: employee.employee_id,
           employeeCode: employee.employee_code,
@@ -804,8 +902,50 @@ export const approveRefundTransaction = async (req, res) => {
       },
     });
   } catch (err) {
-    console.error("approveRefundTransaction error:", err);
+    if (conn) await conn.rollback().catch(() => {});
+    console.error("approveRefundRequest error:", err);
     res.status(err.status || 500).json({ success: false, message: err.message });
+  } finally {
+    if (conn) conn.release();
+  }
+};
+
+/** PATCH /waschen/transactions/refunds/:refundId/reject  { notes } → decline_notes (wajib) */
+export const rejectRefundRequest = async (req, res) => {
+  let conn;
+  try {
+    const employee = await sessionEmployee(req);
+    const notes = String(req.body?.notes || "").trim().slice(0, 500);
+    if (!notes) {
+      return res.status(400).json({ success: false, message: "Alasan penolakan wajib diisi" });
+    }
+
+    conn = await myWaschenPool.getConnection();
+    await conn.beginTransaction();
+    const refund = await loadPendingRefund(conn, req.params.refundId);
+
+    await conn.query(
+      `UPDATE tr_transaction_refund SET
+         status = 'Rejected',
+         reviewed_by_employee_id = ?,
+         reviewed_at = NOW(),
+         decline_notes = ?
+       WHERE id = ?`,
+      [employee.employee_id, notes, refund.id]
+    );
+    await conn.commit();
+
+    res.json({
+      success: true,
+      message: `Pengajuan ${refund.refund_type} nota ${refund.order_no} ditolak`,
+      data: { refundId: refund.id, orderNo: refund.order_no },
+    });
+  } catch (err) {
+    if (conn) await conn.rollback().catch(() => {});
+    console.error("rejectRefundRequest error:", err);
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  } finally {
+    if (conn) conn.release();
   }
 };
 
@@ -1119,7 +1259,7 @@ export const updateItemWorkStatus = async (req, res) => {
 /** GET /waschen/transactions/meta/summary — counts for tabs */
 export const getTransactionSummary = async (_req, res) => {
   try {
-    const [[active], [delPending], [delApproved], [refPending], [refApproved]] = await Promise.all([
+    const [[active], [delPending], [delApproved], [refPending], [refReviewed]] = await Promise.all([
       safeMyWaschenQuery("SELECT COUNT(*) AS c FROM tr_transaction WHERE is_delete_requested = 0"),
       safeMyWaschenQuery(
         "SELECT COUNT(*) AS c FROM tr_transaction WHERE is_delete_requested = 1 AND (delete_approval_status = 0 OR delete_approval_status IS NULL)"
@@ -1127,12 +1267,8 @@ export const getTransactionSummary = async (_req, res) => {
       safeMyWaschenQuery(
         "SELECT COUNT(*) AS c FROM tr_transaction WHERE is_delete_requested = 1 AND delete_approval_status = 1"
       ),
-      safeMyWaschenQuery(
-        "SELECT COUNT(*) AS c FROM tr_transaction WHERE is_refund_requested = 1 AND (refund_approval_status = 0 OR refund_approval_status IS NULL)"
-      ),
-      safeMyWaschenQuery(
-        "SELECT COUNT(*) AS c FROM tr_transaction WHERE is_refund_requested = 1 AND refund_approval_status = 1"
-      ),
+      safeMyWaschenQuery("SELECT COUNT(*) AS c FROM tr_transaction_refund WHERE status = 'Pending'"),
+      safeMyWaschenQuery("SELECT COUNT(*) AS c FROM tr_transaction_refund WHERE status <> 'Pending'"),
     ]);
 
     res.json({
@@ -1143,8 +1279,8 @@ export const getTransactionSummary = async (_req, res) => {
         deleteApproved: num(delApproved[0]?.c),
         deleteTotal: num(delPending[0]?.c) + num(delApproved[0]?.c),
         refundPending: num(refPending[0]?.c),
-        refundApproved: num(refApproved[0]?.c),
-        refundTotal: num(refPending[0]?.c) + num(refApproved[0]?.c),
+        refundReviewed: num(refReviewed[0]?.c),
+        refundTotal: num(refPending[0]?.c) + num(refReviewed[0]?.c),
       },
     });
   } catch (err) {

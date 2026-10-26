@@ -39,9 +39,10 @@ export const getKasbonList = async (req, res) => {
 
     const employeeId = req.query.employeeId ? Number(req.query.employeeId) : null;
 
-    const outletId = req.query.outletId ? Number(req.query.outletId) : null;
+    // Multi-pilih: outletId=1,2 & role=Frontliner,Produksi (diurai resolveMstRoleEmployeeIds)
+    const outletId = req.query.outletId || null;
 
-    const role = req.query.role ? String(req.query.role).trim() : "";
+    const role = req.query.role || "";
 
     const search = String(req.query.search || "").trim().toLowerCase();
 
@@ -206,8 +207,9 @@ export const getKasbonList = async (req, res) => {
 
 export const getKasbonMonitor = async (req, res) => {
   try {
-    const outletId = req.query.outletId ? Number(req.query.outletId) : null;
-    const role = req.query.role ? String(req.query.role).trim() : "";
+    // Multi-pilih: outletId=1,2 & role=Frontliner,Produksi (diurai resolveMstRoleEmployeeIds)
+    const outletId = req.query.outletId || null;
+    const role = req.query.role || "";
     const search = String(req.query.search || "").trim().toLowerCase();
     const roleEmployeeIds = await resolveMstRoleEmployeeIds(outletId, role);
     if (roleEmployeeIds && roleEmployeeIds.length === 0) {

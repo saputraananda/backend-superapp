@@ -1,6 +1,7 @@
 import express from "express";
 import path from "path";
 import multer from "multer";
+import { requireAuth } from "../../../middleware/auth.js";
 import {
   getTransactions,
   getTransactionById,
@@ -8,12 +9,15 @@ import {
   updateTransactionPayment,
   requestDeleteTransaction,
   approveDeleteTransaction,
-  approveRefundTransaction,
+  getRefundRequests,
+  approveRefundRequest,
+  rejectRefundRequest,
   updateFulfillment,
   updateItemWorkStatus,
 } from "../../../controllers/MyWaschen/Transaction/HistoryController.js";
 
-// Lampiran hapus nota tidak ditulis ke disk Alsa — diteruskan ke server POS (/uploads/assets/delete-request)
+// Lampiran hapus nota & bukti approve refund tidak ditulis ke disk Alsa — diteruskan ke server POS
+// (/uploads/assets/delete-request, /uploads/assets/refund-approval)
 const deleteAttachment = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024, files: 1 },
@@ -42,12 +46,15 @@ function uploadDeleteAttachment(req, res, next) {
 const router = express.Router();
 
 router.get("/summary", getTransactionSummary);
+router.get("/refunds", getRefundRequests);
+router.patch("/refunds/:refundId/approve", requireAuth, uploadDeleteAttachment, approveRefundRequest);
+router.patch("/refunds/:refundId/reject", requireAuth, rejectRefundRequest);
 router.get("/", getTransactions);
 router.get("/:id", getTransactionById);
 router.patch("/:id/payment", updateTransactionPayment);
 router.patch("/:id/request-delete", uploadDeleteAttachment, requestDeleteTransaction);
-router.patch("/:id/approve-delete", approveDeleteTransaction);
-router.patch("/:id/approve-refund", approveRefundTransaction);
+router.patch("/:id/approve-delete", requireAuth, approveDeleteTransaction);
+
 router.patch("/:id/fulfillment", updateFulfillment);
 router.put("/:id/fulfillment", updateFulfillment);
 router.patch("/:id/items/:itemId/status", updateItemWorkStatus);

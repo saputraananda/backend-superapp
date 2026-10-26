@@ -49,21 +49,31 @@ export async function getWaschenEmployeeIds() {
   return rows.map((r) => Number(r.employee_id));
 }
 
-/** Karyawan yang cocok filter outlet/bagian dari mst_role. null = tanpa filter. [] = tidak ada match. */
+// "1,2" / ["1","2"] / 1 → ["1","2"] / ["1"]
+export function toFilterList(value) {
+  if (value == null || value === "") return [];
+  const list = Array.isArray(value) ? value : String(value).split(",");
+  return list.map((s) => String(s).trim()).filter(Boolean);
+}
+
+/**
+ * Karyawan yang cocok filter outlet/bagian dari mst_role. null = tanpa filter. [] = tidak ada match.
+ * outletId / role boleh satu nilai atau banyak (dipisah koma) untuk filter multi-pilih.
+ */
 export async function resolveMstRoleEmployeeIds(outletId, role) {
-  const outlet = outletId ? Number(outletId) : null;
-  const roleStr = role ? String(role).trim() : "";
-  if (!outlet && !roleStr) return null;
+  const outlets = toFilterList(outletId).map(Number).filter((n) => n > 0);
+  const roles = toFilterList(role);
+  if (!outlets.length && !roles.length) return null;
 
   const cond = [];
   const params = [];
-  if (outlet) {
-    cond.push("outlet_id = ?");
-    params.push(outlet);
+  if (outlets.length) {
+    cond.push(`outlet_id IN (${outlets.map(() => "?").join(",")})`);
+    params.push(...outlets);
   }
-  if (roleStr) {
-    cond.push("role = ?");
-    params.push(roleStr);
+  if (roles.length) {
+    cond.push(`role IN (${roles.map(() => "?").join(",")})`);
+    params.push(...roles);
   }
 
   const [rows] = await safeMyWaschenQuery(

@@ -42,8 +42,9 @@ export const getDayOffList = async (req, res) => {
     const status = req.query.status ? String(req.query.status) : "";
     const search = String(req.query.search || "").trim().toLowerCase();
     const employeeId = req.query.employeeId ? Number(req.query.employeeId) : null;
-    const outletId = req.query.outletId ? Number(req.query.outletId) : null;
-    const role = req.query.role ? String(req.query.role).trim() : "";
+    // Bisa multi-pilih: outletId=1,2 & role=Frontliner,Produksi
+    const outletId = req.query.outletId || null;
+    const role = req.query.role || "";
 
     const roleEmployeeIds = await resolveMstRoleEmployeeIds(outletId, role);
     if (roleEmployeeIds && roleEmployeeIds.length === 0) {
