@@ -1,6 +1,12 @@
 import { safeAloraMobileQuery, safeQuery } from "../../db/pool.js";
 
-const ALLOWED_STATUSES = new Set(["Pending_Supervisor", "disetujui", "Rejected_Supervisor"]);
+const ALLOWED_STATUSES = new Set([
+	"Pending_Supervisor",
+	"Pending_HRD",
+	"disetujui",
+	"Rejected_Supervisor",
+	"Rejected_HRD",
+]);
 const ALLOWED_TYPES = new Set(["wfa", "wod"]);
 
 function toISODateString(value) {
@@ -46,8 +52,10 @@ function toDateOnly(value) {
 
 function statusLabel(status) {
 	if (status === "disetujui") return "Disetujui";
-	if (status === "Rejected_Supervisor") return "Ditolak";
-	if (status === "Pending_Supervisor") return "Menunggu Approval";
+	if (status === "Rejected_Supervisor") return "Ditolak Supervisor";
+	if (status === "Rejected_HRD") return "Ditolak HRD";
+	if (status === "Pending_Supervisor") return "Menunggu Supervisor";
+	if (status === "Pending_HRD") return "Menunggu HRD";
 	return status || "Status";
 }
 
@@ -82,7 +90,7 @@ export const listModeRequests = async (req, res) => {
 		const statusFilter = String(req.query.status || "").trim();
 		if (statusFilter && !ALLOWED_STATUSES.has(statusFilter)) {
 			return res.status(400).json({
-				message: "Status tidak valid. Gunakan: Pending_Supervisor, Rejected_Supervisor, disetujui",
+				message: "Status tidak valid. Gunakan: Pending_Supervisor, Pending_HRD, Rejected_Supervisor, Rejected_HRD, disetujui",
 			});
 		}
 
