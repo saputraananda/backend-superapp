@@ -4,6 +4,7 @@ export const FINAL_STATUS_PRIORITY = [
 	"SAKIT_NON_SKD",
 	"WFA",
 	"EARNED_REPLACE_OFF",
+	"HALF_DAY",
 	"REPLACE_OFF",
 	"OVERTIME_LEAVE",
 	"UNPAID_LEAVE",
@@ -17,6 +18,7 @@ const STATUS_LABELS = {
 	SAKIT_NON_SKD: "Sakit (Non-SKD)",
 	WFA: "WFA",
 	EARNED_REPLACE_OFF: "Earned Replace Off",
+	HALF_DAY: "Half Day",
 	REPLACE_OFF: "Replace Off",
 	OVERTIME_LEAVE: "Overtime Leave",
 	UNPAID_LEAVE: "Unpaid Leave",
@@ -24,10 +26,27 @@ const STATUS_LABELS = {
 	OFF: "Off",
 };
 
-function mapLeaveToStatuses(leave) {
+const PARTIAL_DURATION_TYPES = new Set([
+	"partial",
+	"half_day",
+	"half_day_morning",
+	"half_day_afternoon",
+]);
+
+function mapLeaveToStatuses(leave, attendance = null) {
 	if (!leave || leave.status !== "disetujui") return [];
 	const type = String(leave.leave_type || "").toLowerCase();
-	if (type === "cuti") return ["CUTI"];
+	const durationType = String(leave.duration_type || "").toLowerCase();
+	const isPartial = PARTIAL_DURATION_TYPES.has(durationType);
+
+	// Jika ada izin/cuti setengah hari (partial) dan karyawan hadir bekerja (ada clock_in)
+	if (isPartial && attendance?.clock_in) {
+		return ["HALF_DAY"];
+	}
+
+	if (type === "cuti") {
+		return isPartial ? ["HALF_DAY"] : ["CUTI"];
+	}
 	if (type === "sakit") {
 		return leave.doctor_note_path ? ["SAKIT_SKD"] : ["SAKIT_NON_SKD"];
 	}
@@ -37,10 +56,13 @@ function mapLeaveToStatuses(leave) {
 		const ro = Number(leave.funding_ro_hours || 0);
 		const ot = Number(leave.funding_overtime_hours || 0);
 		const unpaid = Number(leave.funding_unpaid_hours || 0);
+		if (isPartial) statuses.push("HALF_DAY");
 		if (ro > 0) statuses.push("REPLACE_OFF");
 		if (ot > 0) statuses.push("OVERTIME_LEAVE");
 		if (unpaid > 0) statuses.push("UNPAID_LEAVE");
-		if (statuses.length === 0) statuses.push("REPLACE_OFF");
+		if (statuses.length === 0) {
+			statuses.push(isPartial ? "HALF_DAY" : "REPLACE_OFF");
+		}
 		return statuses;
 	}
 	return [];
@@ -70,7 +92,7 @@ export function resolveFinalStatus({ date, attendance = null, leaves = [], sessi
 		const start = String(leave.start_date).slice(0, 10);
 		const end = String(leave.end_date).slice(0, 10);
 		if (date >= start && date <= end) {
-			mapLeaveToStatuses(leave).forEach((s) => candidates.add(s));
+			mapLeaveToStatuses(leave, attendance).forEach((s) => candidates.add(s));
 		}
 	}
 

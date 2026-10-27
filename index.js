@@ -100,6 +100,7 @@ import pendapatanCleanoxRoutes from "./routes/Cleanox/pendapatanCleanoxRoutes.js
 import piutangDashboardCleanoxRoutes from "./routes/Cleanox/piutangDashboardCleanoxRoutes.js";
 import customerAgingCleanoxRoutes from "./routes/Cleanox/customerAgingCleanoxRoutes.js";
 import masterAgingServicesRoutes from "./routes/Cleanox/masterAgingServicesRoutes.js";
+import crossSellCleanoxRoutes from "./routes/Cleanox/crossSellCleanoxRoutes.js";
 import employeeWaschenRoutes from "./routes/MyWaschen/HRIS/employeeWaschenRoutes.js";
 import customerRoutes from "./routes/MyWaschen/Transaction/CustomerRoutes.js";
 import dashboardWaschenRoutes from "./routes/MyWaschen/Transaction/DashboardRoutes.js";
@@ -451,6 +452,7 @@ app.use("/cleanox/pendapatan", pendapatanCleanoxRoutes);
 app.use("/cleanox/piutang-dashboard", piutangDashboardCleanoxRoutes);
 app.use("/cleanox/customer-aging", customerAgingCleanoxRoutes);
 app.use("/cleanox/master-aging-services", masterAgingServicesRoutes);
+app.use("/cleanox/cross-sell", crossSellCleanoxRoutes);
 app.use("/waschen/employees", employeeWaschenRoutes);
 app.use("/waschen/dashboard", dashboardWaschenRoutes);
 app.use("/waschen/customers", customerRoutes);

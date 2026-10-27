@@ -842,7 +842,9 @@ export const getAttendanceReport = async (req, res) => {
 		if (pageEmployeeIds.length > 0) {
 			const placeholders = pageEmployeeIds.map(() => "?").join(",");
 			const [leaves] = await safeAloraMobileQuery(
-				`SELECT employee_id, leave_type, start_date, end_date, status, doctor_note_path
+				`SELECT employee_id, leave_type, duration_type, start_date, end_date, status,
+				        doctor_note_path, funding_ro_hours, funding_overtime_hours, funding_unpaid_hours,
+				        leave_duration_hours
 				 FROM tr_worker_leaves
 				 WHERE employee_id IN (${placeholders}) AND status = 'disetujui'
 				   AND start_date <= ? AND end_date >= ?`,
