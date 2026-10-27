@@ -31,14 +31,25 @@ function assertText(label, value) {
   return raw;
 }
 
+// Pejabat yang mengetahui opsional: kosong semua = tidak ada; terisi sebagian = ditolak
+function readGaHead(body) {
+  const name = String(body.ga_head_name || "").trim();
+  const position = String(body.ga_head_position || "").replace(/[<>]/g, "").trim();
+  if (!name && !position) return { gaHeadName: null, gaHeadPosition: null };
+  return {
+    gaHeadName: assertTitleCase("Nama yang mengetahui", name),
+    gaHeadPosition: assertText("Jabatan yang mengetahui", position),
+  };
+}
+
 function readParties(body) {
   return {
     senderName: assertTitleCase("Nama pengirim", body.sender_name),
     senderPosition: assertText("Jabatan pengirim", body.sender_position),
     receiverName: assertTitleCase("Nama penerima", body.receiver_name),
     receiverPosition: assertText("Jabatan penerima", body.receiver_position),
-    gaHeadName: assertTitleCase("Nama yang mengetahui", body.ga_head_name),
-    gaHeadPosition: assertText("Jabatan yang mengetahui", body.ga_head_position),
+    ...readGaHead(body),
+
   };
 }
 
