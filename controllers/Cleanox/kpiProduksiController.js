@@ -1082,7 +1082,8 @@ async function loadHomeServiceDoneData(dateStart, dateEnd) {
      WHERE DATE(t.service_date) BETWEEN DATE(?) AND DATE(?)
        AND t.status <> 'Cancelled'
        AND (t.service_mode = 'home_service' OR t.service_mode IS NULL OR t.service_mode = '')
-       AND a.assignment_status = 'Done'`,
+       AND (a.assignment_status = 'Done' OR t.status = 'Completed')
+       AND a.assignment_status NOT IN ('Cancelled', 'Rejected', 'Replaced')`,
     [dateStart, dateEnd]
   );
 
