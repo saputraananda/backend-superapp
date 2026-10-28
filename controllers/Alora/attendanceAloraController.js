@@ -1360,14 +1360,15 @@ export const createManualAttendance = async (req, res) => {
 			}
 		}
 
-		// Hitung status keterlambatan (batas toleransi 08:30)
-		const thresholdStr = `${workDate} 08:30:00`;
+		// Hitung status keterlambatan (batas toleransi 08:30:59, durasi dihitung dari jam masuk 08:00:00)
+		const startStr = `${workDate} 08:00:00`;
+		const thresholdStr = `${workDate} 08:30:59`;
 		const isUnder830 = clockInTime <= thresholdStr;
 		let lateMinutes = null;
 		let lateCategory = null;
 		let lateStatus = null;
 		if (!isUnder830) {
-			const diffMs = new Date(clockInTime) - new Date(thresholdStr);
+			const diffMs = new Date(clockInTime) - new Date(startStr);
 			lateMinutes = Math.max(1, Math.floor(diffMs / 60000));
 			lateCategory = "unexpected";
 			lateStatus = "Terlambat";
@@ -1471,8 +1472,9 @@ export const updateManualAttendance = async (req, res) => {
 			if (diffSec > 0) durationHours = Number((diffSec / 3600).toFixed(2));
 		}
 
-		// Kalkulasi keterlambatan berdasarkan batas toleransi 08:30
-		const thresholdStr = `${workDate} 08:30:00`;
+		// Kalkulasi keterlambatan berdasarkan batas toleransi 08:30:59, durasi dihitung dari jam masuk 08:00:00
+		const startStr = `${workDate} 08:00:00`;
+		const thresholdStr = `${workDate} 08:30:59`;
 		const isUnder830 = clockInTime <= thresholdStr;
 
 		let lateCategoryUpdate = null;
@@ -1481,7 +1483,7 @@ export const updateManualAttendance = async (req, res) => {
 		let lateStatusUpdate = null;
 
 		if (!isUnder830) {
-			const diffMs = new Date(clockInTime) - new Date(thresholdStr);
+			const diffMs = new Date(clockInTime) - new Date(startStr);
 			lateMinutesUpdate = Math.max(1, Math.floor(diffMs / 60000));
 			lateCategoryUpdate = record.late_category || "unexpected";
 			lateReasonUpdate = record.late_reason || null;

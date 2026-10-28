@@ -80,7 +80,7 @@ export const getCleanoxByWaschen = async (req, res) => {
     const { filterType, month, year, startDate, endDate, asOfDate: rawAsOfDate, page = "1", pageSize = "50" } = req.query;
 
     const pg   = Math.max(1, parseInt(page)     || 1);
-    const size = Math.min(200, Math.max(1, parseInt(pageSize) || 50));
+    const size = Math.min(10000, Math.max(1, parseInt(pageSize) || 50));
     const offset = (pg - 1) * size;
 
     const { dateStart, dateEnd, asOfDate } = buildDateRange(filterType, month, year, startDate, endDate, rawAsOfDate);
