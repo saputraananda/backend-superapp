@@ -138,6 +138,7 @@ import dashboardInventoryRoutes from "./routes/MyWaschen/Inventory/DashboardInve
 import trainingRoutes from "./routes/trainingRoutes.js";
 import projectManagementRoutes from "./routes/ProjectManagement/projectManagementRoutes.js";
 import personalChatRoutes from "./routes/ProjectManagement/personalChatRoutes.js";
+import financeJournalRoutes from "./routes/FinanceHO/financeJournalRoutes.js";
 import {
   getWaschenMobileAttendanceDir,
   getWaschenMobileLeaveDir,
@@ -488,6 +489,7 @@ app.use("/waschen/hris/time-masters", timeMasterWaschenRoutes);
 app.use("/waschen/hris/payroll", payrollWaschenRoutes);
 app.use("/waschen/day-off-policies", dayOffPolicyRoutes);
 app.use("/training", trainingRoutes);
+app.use("/finance-ho", financeJournalRoutes);
 app.use("/api/pm2", projectManagementRoutes);
 app.use("/api/pm2/chat", personalChatRoutes);
 // 404
