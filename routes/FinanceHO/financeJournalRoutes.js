@@ -1,21 +1,25 @@
 import express from "express";
+import { getFinanceDashboard } from "../../controllers/FinanceHO/dashboardController.js";
+import {
+  getBudgets,
+  saveBudget,
+  saveBatchBudgets,
+  copyPreviousMonthBudget,
+} from "../../controllers/FinanceHO/budgetsController.js";
 import {
   getAccounts,
   getAccountsForSelect,
   createAccount,
   updateAccount,
   seedDefaultAccounts,
+} from "../../controllers/FinanceHO/coaController.js";
+import {
   getJournals,
   getJournalDetail,
   createJournal,
   reverseJournal,
-  getGeneralLedger,
-  getFinanceDashboard,
-  getBudgets,
-  saveBudget,
-  saveBatchBudgets,
-  copyPreviousMonthBudget,
 } from "../../controllers/FinanceHO/financeJournalController.js";
+import { getGeneralLedger } from "../../controllers/FinanceHO/generalLedgerController.js";
 
 const router = express.Router();
 
