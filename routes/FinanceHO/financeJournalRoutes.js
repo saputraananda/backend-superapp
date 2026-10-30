@@ -9,9 +9,10 @@ import {
   getJournalDetail,
   createJournal,
   reverseJournal,
+  getGeneralLedger,
 } from "../../controllers/FinanceHO/financeJournalController.js";
 
-const router = express.Router();                                                        
+const router = express.Router();
 
 // ── Master Bagan Akun (Chart of Accounts) ──────────
 router.get("/accounts", getAccounts);
@@ -21,10 +22,13 @@ router.put("/accounts/:id", updateAccount);
 router.post("/accounts/seed-default", seedDefaultAccounts);
 
 // ── Transaksi Jurnal Umum ───────────────────────────
-router.get("/journals", getJournals);
+router.get("/journals"
+  , getJournals);
 router.get("/journals/:id", getJournalDetail);
 router.post("/journals", createJournal);
 router.post("/journals/:id/reverse", reverseJournal);
 
-export default router;
+// ── Buku Besar (General Ledger) ─────────────────────
+router.get("/general-ledger", getGeneralLedger);
 
+export default router;
