@@ -239,7 +239,8 @@ export const getOutletStock = async (req, res) => {
 
     const today = todayWibISO();
     const where = ["s.outlet_id = ?", "s.is_active = 1"];
-    const params = [today, outletId];
+    // urutan placeholder: qty_today (SELECT), subquery qty_expected (FROM), lalu WHERE
+    const params = [today, outletId, outletId];
 
     if (search) {
       where.push("(i.code LIKE ? OR i.name LIKE ? OR u.symbol LIKE ? OR u.name LIKE ?)");
@@ -261,16 +262,7 @@ export const getOutletStock = async (req, res) => {
                WHERE o2.outlet_id = s.outlet_id AND o2.item_id = s.item_id
                  AND (s.period_start IS NULL OR o2.usage_date >= s.period_start)
               ) AS qty_actual,
-              (SELECT COALESCE(SUM(td.qty * si.qty_per_service), 0)
-               FROM tr_transaction_detail td
-               INNER JOIN tr_transaction t ON t.id = td.transaction_id
-               INNER JOIN mst_service_inventory si
-                 ON si.service_id = td.service_id AND si.item_id = s.item_id AND si.is_active = 1
-               WHERE t.outlet_id = s.outlet_id
-                 AND td.item_work_status IN ('Selesai', 'Siap Diambil', 'Siap Diantar')
-                 AND (s.period_start IS NULL
-                      OR DATE(COALESCE(td.item_completed_at, t.order_date)) >= s.period_start)
-              ) AS qty_expected,
+              COALESCE(ex.qty_expected, 0) AS qty_expected,
               CASE WHEN s.min_stock > 0 AND s.qty_current <= s.min_stock THEN 1 ELSE 0 END AS is_low_stock,
               (SELECT COALESCE(o3.qty_used, 0)
                FROM tr_stock_opname o3
@@ -280,6 +272,18 @@ export const getOutletStock = async (req, res) => {
        JOIN mst_inventory_item i ON i.id = s.item_id
        LEFT JOIN mst_unit u ON u.id = i.unit_id
        LEFT JOIN mst_outlet o ON o.id = s.outlet_id
+       LEFT JOIN (
+         SELECT s2.id AS stock_id, SUM(td.qty * si.qty_per_service) AS qty_expected
+         FROM tr_inventory_stock s2
+         JOIN mst_service_inventory si ON si.item_id = s2.item_id AND si.is_active = 1
+         JOIN tr_transaction t ON t.outlet_id = s2.outlet_id
+         JOIN tr_transaction_detail td ON td.transaction_id = t.id AND td.service_id = si.service_id
+         WHERE s2.outlet_id = ? AND s2.is_active = 1
+           AND td.item_work_status IN ('Selesai', 'Siap Diambil', 'Siap Diantar')
+           AND (s2.period_start IS NULL
+                OR DATE(COALESCE(td.item_completed_at, t.order_date)) >= s2.period_start)
+         GROUP BY s2.id
+       ) ex ON ex.stock_id = s.id
        WHERE ${where.join(" AND ")}
        ORDER BY ${sortCol} ${sortDir}, i.name ASC`,
       params
