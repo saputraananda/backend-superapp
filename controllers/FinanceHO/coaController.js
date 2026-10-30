@@ -74,9 +74,20 @@ export async function getAccounts(req, res) {
          a.is_active, 
          a.memo,
          p.name as parent_name,
-         p.code as parent_code
+         p.code as parent_code,
+         COALESCE(bal.balance, 0) as balance
        FROM tr_accounts a
        LEFT JOIN tr_accounts p ON a.parent_id = p.id
+       LEFT JOIN (
+         SELECT 
+           jl.account_id,
+           SUM(CASE WHEN acc.normal_balance = 'DEBIT' THEN jl.debit - jl.credit ELSE jl.credit - jl.debit END) as balance
+         FROM tr_journal_lines jl
+         JOIN tr_journal_entries je ON jl.entry_id = je.id
+         JOIN tr_accounts acc ON jl.account_id = acc.id
+         WHERE je.status = 'POSTED'
+         GROUP BY jl.account_id
+       ) bal ON a.id = bal.account_id
        WHERE ${whereSql}
        ORDER BY a.code ASC`,
             params
