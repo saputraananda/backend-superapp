@@ -10,9 +10,13 @@ import {
   createJournal,
   reverseJournal,
   getGeneralLedger,
+  getFinanceDashboard,
 } from "../../controllers/FinanceHO/financeJournalController.js";
 
 const router = express.Router();
+
+// ── Dashboard Eksekutif Keuangan ────────────────────
+router.get("/dashboard", getFinanceDashboard);
 
 // ── Master Bagan Akun (Chart of Accounts) ──────────
 router.get("/accounts", getAccounts);
