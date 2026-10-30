@@ -213,6 +213,28 @@ const TXN_SELECT = `
   LEFT JOIN mst_parfume pf ON pf.id = t.parfume_id
 `;
 
+/** Band persentase per tab pengerjaan — sama dengan `matchesWorkStatusTab` di frontend History. */
+const WORK_TAB_COUNT_KEYS = {
+  Dibatalkan: "t.work_status <= 0",
+  Antrean: "(t.work_status > 0 AND t.work_status <= 17.5)",
+  Pencucian: "(t.work_status > 17.5 AND t.work_status <= 37.5)",
+  Penyetrikaan: "(t.work_status > 37.5 AND t.work_status <= 62.5)",
+  Pengemasan: "(t.work_status > 62.5 AND t.work_status <= 82.5)",
+  "Siap Diambil": "(t.work_status > 82.5 AND t.work_status < 92.5)",
+  "Sedang Diantar": "(t.work_status >= 92.5 AND t.work_status < 100)",
+  Selesai: "t.work_status >= 100",
+};
+const WORK_TAB_BANDS = {
+  ...WORK_TAB_COUNT_KEYS,
+  Diterima: WORK_TAB_COUNT_KEYS.Antrean,
+  "Proses Cuci": WORK_TAB_COUNT_KEYS.Pencucian,
+  "Proses Setrika": WORK_TAB_COUNT_KEYS.Penyetrikaan,
+  "Proses Packing": WORK_TAB_COUNT_KEYS.Pengemasan,
+  "Siap Diambil / Diantar": WORK_TAB_COUNT_KEYS["Siap Diambil"],
+  "Siap Diantar": WORK_TAB_COUNT_KEYS["Siap Diambil"],
+  Delivery: WORK_TAB_COUNT_KEYS["Siap Diambil"],
+};
+
 /** GET /waschen/transactions */
 export const getTransactions = async (req, res) => {
   try {
@@ -281,11 +303,46 @@ export const getTransactions = async (req, res) => {
       params.push(workMax);
     }
 
+    // Pagination server-side hanya aktif bila klien mengirim `page`; tanpa itu perilaku lama (maks 500).
+    const paged = req.query.page !== undefined && req.query.page !== "";
+    const pageSize = Math.min(Math.max(parseInt(req.query.pageSize, 10) || 50, 1), 200);
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const workTab = String(req.query.workTab || "").trim();
+
+    // Hitungan per tab pengerjaan dihitung sebelum filter tab diterapkan, agar badge tab tetap utuh.
+    const baseWhereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    const baseParams = [...params];
+    const bandSql = WORK_TAB_BANDS[workTab];
+    if (bandSql) where.push(bandSql);
+
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
-    const [rows] = await safeMyWaschenQuery(
-      `${TXN_SELECT} ${whereSql} ORDER BY t.order_date DESC, t.id DESC LIMIT 500`,
-      params
-    );
+    let rows;
+    let total = null;
+    let tabCounts = null;
+    if (paged) {
+      const [[countRow]] = await safeMyWaschenQuery(
+        `SELECT COUNT(*) AS total FROM tr_transaction t LEFT JOIN mst_customer c ON c.id = t.customer_id ${whereSql}`,
+        params
+      );
+      total = num(countRow?.total);
+      const bandSums = Object.entries(WORK_TAB_COUNT_KEYS)
+        .map(([key, sql]) => `SUM(CASE WHEN ${sql} THEN 1 ELSE 0 END) AS \`${key}\``)
+        .join(", ");
+      const [[countsRow]] = await safeMyWaschenQuery(
+        `SELECT COUNT(*) AS \`Semua\`, ${bandSums} FROM tr_transaction t LEFT JOIN mst_customer c ON c.id = t.customer_id ${baseWhereSql}`,
+        baseParams
+      );
+      tabCounts = Object.fromEntries(Object.entries(countsRow || {}).map(([k, v]) => [k, num(v)]));
+      [rows] = await safeMyWaschenQuery(
+        `${TXN_SELECT} ${whereSql} ORDER BY t.order_date DESC, t.id DESC LIMIT ? OFFSET ?`,
+        [...params, pageSize, (page - 1) * pageSize]
+      );
+    } else {
+      [rows] = await safeMyWaschenQuery(
+        `${TXN_SELECT} ${whereSql} ORDER BY t.order_date DESC, t.id DESC LIMIT 500`,
+        params
+      );
+    }
 
     // cashier / settler names from main DB (best-effort)
     const cashierIds = [
@@ -312,7 +369,11 @@ export const getTransactions = async (req, res) => {
       })
     );
 
-    res.json({ success: true, data, meta: { count: data.length } });
+    const meta = { count: data.length };
+    if (paged) {
+      Object.assign(meta, { total, page, pageSize, totalPages: Math.max(1, Math.ceil(total / pageSize)), tabCounts });
+    }
+    res.json({ success: true, data, meta });
   } catch (err) {
     console.error("getTransactions error:", err);
     res.status(500).json({ success: false, message: err.message });

@@ -46,9 +46,17 @@ function buildRevenueFilters({ outletId, dateFrom, dateTo, alias = "t" }) {
   return { whereSql: where.join(" AND "), params };
 }
 
-/** Nominal revenue: uang yang sudah dibayar (fallback grand_total jika paid_amount kosong). */
+/**
+ * Bagi hasil Cleanox: nota yang punya item Cleanox (tr_transaction_detail.is_cleanox = 1) hanya 30% yang
+ * menjadi revenue Waschen (70% milik Cleanox). Per nota, sama seperti rumus Alsa
+ * (`getAdjustedSales`: (actual − cleanox) + 0,30 × cleanox). Nota lain 100%.
+ */
+const WASCHEN_SHARE = (alias = "t") =>
+  `(CASE WHEN EXISTS (SELECT 1 FROM tr_transaction_detail cx WHERE cx.transaction_id = ${alias}.id AND cx.is_cleanox = 1) THEN 0.30 ELSE 1 END)`;
+
+/** Nominal revenue Waschen: uang yang sudah dibayar (fallback grand_total jika paid_amount kosong) × bagian Waschen. */
 const REVENUE_AMOUNT = (alias = "t") =>
-  `COALESCE(NULLIF(${alias}.paid_amount, 0), ${alias}.grand_total)`;
+  `COALESCE(NULLIF(${alias}.paid_amount, 0), ${alias}.grand_total) * ${WASCHEN_SHARE(alias)}`;
 
 export const getDashboard = async (req, res) => {
   try {
@@ -126,7 +134,7 @@ export const getDashboard = async (req, res) => {
       safeMyWaschenQuery(
         `SELECT COALESCE(sc.name, 'Lainnya') AS category_name,
                 COALESCE(sc.code, 'OTHER') AS category_code,
-                COALESCE(SUM(td.subtotal), 0) AS revenue,
+                COALESCE(SUM(td.subtotal * ${WASCHEN_SHARE("t")}), 0) AS revenue,
                 COALESCE(SUM(td.qty), 0) AS qty
          FROM tr_transaction_detail td
          JOIN tr_transaction t ON t.id = td.transaction_id
@@ -140,7 +148,7 @@ export const getDashboard = async (req, res) => {
       safeMyWaschenQuery(
         `SELECT s.id AS service_id, s.code AS service_code, s.name AS service_name,
                 COALESCE(sc.name, 'Lainnya') AS category_name,
-                COALESCE(SUM(td.subtotal), 0) AS revenue,
+                COALESCE(SUM(td.subtotal * ${WASCHEN_SHARE("t")}), 0) AS revenue,
                 COALESCE(SUM(td.qty), 0) AS qty
          FROM tr_transaction_detail td
          JOIN tr_transaction t ON t.id = td.transaction_id
