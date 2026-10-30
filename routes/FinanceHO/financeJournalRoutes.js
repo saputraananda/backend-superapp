@@ -11,12 +11,22 @@ import {
   reverseJournal,
   getGeneralLedger,
   getFinanceDashboard,
+  getBudgets,
+  saveBudget,
+  saveBatchBudgets,
+  copyPreviousMonthBudget,
 } from "../../controllers/FinanceHO/financeJournalController.js";
 
 const router = express.Router();
 
 // ── Dashboard Eksekutif Keuangan ────────────────────
 router.get("/dashboard", getFinanceDashboard);
+
+// ── Anggaran Beban (Budgets) ────────────────────────
+router.get("/budgets", getBudgets);
+router.post("/budgets", saveBudget);
+router.post("/budgets/batch", saveBatchBudgets);
+router.post("/budgets/copy-previous", copyPreviousMonthBudget);
 
 // ── Master Bagan Akun (Chart of Accounts) ──────────
 router.get("/accounts", getAccounts);
