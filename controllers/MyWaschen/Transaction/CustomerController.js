@@ -249,6 +249,60 @@ export const getCustomerMembershipPayments = async (req, res) => {
   }
 };
 
+/** GET /waschen/customers/:id/transactions — riwayat nota satu customer (terbaru dulu, maks 200). */
+export const getCustomerTransactions = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [rows] = await safeMyWaschenQuery(
+      `SELECT t.id, t.order_no, t.order_date, t.grand_total, t.paid_amount, t.payment_status,
+              t.work_status, t.settled_at, t.paid_at, t.is_delete_requested, t.source,
+              o.name AS outlet_name
+       FROM tr_transaction t
+       LEFT JOIN mst_outlet o ON o.id = t.outlet_id
+       WHERE t.customer_id = ?
+       ORDER BY t.order_date DESC, t.id DESC
+       LIMIT 200`,
+      [id]
+    );
+    const [[{ total }]] = await safeMyWaschenQuery(
+      "SELECT COUNT(*) AS total FROM tr_transaction WHERE customer_id = ?",
+      [id]
+    );
+    res.json({ success: true, data: rows, meta: { total: Number(total) || 0, limit: 200 } });
+  } catch (err) {
+    console.error("getCustomerTransactions error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * GET /waschen/customers/:id/complaints — komplain (tr_complaint) atas nota customer.
+ * tr_complaint hanya menyimpan nomor nota (teks), jadi dihubungkan lewat tr_transaction.order_no.
+ */
+export const getCustomerComplaints = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [rows] = await safeMyWaschenQuery(
+      `SELECT c.complaint_id, c.nota_number, c.complaint_name, c.qty, c.description, c.deduction,
+              c.pic_name, c.progress, c.submitted_at,
+              ct.type_name, cc.category_name, cp.topic_name, o.name AS outlet_name
+       FROM tr_complaint c
+       JOIN tr_transaction t ON t.order_no COLLATE utf8mb4_unicode_ci = c.nota_number COLLATE utf8mb4_unicode_ci AND t.customer_id = ?
+       LEFT JOIN mst_outlet o ON o.id = c.outlet_id
+       LEFT JOIN mst_complaint_type ct ON ct.type_id = c.type_id
+       LEFT JOIN mst_complaint_category cc ON cc.category_id = c.category_id
+       LEFT JOIN mst_complaint_topic cp ON cp.topic_id = c.topic_id
+       ORDER BY c.submitted_at DESC
+       LIMIT 200`,
+      [id]
+    );
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    console.error("getCustomerComplaints error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 export const createCustomer = async (req, res) => {
   try {
     const {
