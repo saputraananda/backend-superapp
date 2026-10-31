@@ -906,6 +906,284 @@ export const getDashboard = async (req, res) => {
 };
 
 // ════════════════════════════════════════════════════════════════════════════
+// FILTER MULTI (departemen / company / outlet) — dashboard per klasifikasi
+//
+// Query param berisi daftar id dipisah koma: ?department_ids=1,2&company_ids=5&outlet_ids=1,3
+//   - param tidak dikirim  → tidak difilter (semua)
+//   - param dikirim kosong → tidak ada yang cocok (user mencentang nol item)
+// ════════════════════════════════════════════════════════════════════════════
+const parseFilterIds = (raw) => {
+    if (raw == null) return null;
+    return [...new Set(String(raw).split(",").map(Number).filter(n => Number.isInteger(n) && n > 0))];
+};
+
+// Default dashboard klasifikasi = "pengeluaran": 6 = Terbayar, 7 = Selesai.
+// Pengajuan barang berhenti di status 6 (belum upload invoice), reimburse langsung 7.
+// Status lain (1–5, 9) boleh dipilih via ?statuses= untuk melihat PR yang belum dibayar.
+const SPENDING_STATUSES = [6, 7];
+const VALID_STATUSES    = [1, 2, 3, 4, 5, 6, 7, 9];
+
+// Nominal satu PR: nominal_bayar bila terisi, jika tidak estimasi_harga.
+const PR_AMOUNT_SQL = `COALESCE(NULLIF(pr.nominal_bayar, 0), pr.estimasi_harga, 0)`;
+
+// Filter departemen. Selain Finance/GA/Direktur dipaksa ke departemennya sendiri.
+const buildDeptFilter = (req, me) => {
+    if (!canViewAllActivities(me)) {
+        return me.department_id
+            ? { conditions: ["pr.department_id = ?"], params: [me.department_id] }
+            : { conditions: ["pr.employee_id = ?"], params: [me.employee_id] };
+    }
+    const ids = parseFilterIds(req.query.department_ids);
+    if (ids === null) return { conditions: [], params: [] };
+    if (!ids.length) return { conditions: ["1 = 0"], params: [] };
+    return { conditions: ["pr.department_id IN (?)"], params: [ids] };
+};
+
+// Filter company + outlet lewat satu baris scope yang sama.
+// Outlet hanya berlaku untuk Waschen Laundry; company lain tidak terpengaruh filter outlet.
+const buildScopeFilter = (req) => {
+    const companyIds = parseFilterIds(req.query.company_ids);
+    const outletIds  = parseFilterIds(req.query.outlet_ids);
+    if (companyIds === null && outletIds === null) return { conditions: [], params: [] };
+
+    const sc = [];
+    const params = [];
+    if (companyIds !== null) {
+        if (!companyIds.length) return { conditions: ["1 = 0"], params: [] };
+        sc.push("s.company_id IN (?)");
+        params.push(companyIds);
+    }
+    if (outletIds !== null) {
+        if (outletIds.length) {
+            sc.push(`(s.company_id <> ${WASCHEN_COMPANY_ID} OR s.outlet_id IN (?))`);
+            params.push(outletIds);
+        } else {
+            sc.push(`s.company_id <> ${WASCHEN_COMPANY_ID}`);
+        }
+    }
+    return {
+        conditions: [`EXISTS (SELECT 1 FROM tr_purchase_request_scope s
+                              WHERE s.pr_id = pr.pr_id AND ${sc.join(" AND ")})`],
+        params,
+    };
+};
+
+// Gabungan filter untuk dashboard klasifikasi:
+// status, tipe, pencarian, tanggal, departemen, company, outlet.
+const buildClassificationWhere = (req, me) => {
+    const conditions = ["pr.is_deleted = 0"];
+    const params = [];
+
+    const reqStatuses = (parseFilterIds(req.query.statuses) || []).filter(s => VALID_STATUSES.includes(s));
+    conditions.push("pr.status IN (?)");
+    params.push(reqStatuses.length ? reqStatuses : SPENDING_STATUSES);
+
+    const type = req.query.type?.trim() || "";
+    if (type === "pengajuan" || type === "reimburse") {
+        conditions.push("pr.type = ?");
+        params.push(type);
+    }
+
+    const search = req.query.search?.trim() || "";
+    if (search) {
+        conditions.push(`(pr.nama_barang LIKE ? OR pr.pr_code LIKE ?
+            OR pr.employee_id IN (SELECT employee_id FROM mst_employee WHERE full_name LIKE ?))`);
+        params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+    }
+
+    const dateFrom = req.query.date_from?.trim() || "";
+    const dateTo   = req.query.date_to?.trim()   || "";
+    if (dateFrom) { conditions.push("pr.tanggal_pengajuan >= ?"); params.push(dateFrom); }
+    if (dateTo)   { conditions.push("pr.tanggal_pengajuan <= ?"); params.push(dateTo); }
+
+    for (const f of [buildDeptFilter(req, me), buildScopeFilter(req)]) {
+        conditions.push(...f.conditions);
+        params.push(...f.params);
+    }
+    return { where: conditions.join(" AND "), params };
+};
+
+// Alokasi nominal PR ke klasifikasi (satu baris per PR × klasifikasi).
+//   - 1 klasifikasi          → seluruh nominal PR
+//   - banyak, semua terisi   → rincian diskalakan ke nominal PR (total klasifikasi
+//                              selalu sama dengan total PR walau rincian tidak pas)
+//   - banyak, sebagian NULL  → sisa nominal dibagi rata antar yang NULL
+//   - tanpa baris klasifikasi (data lama) → klasifikasi lama di kolom pr, atau 'none'
+const classificationAllocSql = (where) => `
+    SELECT b.pr_id,
+           CONCAT('c', k.classification_id) AS gkey,
+           CASE
+               WHEN g.cnt = 1 THEN b.amt
+               WHEN g.nulls = 0 AND g.filled > 0 THEN k.nominal * b.amt / g.filled
+               ELSE COALESCE(k.nominal, GREATEST(b.amt - g.filled, 0) / g.nulls)
+           END AS amt
+    FROM (SELECT pr.pr_id, ${PR_AMOUNT_SQL} AS amt
+          FROM tr_purchase_request pr WHERE ${where}) b
+    JOIN tr_purchase_request_classification k ON k.pr_id = b.pr_id
+    JOIN (SELECT pr_id, COUNT(*) AS cnt, COALESCE(SUM(nominal), 0) AS filled,
+                 SUM(nominal IS NULL) AS nulls
+          FROM tr_purchase_request_classification GROUP BY pr_id) g ON g.pr_id = b.pr_id
+    UNION ALL
+    SELECT b.pr_id,
+           CASE
+               WHEN p.classification_id IS NOT NULL THEN CONCAT('c', p.classification_id)
+               WHEN p.classification IN ('expense', 'inventory') THEN CONCAT('l:', p.classification)
+               ELSE 'none'
+           END AS gkey,
+           b.amt
+    FROM (SELECT pr.pr_id, ${PR_AMOUNT_SQL} AS amt
+          FROM tr_purchase_request pr WHERE ${where}) b
+    JOIN tr_purchase_request p ON p.pr_id = b.pr_id
+    WHERE NOT EXISTS (SELECT 1 FROM tr_purchase_request_classification k WHERE k.pr_id = b.pr_id)`;
+
+const CLASSIFICATION_NAME_SQL = `COALESCE(m.classification_name,
+    CASE a.gkey WHEN 'l:expense' THEN 'Expense (data lama)'
+                WHEN 'l:inventory' THEN 'Inventory (data lama)'
+                ELSE 'Tanpa Klasifikasi' END)`;
+
+// ════════════════════════════════════════════════════════════════════════════
+// DASHBOARD PER KLASIFIKASI (tim Finance — tracking pengeluaran terbesar)
+//
+// GET /pengajuan/by-classification
+//   filter : department_ids, company_ids, outlet_ids, date_from, date_to, statuses
+//   urutan : sort=desc|asc (total nominal), page, limit (default 5)
+// Respons : data (klasifikasi), total, summary (per tipe, untuk kartu dashboard)
+// ════════════════════════════════════════════════════════════════════════════
+export const getByClassification = async (req, res) => {
+    try {
+        const employeeId = getEmployeeId(req);
+        if (!employeeId) return res.status(401).json({ message: "Unauthorized" });
+
+        const me = await fetchEmployee(employeeId);
+        if (!me) return res.status(404).json({ message: "Employee tidak ditemukan" });
+
+        const page  = Math.max(1, parseInt(req.query.page) || 1);
+        const limit = Math.min(50, parseInt(req.query.limit) || 5);
+        const dir   = String(req.query.sort).toLowerCase() === "asc" ? 1 : -1;
+
+        const { where, params } = buildClassificationWhere(req, me);
+
+        const groups = await safeQuery(
+            `SELECT a.gkey, ${CLASSIFICATION_NAME_SQL} AS classification_name,
+                    COUNT(DISTINCT a.pr_id) AS pr_count,
+                    COALESCE(SUM(a.amt), 0) AS total_nominal
+             FROM (${classificationAllocSql(where)}) a
+             LEFT JOIN mst_purchase_classification m ON a.gkey = CONCAT('c', m.id)
+             GROUP BY a.gkey, classification_name`,
+            [...params, ...params]
+        );
+
+        groups.sort((x, y) =>
+            dir * (Number(x.total_nominal) - Number(y.total_nominal))
+            || String(x.classification_name).localeCompare(String(y.classification_name)));
+
+        const typeRows = await safeQuery(
+            `SELECT pr.type, COUNT(*) AS cnt, COALESCE(SUM(${PR_AMOUNT_SQL}), 0) AS nominal
+             FROM tr_purchase_request pr WHERE ${where} GROUP BY pr.type`,
+            params
+        );
+        const summary = {
+            pengajuan: { count: 0, nominal: 0 },
+            reimburse: { count: 0, nominal: 0 },
+            grandTotal: 0,
+        };
+        for (const r of typeRows) {
+            const bucket = summary[r.type];
+            if (!bucket) continue;
+            bucket.count   = Number(r.cnt);
+            bucket.nominal = Number(r.nominal);
+            summary.grandTotal += Number(r.nominal);
+        }
+
+        res.json({
+            data: groups.slice((page - 1) * limit, page * limit).map(g => ({
+                key: g.gkey,
+                classification_name: g.classification_name,
+                pr_count: Number(g.pr_count),
+                total_nominal: Number(g.total_nominal),
+            })),
+            total: groups.length,
+            page,
+            limit,
+            summary,
+        });
+    } catch (err) {
+        console.error("[getByClassification]", err);
+        res.status(500).json({ message: "Gagal memuat data per klasifikasi" });
+    }
+};
+
+// ════════════════════════════════════════════════════════════════════════════
+// DETAIL PR dalam satu klasifikasi
+//
+// GET /pengajuan/by-classification/items?key=c12
+//   key sama dengan field `key` dari getByClassification; filter & sort sama.
+// ════════════════════════════════════════════════════════════════════════════
+export const getClassificationItems = async (req, res) => {
+    try {
+        const employeeId = getEmployeeId(req);
+        if (!employeeId) return res.status(401).json({ message: "Unauthorized" });
+
+        const me = await fetchEmployee(employeeId);
+        if (!me) return res.status(404).json({ message: "Employee tidak ditemukan" });
+
+        const key = String(req.query.key || "");
+        if (!/^(c\d+|l:(expense|inventory)|none)$/.test(key)) {
+            return res.status(400).json({ message: "Klasifikasi tidak valid" });
+        }
+
+        const page   = Math.max(1, parseInt(req.query.page) || 1);
+        const limit  = Math.min(50, parseInt(req.query.limit) || 10);
+        const offset = (page - 1) * limit;
+        const order  = String(req.query.sort).toLowerCase() === "asc" ? "ASC" : "DESC";
+
+        const { where, params } = buildClassificationWhere(req, me);
+        const allocSql = classificationAllocSql(where);
+
+        const countRows = await safeQuery(
+            `SELECT COUNT(*) AS total, COALESCE(SUM(a.amt), 0) AS total_nominal
+             FROM (${allocSql}) a WHERE a.gkey = ?`,
+            [...params, ...params, key]
+        );
+
+        const data = await safeQuery(
+            `SELECT pr.pr_id, pr.pr_code, pr.type, pr.nama_barang, pr.qty, pr.status,
+                    pr.tanggal_pengajuan, pr.created_at,
+                    a.amt AS alloc_nominal,
+                    ${PR_AMOUNT_SQL} AS pr_nominal,
+                    e.full_name AS pengaju_name, d.department_name, s.satuan_name,
+                    ${SCOPE_COMPANY_SELECT}, ${SCOPE_OUTLET_SELECT}
+             FROM (${allocSql}) a
+             JOIN tr_purchase_request pr ON pr.pr_id = a.pr_id
+             LEFT JOIN mst_employee   e ON e.employee_id   = pr.employee_id
+             LEFT JOIN mst_department d ON d.department_id = pr.department_id
+             LEFT JOIN mst_satuan     s ON s.satuan_id     = pr.satuan_id
+             LEFT JOIN mst_company    c ON c.company_id    = pr.company_id
+             LEFT JOIN mst_outlet     o ON o.id            = pr.outlet_id
+             WHERE a.gkey = ?
+             ORDER BY a.amt ${order}, pr.pr_id DESC
+             LIMIT ? OFFSET ?`,
+            [...params, ...params, key, limit, offset]
+        );
+
+        res.json({
+            data: data.map(r => ({
+                ...r,
+                alloc_nominal: Number(r.alloc_nominal),
+                pr_nominal: Number(r.pr_nominal),
+            })),
+            total: Number(countRows[0].total),
+            total_nominal: Number(countRows[0].total_nominal),
+            page,
+            limit,
+        });
+    } catch (err) {
+        console.error("[getClassificationItems]", err);
+        res.status(500).json({ message: "Gagal memuat detail klasifikasi" });
+    }
+};
+
+// ════════════════════════════════════════════════════════════════════════════
 // LIST (riwayat pengajuan diri sendiri)
 // ════════════════════════════════════════════════════════════════════════════
 export const listMy = async (req, res) => {
@@ -3276,15 +3554,27 @@ export const listCredit = async (req, res) => {
             params.push(`%${search}%`, `%${search}%`, `%${search}%`);
         }
 
-        const departmentIdRaw = req.query.department_id;
-        // Skip filter jika "all" atau kosong
-        const departmentId = (departmentIdRaw && departmentIdRaw !== "all")
-            ? Number(departmentIdRaw)
-            : null;
-        if (departmentId) {
-            conditions.push("pr.department_id = ?");
-            params.push(departmentId);
+        // Filter departemen: ?department_ids=1,2 (multi) atau ?department_id=<id> (satu, lama)
+        if (req.query.department_ids !== undefined) {
+            const f = buildDeptFilter(req, me);
+            conditions.push(...f.conditions);
+            params.push(...f.params);
+        } else {
+            const departmentIdRaw = req.query.department_id;
+            // Skip filter jika "all" atau kosong
+            const departmentId = (departmentIdRaw && departmentIdRaw !== "all")
+                ? Number(departmentIdRaw)
+                : null;
+            if (departmentId) {
+                conditions.push("pr.department_id = ?");
+                params.push(departmentId);
+            }
         }
+
+        // Filter company & outlet (multi)
+        const scopeFilter = buildScopeFilter(req);
+        conditions.push(...scopeFilter.conditions);
+        params.push(...scopeFilter.params);
 
         const dateFrom = req.query.date_from?.trim() || "";
         const dateTo   = req.query.date_to?.trim()   || "";
