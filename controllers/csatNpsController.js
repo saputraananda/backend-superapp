@@ -1,10 +1,48 @@
 // src/controllers/csatNpsController.js
-import { safeQuery } from "../db/pool.js";
+import { safeQuery, safeMyWaschenQuery } from "../db/pool.js";
 
 // ─── Helper: table name by brand ─────────────────────────────────────────────
 function getTable(brand) {
   if (brand === "cleanox") return "tr_customer_satisfaction_cleanox";
   return "tr_customer_satisfaction_waschen";
+}
+
+// ─── Helper: cabang & customer dari transaksi My Waschen (khusus Waschen) ────
+// no_nota di survei hanya 6 digit terakhir order_no, jadi bisa kembar antar
+// transaksi/cabang. Survei diisi setelah nota dibuat, maka dipilih transaksi
+// terbaru yang order_date-nya <= waktu survei.
+async function attachWaschenOutlet(rows) {
+  const keys = [...new Set(
+    rows.map((r) => String(r.no_nota || "").trim().slice(-6)).filter((k) => /^\d{6}$/.test(k))
+  )];
+  const byKey = new Map();
+  if (keys.length) {
+    const [trx] = await safeMyWaschenQuery(
+      `SELECT RIGHT(t.order_no, 6) AS nota6, t.order_date, t.outlet_id,
+              o.name AS outlet_name, c.name AS customer_name
+       FROM tr_transaction t
+       LEFT JOIN mst_outlet o ON o.id = t.outlet_id
+       LEFT JOIN mst_customer c ON c.id = t.customer_id
+       WHERE RIGHT(t.order_no, 6) IN (?)`,
+      [keys]
+    );
+    for (const t of trx) {
+      if (!byKey.has(t.nota6)) byKey.set(t.nota6, []);
+      byKey.get(t.nota6).push(t);
+    }
+  }
+  return rows.map((r) => {
+    const surveyAt = new Date(r.created_at).getTime();
+    const best = (byKey.get(String(r.no_nota || "").trim().slice(-6)) || [])
+      .filter((t) => new Date(t.order_date).getTime() <= surveyAt)
+      .sort((a, b) => new Date(b.order_date) - new Date(a.order_date))[0];
+    return {
+      ...r,
+      outlet_id: best?.outlet_id ?? null,
+      outlet_name: best?.outlet_name ?? null,
+      customer_name: best?.customer_name ?? null,
+    };
+  });
 }
 
 // ─── GET /stats/:brand  — Dashboard aggregated stats ─────────────────────────
@@ -28,6 +66,48 @@ export const getStats = async (req, res) => {
       dateFilter.push("created_at <= ?");
       dateParams.push(endDate + " 23:59:59");
     }
+    // ── Cabang (Waschen): agregat per cabang + filter outlet_id untuk seluruh statistik ──
+    let byOutlet = [];
+    let idSql = ""; // potongan " AND id IN (...)" untuk query lain
+    if (brand === "waschen") {
+      const [base] = await safeQuery(
+        `SELECT id, no_nota, created_at, csat_score, nps_score, nps_category
+         FROM ${table} ${dateFilter.length ? `WHERE ${dateFilter.join(" AND ")}` : ""}`,
+        dateParams
+      );
+      const resolved = await attachWaschenOutlet(base);
+
+      const groups = new Map();
+      for (const r of resolved) {
+        const key = r.outlet_id ?? "none";
+        if (!groups.has(key)) {
+          groups.set(key, { outlet_id: r.outlet_id, outlet_name: r.outlet_name || "Tidak terdeteksi",
+            total: 0, csat_sum: 0, promoters: 0, passives: 0, detractors: 0 });
+        }
+        const g = groups.get(key);
+        g.total += 1;
+        g.csat_sum += Number(r.csat_score) || 0;
+        if (r.nps_category === "Promoter") g.promoters += 1;
+        else if (r.nps_category === "Passive") g.passives += 1;
+        else if (r.nps_category === "Detractor") g.detractors += 1;
+      }
+      byOutlet = [...groups.values()]
+        .map(({ csat_sum, ...g }) => ({
+          ...g,
+          avg_csat: g.total ? Math.round((csat_sum / g.total) * 100) / 100 : 0,
+          nps_score: g.total ? Math.round(((g.promoters - g.detractors) / g.total) * 100) : 0,
+        }))
+        .sort((a, b) => b.total - a.total);
+
+      const outletFilter = Number(req.query.outlet_id);
+      if (Number.isFinite(outletFilter) && outletFilter > 0) {
+        const ids = resolved.filter((r) => Number(r.outlet_id) === outletFilter).map((r) => Number(r.id));
+        const idList = ids.length ? ids.join(",") : "0";
+        dateFilter.push(`id IN (${idList})`);
+        idSql = ` AND id IN (${idList})`;
+      }
+    }
+
     const whereSql = dateFilter.length ? `WHERE ${dateFilter.join(" AND ")}` : "";
 
     // ── 1. Overall summary ──
@@ -108,7 +188,7 @@ export const getStats = async (req, res) => {
          SUM(CASE WHEN nps_category = 'Promoter' THEN 1 ELSE 0 END) AS promoters,
          SUM(CASE WHEN nps_category = 'Detractor' THEN 1 ELSE 0 END) AS detractors
        FROM ${table}
-       WHERE created_at >= DATE_SUB(NOW(), INTERVAL 12 MONTH)
+       WHERE created_at >= DATE_SUB(NOW(), INTERVAL 12 MONTH)${idSql}
        GROUP BY DATE_FORMAT(created_at, '%Y-%m')
        ORDER BY month ASC`
     );
@@ -120,7 +200,7 @@ export const getStats = async (req, res) => {
       `SELECT id, no_nota${namaCol}${layananCol}, csat_score, csat_label, nps_score, nps_category,
               feedback_tags, feedback_text, created_at
        FROM ${table}
-       WHERE feedback_text IS NOT NULL AND feedback_text != ''
+       WHERE feedback_text IS NOT NULL AND feedback_text != ''${idSql}
        ORDER BY created_at DESC
        LIMIT 10`,
       []
@@ -131,6 +211,7 @@ export const getStats = async (req, res) => {
       `SELECT id, no_nota${namaCol}${layananCol}, csat_score, csat_label, nps_score, nps_category,
               feedback_tags, created_at
        FROM ${table}
+       ${idSql ? `WHERE 1=1${idSql}` : ""}
        ORDER BY created_at DESC
        LIMIT 20`,
       []
@@ -144,7 +225,7 @@ export const getStats = async (req, res) => {
            TRIM(SUBSTRING_INDEX(layanan, ',', 1)) AS single_layanan,
            TRIM(SUBSTRING(layanan, LENGTH(SUBSTRING_INDEX(layanan, ',', 1)) + 2)) AS rest
          FROM ${table}
-         WHERE layanan IS NOT NULL AND layanan != ''
+         WHERE layanan IS NOT NULL AND layanan != ''${idSql}
          UNION ALL
          SELECT
            csat_score,
@@ -167,8 +248,22 @@ export const getStats = async (req, res) => {
       []
     );
 
+    let outlets = [];
+    let recentFeedbackOut = recentFeedback;
+    let recentResponsesOut = recentResponses;
+    if (brand === "waschen") {
+      [recentFeedbackOut, recentResponsesOut] = await Promise.all([
+        attachWaschenOutlet(recentFeedback),
+        attachWaschenOutlet(recentResponses),
+      ]);
+      const [outletRows] = await safeMyWaschenQuery("SELECT id, name FROM mst_outlet ORDER BY id");
+      outlets = outletRows;
+    }
+
     res.json({
       data: {
+        outlets,
+        by_outlet: byOutlet,
         summary: {
           total_responses: total,
           avg_csat: summary.avg_csat || 0,
@@ -183,8 +278,8 @@ export const getStats = async (req, res) => {
         csat_labels: csatLabels,
         top_tags: topTags,
         monthly_trend: trend,
-        recent_feedback: recentFeedback,
-        recent_responses: recentResponses,
+        recent_feedback: recentFeedbackOut,
+        recent_responses: recentResponsesOut,
         csat_by_service: csatByService,
       },
     });
@@ -244,6 +339,21 @@ export const getResponses = async (req, res) => {
 
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
+    // Filter cabang (Waschen): cabang berasal dari transaksi di database lain,
+    // jadi ambil semua baris yang lolos filter lain, resolve cabang, lalu paginasi manual.
+    const outletFilter = brand === "waschen" ? Number(req.query.outlet_id) : NaN;
+    if (Number.isFinite(outletFilter) && outletFilter > 0) {
+      const [all] = await safeQuery(
+        `SELECT * FROM ${table} ${whereSql} ORDER BY created_at DESC`,
+        params
+      );
+      const matched = (await attachWaschenOutlet(all)).filter((r) => Number(r.outlet_id) === outletFilter);
+      return res.json({
+        data: matched.slice(offset, offset + lm),
+        pagination: { page: pg, limit: lm, total: matched.length, totalPages: Math.ceil(matched.length / lm) },
+      });
+    }
+
     const [[{ total }]] = await safeQuery(
       `SELECT COUNT(*) AS total FROM ${table} ${whereSql}`,
       params
@@ -257,7 +367,7 @@ export const getResponses = async (req, res) => {
     );
 
     res.json({
-      data: rows,
+      data: brand === "waschen" ? await attachWaschenOutlet(rows) : rows,
       pagination: { page: pg, limit: lm, total, totalPages: Math.ceil(total / lm) },
     });
   } catch (err) {
