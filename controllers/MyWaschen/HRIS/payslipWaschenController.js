@@ -16,6 +16,61 @@ async function assertWaschenEmployee(id) {
   return rows.length > 0;
 }
 
+/**
+ * GET /waschen/employees/payslips/summary?months=YYYY-MM,YYYY-MM
+ * Ringkasan slip per karyawan untuk halaman HRIS › Slip Gaji.
+ * `months` = bulan cutoff (26 bln lalu – 25 bln ini) yang tercakup filter periode.
+ * - in_period: jumlah slip karyawan untuk bulan-bulan tsb
+ * - meta.years: tahun yang punya slip di DB (untuk opsi filter tahun)
+ */
+export const summaryWaschenPayslips = async (req, res) => {
+  try {
+    const months = [...new Set(
+      String(req.query.months || req.query.month || "")
+        .split(",")
+        .map((m) => m.trim())
+        .filter((m) => MONTH_RE.test(m)),
+    )].slice(0, 60);
+    const marks = months.map(() => "?").join(",");
+
+    const [[rows], [yearRows]] = await Promise.all([
+      safeMyWaschenQuery(
+        `SELECT employee_id,
+                COUNT(*) AS total,
+                MAX(payslip_month) AS last_month,
+                MAX(COALESCE(updated_at, created_at)) AS last_uploaded_at,
+                ${months.length ? `SUM(payslip_month IN (${marks}))` : "0"} AS in_period
+         FROM tr_payslip_waschen
+         GROUP BY employee_id`,
+        months,
+      ),
+      safeMyWaschenQuery(
+        `SELECT DISTINCT CAST(LEFT(payslip_month, 4) AS UNSIGNED) AS y
+         FROM tr_payslip_waschen
+         ORDER BY y`,
+      ),
+    ]);
+
+    return res.json({
+      success: true,
+      meta: {
+        months,
+        years: yearRows.map((r) => Number(r.y)).filter((y) => y > 0),
+      },
+      data: rows.map((r) => ({
+        employee_id: r.employee_id,
+        total: Number(r.total) || 0,
+        last_month: r.last_month,
+        last_uploaded_at: r.last_uploaded_at,
+        in_period: Number(r.in_period) || 0,
+      })),
+    });
+  } catch (error) {
+    console.error("[summaryWaschenPayslips]", error);
+    return res.status(500).json({ success: false, message: "Gagal memuat ringkasan slip gaji" });
+  }
+};
+
 export const listWaschenPayslips = async (req, res) => {
   try {
     const employeeId = Number(req.params.id);
