@@ -996,11 +996,36 @@ const buildClassificationWhere = (req, me) => {
     if (dateFrom) { conditions.push("pr.tanggal_pengajuan >= ?"); params.push(dateFrom); }
     if (dateTo)   { conditions.push("pr.tanggal_pengajuan <= ?"); params.push(dateTo); }
 
-    for (const f of [buildDeptFilter(req, me), buildScopeFilter(req)]) {
+    for (const f of [buildDeptFilter(req, me), buildScopeFilter(req), buildClassificationIdFilter(req)]) {
         conditions.push(...f.conditions);
         params.push(...f.params);
     }
     return { where: conditions.join(" AND "), params };
+};
+
+// Filter klasifikasi (classification_ids). Hanya PR yang punya salah satu klasifikasi terpilih;
+// PR data lama (tanpa baris klasifikasi) dicocokkan lewat kolom pr.classification_id.
+function buildClassificationIdFilter(req) {
+    const ids = parseFilterIds(req.query.classification_ids);
+    if (ids === null) return { conditions: [], params: [] };
+    if (!ids.length) return { conditions: ["1 = 0"], params: [] };
+    return {
+        conditions: [`(
+            EXISTS (SELECT 1 FROM tr_purchase_request_classification k
+                    WHERE k.pr_id = pr.pr_id AND k.classification_id IN (?))
+            OR (NOT EXISTS (SELECT 1 FROM tr_purchase_request_classification k2 WHERE k2.pr_id = pr.pr_id)
+                AND pr.classification_id IN (?))
+        )`],
+        params: [ids, ids],
+    };
+}
+
+// Batasi baris alokasi ke klasifikasi terpilih (PR multi-klasifikasi tidak menampilkan klasifikasi lain).
+// Mengembalikan fragmen SQL "AND a.gkey IN (...)" atau string kosong bila tidak difilter.
+const classificationKeyClause = (req) => {
+    const ids = parseFilterIds(req.query.classification_ids);
+    if (ids === null || !ids.length) return "";
+    return ` AND a.gkey IN (${ids.map(id => `'c${id}'`).join(",")})`;
 };
 
 // Alokasi nominal PR ke klasifikasi (satu baris per PR × klasifikasi).
@@ -1069,6 +1094,7 @@ export const getByClassification = async (req, res) => {
                     COALESCE(SUM(a.amt), 0) AS total_nominal
              FROM (${classificationAllocSql(where)}) a
              LEFT JOIN mst_purchase_classification m ON a.gkey = CONCAT('c', m.id)
+             WHERE 1 = 1${classificationKeyClause(req)}
              GROUP BY a.gkey, classification_name`,
             [...params, ...params]
         );
@@ -1180,6 +1206,52 @@ export const getClassificationItems = async (req, res) => {
     } catch (err) {
         console.error("[getClassificationItems]", err);
         res.status(500).json({ message: "Gagal memuat detail klasifikasi" });
+    }
+};
+
+// ════════════════════════════════════════════════════════════════════════════
+// EXPORT EXCEL dashboard klasifikasi
+//
+// GET /pengajuan/by-classification/export
+//   filter sama dengan getByClassification (termasuk classification_ids), tanpa paginasi.
+//   Satu baris per PR (klasifikasi digabung koma), maksimal EXPORT_MAX_ROWS baris.
+// ════════════════════════════════════════════════════════════════════════════
+const EXPORT_MAX_ROWS = 10000;
+
+export const exportByClassification = async (req, res) => {
+    try {
+        const employeeId = getEmployeeId(req);
+        if (!employeeId) return res.status(401).json({ message: "Unauthorized" });
+
+        const me = await fetchEmployee(employeeId);
+        if (!me) return res.status(404).json({ message: "Employee tidak ditemukan" });
+
+        const { where, params } = buildClassificationWhere(req, me);
+
+        // Satu baris per PR dengan kolom yang sama seperti listAll (dipakai exportPengajuanExcel).
+        const data = await safeQuery(
+            `SELECT pr.*, e.full_name AS pengaju_name, d.department_name,
+                    s.satuan_name, ${SCOPE_COMPANY_SELECT}, ${SCOPE_OUTLET_SELECT},
+                    (SELECT GROUP_CONCAT(mc.classification_name ORDER BY mc.classification_name SEPARATOR ', ')
+                     FROM tr_purchase_request_classification prc
+                     JOIN mst_purchase_classification mc ON mc.id = prc.classification_id
+                     WHERE prc.pr_id = pr.pr_id) AS classification_name
+             FROM tr_purchase_request pr
+             LEFT JOIN mst_employee   e ON e.employee_id   = pr.employee_id
+             LEFT JOIN mst_department d ON d.department_id = pr.department_id
+             LEFT JOIN mst_satuan     s ON s.satuan_id     = pr.satuan_id
+             LEFT JOIN mst_company    c ON c.company_id    = pr.company_id
+             LEFT JOIN mst_outlet     o ON o.id            = pr.outlet_id
+             WHERE ${where}
+             ORDER BY pr.created_at DESC
+             LIMIT ?`,
+            [...params, EXPORT_MAX_ROWS]
+        );
+
+        res.json({ data, truncated: data.length >= EXPORT_MAX_ROWS });
+    } catch (err) {
+        console.error("[exportByClassification]", err);
+        res.status(500).json({ message: "Gagal mengekspor data klasifikasi" });
     }
 };
 

@@ -4,7 +4,7 @@ import { uploadPurchase } from "../../middleware/upload.js";
 import {
     getSatuan, getCompanies, getOutlets, getVendors, getPeriods, getDepartments,
     getClassifications, createClassification, getEmployeeOptions,
-    getDashboard, getByClassification, getClassificationItems,
+    getDashboard, getByClassification, getClassificationItems, exportByClassification,
     listMy, listDepartment, listApproval, listAll, listGaReview, getDetail,
     listFinanceReview, listPaymentPending,
     listCredit, getPaymentHistory, addInstallment,
@@ -33,6 +33,7 @@ router.get("/employee-options", requireAuth, getEmployeeOptions);
 router.get("/dashboard",            requireAuth, getDashboard);
 router.get("/by-classification",       requireAuth, getByClassification);
 router.get("/by-classification/items", requireAuth, getClassificationItems);
+router.get("/by-classification/export", requireAuth, exportByClassification);
 router.get("/me",                   requireAuth, listMy);
 router.get("/department",           requireAuth, listDepartment);
 router.get("/approval",             requireAuth, listApproval);
