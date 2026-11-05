@@ -1,9 +1,12 @@
 import { safeMyWaschenQuery } from "../../../db/pool.js";
 import { defaultCutoffDateRange } from "../cutoffHelpers.js";
 
-/** Filter nota berdasarkan tanggal order (operasional). */
+/**
+ * Filter nota berdasarkan tanggal order (operasional).
+ * Nota yang diajukan hapus (is_delete_requested = 1) tidak dihitung — sama dengan Daily Report & laporan shift POS.
+ */
 function buildOrderFilters({ outletId, dateFrom, dateTo, alias = "t" }) {
-  const where = ["1=1"];
+  const where = [`${alias}.is_delete_requested = 0`];
   const params = [];
 
   if (outletId) {
@@ -27,7 +30,11 @@ function buildOrderFilters({ outletId, dateFrom, dateTo, alias = "t" }) {
  * Contoh: nota tgl 1 Outstanding → bayar tgl 5 → revenue masuk tanggal 5.
  */
 function buildRevenueFilters({ outletId, dateFrom, dateTo, alias = "t" }) {
-  const where = [`${alias}.payment_status <> 'Outstanding'`, `${alias}.paid_at IS NOT NULL`];
+  const where = [
+    `${alias}.payment_status <> 'Outstanding'`,
+    `${alias}.paid_at IS NOT NULL`,
+    `${alias}.is_delete_requested = 0`,
+  ];
   const params = [];
 
   if (outletId) {

@@ -2,6 +2,20 @@ import { safeMyWaschenQuery } from "../../../db/pool.js";
 
 const SORT_COLUMNS = ["id", "outlet_code", "name", "full_name", "created_at"];
 
+/**
+ * Koordinat opsional (dipakai cek jarak absen di Waschen Mobile). Kosong → NULL.
+ * @returns {{ lat: number|null, lon: number|null, error?: string }}
+ */
+function parseCoordinates(body) {
+  const read = (v) => (v === undefined || v === null || String(v).trim() === "" ? null : Number(String(v).replace(",", ".")));
+  const lat = read(body.lat);
+  const lon = read(body.lon);
+  if ((lat === null) !== (lon === null)) return { lat, lon, error: "Latitude dan Longitude harus diisi berpasangan" };
+  if (lat !== null && (!Number.isFinite(lat) || lat < -90 || lat > 90)) return { lat, lon, error: "Latitude harus berupa angka antara -90 dan 90" };
+  if (lon !== null && (!Number.isFinite(lon) || lon < -180 || lon > 180)) return { lat, lon, error: "Longitude harus berupa angka antara -180 dan 180" };
+  return { lat, lon };
+}
+
 export const getOutlets = async (req, res) => {
   try {
     const search = String(req.query.search || "").trim();
@@ -55,6 +69,9 @@ export const createOutlet = async (req, res) => {
       });
     }
 
+    const coords = parseCoordinates(req.body);
+    if (coords.error) return res.status(400).json({ success: false, message: coords.error });
+
     const formattedCode = outlet_code.trim().toUpperCase();
 
     const [exist] = await safeMyWaschenQuery("SELECT id FROM mst_outlet WHERE outlet_code = ?", [formattedCode]);
@@ -63,8 +80,8 @@ export const createOutlet = async (req, res) => {
     }
 
     const [result] = await safeMyWaschenQuery(
-      `INSERT INTO mst_outlet (outlet_code, name, full_name, address) VALUES (?, ?, ?, ?)`,
-      [formattedCode, name.trim(), full_name.trim(), address?.trim() || null]
+      `INSERT INTO mst_outlet (outlet_code, name, full_name, address, lat, lon) VALUES (?, ?, ?, ?, ?, ?)`,
+      [formattedCode, name.trim(), full_name.trim(), address?.trim() || null, coords.lat, coords.lon]
     );
 
     res.status(201).json({ success: true, message: "Outlet berhasil ditambahkan", id: result.insertId });
@@ -86,6 +103,9 @@ export const updateOutlet = async (req, res) => {
       });
     }
 
+    const coords = parseCoordinates(req.body);
+    if (coords.error) return res.status(400).json({ success: false, message: coords.error });
+
     const [exist] = await safeMyWaschenQuery("SELECT id FROM mst_outlet WHERE id = ?", [id]);
     if (!exist.length) {
       return res.status(404).json({ success: false, message: "Outlet tidak ditemukan" });
@@ -103,9 +123,9 @@ export const updateOutlet = async (req, res) => {
 
     await safeMyWaschenQuery(
       `UPDATE mst_outlet
-       SET outlet_code = ?, name = ?, full_name = ?, address = ?, updated_at = NOW()
+       SET outlet_code = ?, name = ?, full_name = ?, address = ?, lat = ?, lon = ?, updated_at = NOW()
        WHERE id = ?`,
-      [formattedCode, name.trim(), full_name.trim(), address?.trim() || null, id]
+      [formattedCode, name.trim(), full_name.trim(), address?.trim() || null, coords.lat, coords.lon, id]
     );
 
     res.json({ success: true, message: "Outlet berhasil diperbarui" });

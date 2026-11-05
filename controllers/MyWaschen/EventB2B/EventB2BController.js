@@ -8,7 +8,8 @@ import { safeMyWaschenQuery } from "../../../db/pool.js";
 
 /** Filter nota event: event tertentu (opsional) + rentang tanggal order (opsional). */
 function buildEventFilters({ eventOutletId, dateFrom, dateTo, dateCol = "order_date", alias = "t" }) {
-  const where = [`${alias}.is_event = 1`];
+  // Nota yang diajukan hapus keluar dari revenue/tagihan (sama dengan Daily Report & laporan shift).
+  const where = [`${alias}.is_event = 1`, `${alias}.is_delete_requested = 0`];
   const params = [];
   if (eventOutletId) {
     where.push(`${alias}.outlet_id = ?`);
