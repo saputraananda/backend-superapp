@@ -1,5 +1,6 @@
 import { safeMyWaschenQuery, safeQuery, myWaschenPool } from "../../../db/pool.js";
 import { buildProduksiPhotoUrl } from "../HRIS/hrisAssetHelpers.js";
+import { attachQueueNo } from "../../../utils/queueNo.js";
 import { posFileUrl, uploadDeleteRequestAttachment, uploadRefundApprovalProof } from "../../../utils/waschenPosUpload.js";
 
 function resolvePaymentStatus(paidAmount, grandTotal) {
@@ -114,6 +115,7 @@ function mapTransactionRow(row) {
     totalWeightKg: num(row.total_weight_kg),
     totalPcs: num(row.total_pcs),
     outletAddress: row.outlet_address || null,
+    queueNo: num(row.queue_no) || null,
     speedName: row.speed_name,
     parfumeName: row.parfume_name,
     specialNotes: row.special_notes,
@@ -344,6 +346,8 @@ export const getTransactions = async (req, res) => {
       );
     }
 
+    await attachQueueNo(safeMyWaschenQuery, rows);
+
     // cashier / settler names from main DB (best-effort)
     const cashierIds = [
       ...new Set(
@@ -391,6 +395,7 @@ export const getTransactionById = async (req, res) => {
     if (!rows.length) {
       return res.status(404).json({ success: false, message: "Nota tidak ditemukan" });
     }
+    await attachQueueNo(safeMyWaschenQuery, rows);
     const row = rows[0];
 
     const [[details], [logs], [statusLogs], [progressRows], [bagRows], [kgRows]] = await Promise.all([
