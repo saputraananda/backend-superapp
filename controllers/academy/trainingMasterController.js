@@ -1,5 +1,5 @@
 import { academyPool, safeAcademyQuery } from "../../db/pool.js";
-import { saveVersionContent } from "../../utils/academyVersion.js";
+import { saveVersionContent } from "./utils/academyVersion.js";
 
 const groupBy = (rows, key) => {
   const groups = new Map();

@@ -1,5 +1,5 @@
 import { safeAcademyQuery, safeQuery } from "../../db/pool.js";
-import { indicatorAverages, summarizeTraining } from "../../utils/academyDashboard.js";
+import { indicatorAverages, summarizeTraining } from "./utils/academyDashboard.js";
 
 const MONTH = /^\d{4}-\d{2}$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;

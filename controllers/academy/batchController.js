@@ -1,7 +1,7 @@
 import { academyPool, safeAcademyQuery, safeMyWaschenQuery, safeQuery } from "../../db/pool.js";
-import { toMysqlDatetime, validateBatchPayload } from "../../utils/academyBatch.js";
-import { matchKeywords } from "../../utils/academyEssay.js";
-import { computeParticipantScores, testScoreFromAnswers } from "../../utils/academyScoring.js";
+import { toMysqlDatetime, validateBatchPayload } from "./utils/academyBatch.js";
+import { matchKeywords } from "./utils/academyEssay.js";
+import { computeParticipantScores, testScoreFromAnswers } from "./utils/academyScoring.js";
 
 // Peserta Academy hanya karyawan Waschen (sama dengan WASCHEN_COMPANY_ID di waschen-mobile).
 const WASCHEN_COMPANY_ID = 5;

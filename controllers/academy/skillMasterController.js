@@ -1,5 +1,5 @@
 import { academyPool, safeAcademyQuery, safeMyWaschenQuery, safeQuery } from "../../db/pool.js";
-import { validateSkillStructure } from "../../utils/academySkill.js";
+import { validateSkillStructure } from "./utils/academySkill.js";
 
 const LO_COMPANY_ID = 1;
 
