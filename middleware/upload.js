@@ -561,6 +561,31 @@ export const uploadTrainingEvidence = multer({
 });
 
 // =========================
+// Upload Materi Alora Academy (dokumen + gambar, 10 MB)
+// =========================
+const ACADEMY_MATERIAL_DIR = path.join(BASE_DIR, "academy_material");
+if (!fs.existsSync(ACADEMY_MATERIAL_DIR)) fs.mkdirSync(ACADEMY_MATERIAL_DIR, { recursive: true });
+
+const academyMaterialStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, ACADEMY_MATERIAL_DIR),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    const baseName = path
+      .basename(file.originalname, ext)
+      .replace(/[^a-zA-Z0-9_\-]/g, "_")
+      .slice(0, 60);
+    const unique = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    cb(null, `${baseName}_${unique}${ext}`);
+  },
+});
+
+export const uploadAcademyMaterial = multer({
+  storage: academyMaterialStorage,
+  fileFilter: documentFilter,
+  limits: { fileSize: 10 * 1024 * 1024 },
+});
+
+// =========================
 // Upload IKM Payslip
 // =========================
 // Pakai BASE_DIR yang sudah otomatis menyesuaikan dev/prod via UPLOAD_BASE_DIR

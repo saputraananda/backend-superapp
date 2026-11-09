@@ -117,6 +117,25 @@ const ALORA_MOBILE_DB_CONFIG = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
+// CONFIG ALORA ACADEMY DB (training dan skill matrix)
+// ═══════════════════════════════════════════════════════════════════════════
+const ACADEMY_DB_CONFIG = {
+  host: process.env.DB_ALORA_ACADEMY_HOST || process.env.DB_HOST,
+  port: Number(process.env.DB_ALORA_ACADEMY_PORT || process.env.DB_PORT) || 3306,
+  user: process.env.DB_ALORA_ACADEMY_USER || process.env.DB_USER,
+  password: process.env.DB_ALORA_ACADEMY_PASS || process.env.DB_PASS,
+  database: process.env.DB_ALORA_ACADEMY_NAME,
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0,
+  dateStrings: true,
+  connectTimeout: 10_000,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 10_000,
+  idleTimeout: 60_000,
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
 // CONFIG BACKUP CLEANOX DB (cleanox_smartlink backup)
 // ═══════════════════════════════════════════════════════════════════════════
 const BACKUP_CLEANOX_DB_CONFIG = {
@@ -142,6 +161,7 @@ let ikmPool = mysql.createPool(IKM_DB_CONFIG);
 let backupCleanoxPool = mysql.createPool(BACKUP_CLEANOX_DB_CONFIG);
 let myWaschenPool = mysql.createPool(MY_WASCHEN_DB_CONFIG);
 let aloraMobilePool = mysql.createPool(ALORA_MOBILE_DB_CONFIG);
+let academyPool = mysql.createPool(ACADEMY_DB_CONFIG);
 
 const RECONNECT_CODES = [
   "ETIMEDOUT",
@@ -186,6 +206,8 @@ async function runSafeQuery(getPoolFn, config, sql, params) {
         myWaschenPool = newPool;
       } else if (config === ALORA_MOBILE_DB_CONFIG) {
         aloraMobilePool = newPool;
+      } else if (config === ACADEMY_DB_CONFIG) {
+        academyPool = newPool;
       } else {
         ikmPool = newPool;
       }
@@ -240,6 +262,11 @@ export function safeAloraMobileQuery(sql, params) {
   return runSafeQuery(() => aloraMobilePool, ALORA_MOBILE_DB_CONFIG, sql, params);
 }
 
+// EXPORT: safeAcademyQuery untuk DB alora_academy
+export function safeAcademyQuery(sql, params) {
+  return runSafeQuery(() => academyPool, ACADEMY_DB_CONFIG, sql, params);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // DB Ping untuk keep-alive (opsional)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -253,12 +280,13 @@ export function startDbPing(intervalMs = 30_000) {
       await backupCleanoxPool.query("SELECT 1");
       await myWaschenPool.query("SELECT 1");
       await aloraMobilePool.query("SELECT 1");
+      await academyPool.query("SELECT 1");
     } catch (err) {
       console.warn("[DB Ping] Gagal:", err.code ?? err.message);
     }
   }, intervalMs);
-  console.info(`[DB Ping] Aktif untuk main + smartlink + cleanox + ikm + backup_cleanox + my_waschen + alora_mobile, interval ${intervalMs / 1000}s`);
+  console.info(`[DB Ping] Aktif untuk main + smartlink + cleanox + ikm + backup_cleanox + my_waschen + alora_mobile + alora_academy, interval ${intervalMs / 1000}s`);
 }
 
-export { mainPool as pool, mainPool, smartlinkPool, cleanoxPool, ikmPool, backupCleanoxPool, myWaschenPool, aloraMobilePool };
+export { mainPool as pool, mainPool, smartlinkPool, cleanoxPool, ikmPool, backupCleanoxPool, myWaschenPool, aloraMobilePool, academyPool };
 export default mainPool;
