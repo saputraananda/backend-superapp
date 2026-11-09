@@ -4,7 +4,6 @@ import { safeQuery, safeSmartlinkQuery, safeMyWaschenQuery } from "../db/pool.js
 const complaintQuery = safeMyWaschenQuery;
 import fs from "fs";
 import path from "path";
-import FormData from "form-data";
 
 const isProd = process.env.NODE_ENV === "production";
 const ASSETS_BASE = isProd
@@ -36,17 +35,18 @@ async function publishComplaintFile(file) {
     if (process.env.NODE_ENV !== "production") return;
     throw new Error("Gagal menyimpan lampiran: WASCHEN_POS_TOKEN belum di-set di server API.");
   }
+  // FormData/Blob bawaan Node: fetch (undici) tidak bisa mengirim stream dari paket `form-data`
   const form = new FormData();
-  form.append("file", fs.createReadStream(file.path), {
-    filename: file.filename,
-    contentType: file.mimetype || "application/octet-stream",
+  const blob = new Blob([await fs.promises.readFile(file.path)], {
+    type: file.mimetype || "application/octet-stream",
   });
+  form.append("file", blob, file.filename);
   const url = `${posOrigin()}/api/internal/complaint-docs`;
   let res;
   try {
     res = await fetch(url, {
       method: "POST",
-      headers: { ...form.getHeaders(), "X-Complaint-Sync-Token": token },
+      headers: { "X-Complaint-Sync-Token": token },
       body: form,
     });
   } catch (err) {

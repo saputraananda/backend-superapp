@@ -112,7 +112,7 @@ const SHIFT_SELECT = `
 /** Nota yang dibayar (DP/Lunas/Pelunasan) di rentang shift, sama dengan POS. Nota baru outstanding tidak masuk. */
 async function loadShiftTransactions(shift) {
   const [rows] = await safeMyWaschenQuery(
-    `SELECT t.id, t.order_no, t.payment_status,
+    `SELECT t.id, t.order_no, t.payment_status, t.cashier_employee_id,
             c.name AS customer_name,
             COALESCE(NULLIF(TRIM(c.full_address), ''), NULLIF(TRIM(c.address), '')) AS customer_address,
             p.paid_here, p.methods, p.last_paid_at,
@@ -134,9 +134,13 @@ async function loadShiftTransactions(shift) {
      ORDER BY p.last_paid_at ASC`,
     [shift.opened_at, shift.closed_at || null, shift.id, shift.outlet_id]
   );
+  // Nama pembuat nota (untuk kolom "Pembuat Nota" di export Excel)
+  const creatorNames = await getEmployeeNameMap(rows.map((r) => r.cashier_employee_id));
   return rows.map((r) => ({
     id: r.id,
     orderNo: r.order_no,
+    cashierEmployeeId: r.cashier_employee_id || null,
+    cashierName: r.cashier_employee_id ? (creatorNames[r.cashier_employee_id] || null) : null,
     paymentStatus: r.payment_status,
     customerName: r.customer_name,
     customerAddress: r.customer_address,
@@ -190,6 +194,46 @@ export async function getDailyReportList(req, res) {
     return res.status(err.status || 500).json({
       success: false,
       message: err.message || "Gagal memuat daily report",
+    });
+  }
+}
+
+/**
+ * GET /waschen/daily-report/cash-deposits
+ * Closing Final per tanggal closing (WIB) beserta status setoran tunai. Tanpa daftar nota agar ringan untuk rentang cutoff.
+ */
+export async function getCashDepositList(req, res) {
+  try {
+    const outletIds = String(req.query.outletId || "").split(",").map(Number).filter((n) => Number.isInteger(n) && n > 0);
+    const today = wibDateKey(new Date());
+    const dateFrom = String(req.query.dateFrom || today).slice(0, 10);
+    const dateTo = String(req.query.dateTo || dateFrom).slice(0, 10);
+
+    const params = [dateFrom, dateTo];
+    let sql = `${SHIFT_SELECT}
+      WHERE s.status = 'Closed' AND s.close_type = 'Final' AND s.closed_at IS NOT NULL
+        AND DATE(s.closed_at) >= ? AND DATE(s.closed_at) <= ?`;
+    if (outletIds.length) {
+      sql += ` AND s.outlet_id IN (${outletIds.map(() => "?").join(",")})`;
+      params.push(...outletIds);
+    }
+    sql += " ORDER BY s.outlet_id ASC, s.closed_at ASC, s.id ASC";
+
+    const [rows] = await safeMyWaschenQuery(sql, params);
+    const nameMap = await getEmployeeNameMap(
+      rows.flatMap((r) => [r.cashier_employee_id, r.closed_by_employee_id, r.deposit_uploaded_by])
+    );
+    const data = [];
+    for (const row of rows) {
+      data.push({ ...(await enrichShiftRow(row, nameMap)), closeDate: wibDateKey(row.closed_at) });
+    }
+
+    return res.json({ success: true, data, meta: { outletIds, dateFrom, dateTo, total: data.length } });
+  } catch (err) {
+    console.error("getCashDepositList:", err);
+    return res.status(err.status || 500).json({
+      success: false,
+      message: err.message || "Gagal memuat setoran tunai",
     });
   }
 }

@@ -5,9 +5,15 @@ import {
   createPaymentMethod,
   updatePaymentMethod,
   deletePaymentMethod,
+  getPaymentSettings,
+  updatePaymentSettings,
 } from "../../../controllers/MyWaschen/MasterData/PaymentMethodController.js";
 
 const router = express.Router();
+
+// Harus sebelum /:id
+router.get("/settings", getPaymentSettings);
+router.put("/settings", updatePaymentSettings);
 
 router.get("/", getPaymentMethods);
 router.get("/:id", getPaymentMethodById);
