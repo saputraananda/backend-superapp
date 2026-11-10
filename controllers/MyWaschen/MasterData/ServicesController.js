@@ -76,6 +76,12 @@ const generateNextServiceCode = async (categoryId, unitId) => {
 };
 
 // ── 1. GET LIST ──
+// Durasi 0 hari valid (tidak boleh diam-diam jadi 2); hanya kosong/tidak valid yang default 2.
+const durationDays = (v) => {
+  const n = Number(v);
+  return v === "" || v == null || !Number.isFinite(n) || n < 0 ? 2.0 : n;
+};
+
 export const getServices = async (req, res) => {
   try {
     const search = String(req.query.search || "").trim();
@@ -193,7 +199,7 @@ export const createService = async (req, res) => {
         formattedCode,
         name.trim(),
         Number(price) || 0,
-        Number(regular_duration_days) || 2.0,
+        durationDays(regular_duration_days),
         Number(min_order_qty) || 1.0,
         description?.trim() || null,
         is_cleanox !== undefined ? Number(is_cleanox) : 0,
@@ -268,7 +274,7 @@ export const updateService = async (req, res) => {
         formattedCode,
         name.trim(),
         Number(price) || 0,
-        Number(regular_duration_days) || 2.0,
+        durationDays(regular_duration_days),
         Number(min_order_qty) || 1.0,
         description?.trim() || null,
         is_cleanox !== undefined ? Number(is_cleanox) : 0,

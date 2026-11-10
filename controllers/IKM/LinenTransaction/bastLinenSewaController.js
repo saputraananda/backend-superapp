@@ -31,23 +31,30 @@ function assertText(label, value) {
   return raw;
 }
 
-// Pejabat yang mengetahui opsional: kosong semua = tidak ada; terisi sebagian = ditolak
+// Jabatan boleh kosong (disimpan sebagai string kosong), tetapi tetap dibatasi panjangnya
+function optionalText(label, value) {
+  const raw = String(value || "").replace(/[<>]/g, "").trim();
+  if (raw.length > 150) throw bad(`${label} terlalu panjang`);
+  return raw;
+}
+
+// Pejabat yang mengetahui opsional: kosong semua = tidak ada; nama wajib jika ada isian, jabatan boleh kosong
 function readGaHead(body) {
   const name = String(body.ga_head_name || "").trim();
-  const position = String(body.ga_head_position || "").replace(/[<>]/g, "").trim();
+  const position = optionalText("Jabatan yang mengetahui", body.ga_head_position);
   if (!name && !position) return { gaHeadName: null, gaHeadPosition: null };
   return {
     gaHeadName: assertTitleCase("Nama yang mengetahui", name),
-    gaHeadPosition: assertText("Jabatan yang mengetahui", position),
+    gaHeadPosition: position,
   };
 }
 
 function readParties(body) {
   return {
     senderName: assertTitleCase("Nama pengirim", body.sender_name),
-    senderPosition: assertText("Jabatan pengirim", body.sender_position),
+    senderPosition: optionalText("Jabatan pengirim", body.sender_position),
     receiverName: assertTitleCase("Nama penerima", body.receiver_name),
-    receiverPosition: assertText("Jabatan penerima", body.receiver_position),
+    receiverPosition: optionalText("Jabatan penerima", body.receiver_position),
     ...readGaHead(body),
 
   };
