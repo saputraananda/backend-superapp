@@ -1,6 +1,15 @@
 import { academyPool, safeAcademyQuery, safeQuery } from "../../db/pool.js";
 import { getWaschenEmployees } from "./batchController.js";
-import { addDays, dateRange, dayAverage, ojtAverage, ojtPhase, validateOjtPayload } from "./utils/academyOjt.js";
+import {
+  addDays,
+  buildSubskillProgress,
+  dayAverage,
+  ojtAverage,
+  ojtPhase,
+  scorableDates,
+  scoreProgress,
+  validateOjtPayload,
+} from "./utils/academyOjt.js";
 
 const MAX_NAME_LENGTH = 200;
 
@@ -29,18 +38,39 @@ function scoresByDate(rows) {
   return byDate;
 }
 
-/** Nilai akhir dan jumlah hari terisi dari semua baris nilai satu OJT. */
-function summarize(rows) {
-  const averages = [...scoresByDate(rows).values()].map((day) => dayAverage(day.map((r) => r.score)));
-  return { scored_days: averages.length, average: ojtAverage(averages) };
+/**
+ * Nilai OJT, jumlah penilaian (maksimal 2: hari pertama dan hari terakhir), dan kemajuan rata-rata
+ * dari baris nilai satu OJT. ojt = { start_date, days }.
+ */
+function summarize(rows, ojt) {
+  const byDate = scoresByDate(rows);
+  const averages = scorableDates(ojt.start_date, ojt.days).map((date) =>
+    byDate.has(date) ? dayAverage(byDate.get(date).map((r) => r.score)) : null
+  );
+  return {
+    scored_days: averages.filter((a) => a !== null).length,
+    average: ojtAverage(averages),
+    progress: scoreProgress(averages[0], averages[1]),
+  };
 }
 
-// ─── Master kriteria ──────────────────────────────────────────────────────
+// ─── Master kriteria dan sub-skill ────────────────────────────────────────
 
 export const getOjtCriteria = async (_req, res) => {
   try {
     const [rows] = await safeAcademyQuery(`SELECT id, name, is_active FROM mst_ojt_criterion ORDER BY is_active DESC, name`);
-    res.json({ data: rows.map((r) => ({ ...r, is_active: Boolean(r.is_active) })) });
+    const [subskills] = await safeAcademyQuery(
+      `SELECT id, criterion_id, name, is_active FROM mst_ojt_subskill ORDER BY is_active DESC, name`
+    );
+    res.json({
+      data: rows.map((r) => ({
+        ...r,
+        is_active: Boolean(r.is_active),
+        subskills: subskills
+          .filter((s) => s.criterion_id === r.id)
+          .map((s) => ({ id: s.id, name: s.name, is_active: Boolean(s.is_active) })),
+      })),
+    });
   } catch (err) {
     console.error("getOjtCriteria error:", err);
     res.status(500).json({ message: "Gagal memuat kriteria OJT" });
@@ -93,9 +123,61 @@ export const updateOjtCriterion = async (req, res) => {
   }
 };
 
+/** Nama sub-skill: wajib, maksimal 200 karakter, tidak boleh kembar dalam satu kriteria. */
+async function checkSubskillName(criterionId, name, exceptId = 0) {
+  if (!name) return "Nama sub-skill wajib diisi";
+  if (name.length > MAX_NAME_LENGTH) return `Nama sub-skill maksimal ${MAX_NAME_LENGTH} karakter`;
+  const [same] = await safeAcademyQuery(
+    `SELECT id FROM mst_ojt_subskill WHERE criterion_id = ? AND LOWER(name) = LOWER(?) AND id <> ? LIMIT 1`,
+    [criterionId, name, exceptId]
+  );
+  return same.length ? "Sub-skill dengan nama itu sudah ada di kriteria ini" : null;
+}
+
+export const createOjtSubskill = async (req, res) => {
+  try {
+    const [[criterion]] = await safeAcademyQuery(`SELECT id FROM mst_ojt_criterion WHERE id = ?`, [req.params.id]);
+    if (!criterion) return res.status(404).json({ message: "Kriteria tidak ditemukan" });
+
+    const name = String(req.body.name ?? "").trim();
+    const problem = await checkSubskillName(criterion.id, name);
+    if (problem) return res.status(400).json({ message: problem });
+
+    const [result] = await safeAcademyQuery(`INSERT INTO mst_ojt_subskill (criterion_id, name, created_by) VALUES (?, ?, ?)`, [
+      criterion.id,
+      name,
+      req.session.employeeId,
+    ]);
+    res.status(201).json({ id: result.insertId, message: "Sub-skill ditambahkan" });
+  } catch (err) {
+    console.error("createOjtSubskill error:", err);
+    res.status(500).json({ message: "Gagal menambah sub-skill" });
+  }
+};
+
+export const updateOjtSubskill = async (req, res) => {
+  try {
+    const [[current]] = await safeAcademyQuery(`SELECT id, criterion_id, name, is_active FROM mst_ojt_subskill WHERE id = ?`, [
+      req.params.id,
+    ]);
+    if (!current) return res.status(404).json({ message: "Sub-skill tidak ditemukan" });
+
+    const name = req.body.name === undefined ? current.name : String(req.body.name).trim();
+    const problem = await checkSubskillName(current.criterion_id, name, current.id);
+    if (problem) return res.status(400).json({ message: problem });
+    const isActive = req.body.is_active === undefined ? current.is_active : req.body.is_active ? 1 : 0;
+
+    await safeAcademyQuery(`UPDATE mst_ojt_subskill SET name = ?, is_active = ? WHERE id = ?`, [name, isActive, current.id]);
+    res.json({ message: "Sub-skill diperbarui" });
+  } catch (err) {
+    console.error("updateOjtSubskill error:", err);
+    res.status(500).json({ message: "Gagal memperbarui sub-skill" });
+  }
+};
+
 // ─── Pilihan untuk form OJT ───────────────────────────────────────────────
 
-/** Peserta yang sudah selesai training (semua hasil), karyawan untuk pemantau, dan kriteria aktif. */
+/** Peserta yang sudah selesai training (semua hasil), karyawan untuk pemantau, dan kriteria aktif yang punya sub-skill aktif. */
 export const getOjtOptions = async (_req, res) => {
   try {
     const [participants] = await safeAcademyQuery(
@@ -109,11 +191,16 @@ export const getOjtOptions = async (_req, res) => {
     const names = await getNames(participants.map((p) => p.employee_id));
     const employees = await getWaschenEmployees();
     const [criteria] = await safeAcademyQuery(`SELECT id, name FROM mst_ojt_criterion WHERE is_active = 1 ORDER BY name`);
+    const [subskills] = await safeAcademyQuery(
+      `SELECT id, criterion_id, name FROM mst_ojt_subskill WHERE is_active = 1 ORDER BY name`
+    );
 
     res.json({
       participants: participants.map((p) => ({ ...p, full_name: names.get(p.employee_id) ?? "Karyawan tidak ditemukan" })),
       employees: employees.map((e) => ({ employee_id: e.employee_id, full_name: e.full_name, position_name: e.position_name })),
-      criteria,
+      criteria: criteria
+        .map((c) => ({ ...c, subskills: subskills.filter((s) => s.criterion_id === c.id).map(({ id, name }) => ({ id, name })) }))
+        .filter((c) => c.subskills.length),
     });
   } catch (err) {
     console.error("getOjtOptions error:", err);
@@ -154,7 +241,7 @@ export const getOjtList = async (_req, res) => {
           full_name: names.get(o.employee_id) ?? "Karyawan tidak ditemukan",
           end_date: end,
           phase: ojtPhase(o.start_date, end, today),
-          ...summarize(scoresByOjt.get(o.id) ?? []),
+          ...summarize(scoresByOjt.get(o.id) ?? [], o),
         };
       }),
     });
@@ -178,29 +265,36 @@ export const getOjtById = async (req, res) => {
     if (!ojt) return res.status(404).json({ message: "OJT tidak ditemukan" });
 
     const [observers] = await safeAcademyQuery(`SELECT employee_id FROM tr_ojt_observer WHERE ojt_id = ? ORDER BY id`, [ojt.id]);
-    const [criteria] = await safeAcademyQuery(
-      `SELECT c.id, c.name FROM tr_ojt_criterion oc JOIN mst_ojt_criterion c ON c.id = oc.criterion_id
-       WHERE oc.ojt_id = ? ORDER BY c.name`,
+    const [subskills] = await safeAcademyQuery(
+      `SELECT id, criterion_id, criterion_name, name FROM tr_ojt_subskill WHERE ojt_id = ? ORDER BY criterion_name, name`,
       [ojt.id]
     );
     const [scores] = await safeAcademyQuery(
-      `SELECT score_date, criterion_id, score, assessor_id FROM tr_ojt_score WHERE ojt_id = ?`,
+      `SELECT score_date, ojt_subskill_id, score, assessor_id FROM tr_ojt_score WHERE ojt_id = ?`,
       [ojt.id]
     );
     const names = await getNames([ojt.employee_id, ...observers.map((o) => o.employee_id), ...scores.map((s) => s.assessor_id)]);
-    const criterionName = new Map(criteria.map((c) => [c.id, c.name]));
+    const subskillById = new Map(subskills.map((s, index) => [s.id, { ...s, order: index }]));
     const byDate = scoresByDate(scores);
     const end = endDateOf(ojt);
     const today = await getToday();
 
-    const daysDetail = dateRange(ojt.start_date, ojt.days).map((date) => {
+    const [firstDate, lastDate] = scorableDates(ojt.start_date, ojt.days);
+    const criteria = buildSubskillProgress(subskills, scores, firstDate, lastDate);
+    const daysDetail = [firstDate, lastDate].map((date, index) => {
       const rows = byDate.get(date);
       return {
         date,
+        kind: index === 0 ? "FIRST" : "LAST",
         scored: Boolean(rows),
         average: rows ? dayAverage(rows.map((r) => r.score)) : null,
         assessor_name: rows ? names.get(rows[0].assessor_id) ?? null : null,
-        scores: rows ? rows.map((r) => ({ criterion_id: r.criterion_id, name: criterionName.get(r.criterion_id), score: r.score })) : [],
+        scores: rows
+          ? rows
+              .map((r) => ({ ...subskillById.get(r.ojt_subskill_id), score: r.score }))
+              .sort((a, b) => a.order - b.order)
+              .map((s) => ({ subskill_id: s.id, name: s.name, criterion_id: s.criterion_id, criterion_name: s.criterion_name, score: s.score }))
+          : [],
       };
     });
 
@@ -219,7 +313,7 @@ export const getOjtById = async (req, res) => {
         observers: observers.map((o) => ({ employee_id: o.employee_id, full_name: names.get(o.employee_id) ?? "Karyawan tidak ditemukan" })),
         criteria,
         days_detail: daysDetail,
-        ...summarize(scores),
+        ...summarize(scores, ojt),
       },
     });
   } catch (err) {
@@ -234,10 +328,15 @@ async function checkObservers(observerIds) {
   return found.length === observerIds.length ? null : "Ada pemantau yang bukan karyawan Waschen aktif";
 }
 
-/** Kriteria harus ada dan aktif. Mengembalikan pesan error atau null. */
+/** Kriteria harus ada, aktif, dan punya minimal satu sub-skill aktif. Mengembalikan pesan error atau null. */
 async function checkCriteria(criterionIds) {
-  const [rows] = await safeAcademyQuery(`SELECT id FROM mst_ojt_criterion WHERE id IN (?) AND is_active = 1`, [criterionIds]);
-  return rows.length === criterionIds.length ? null : "Ada kriteria yang tidak ditemukan atau sudah nonaktif";
+  const [rows] = await safeAcademyQuery(
+    `SELECT c.id FROM mst_ojt_criterion c
+     WHERE c.id IN (?) AND c.is_active = 1
+       AND EXISTS (SELECT 1 FROM mst_ojt_subskill s WHERE s.criterion_id = c.id AND s.is_active = 1)`,
+    [criterionIds]
+  );
+  return rows.length === criterionIds.length ? null : "Ada kriteria yang tidak ditemukan, nonaktif, atau belum punya sub-skill";
 }
 
 const insertRows = (conn, table, column, ojtId, values, userId) =>
@@ -245,6 +344,16 @@ const insertRows = (conn, table, column, ojtId, values, userId) =>
     values.map((value) =>
       conn.query(`INSERT INTO ${table} (ojt_id, ${column}, created_by) VALUES (?, ?, ?)`, [ojtId, value, userId])
     )
+  );
+
+/** Menyalin sub-skill aktif dari kriteria terpilih ke OJT ini. Setelah ini daftar OJT tidak ikut berubah bila master berubah. */
+const snapshotSubskills = (conn, ojtId, criterionIds, userId) =>
+  conn.query(
+    `INSERT INTO tr_ojt_subskill (ojt_id, criterion_id, subskill_id, criterion_name, name, created_by)
+     SELECT ?, c.id, s.id, c.name, s.name, ?
+     FROM mst_ojt_subskill s JOIN mst_ojt_criterion c ON c.id = s.criterion_id
+     WHERE s.is_active = 1 AND c.id IN (?)`,
+    [ojtId, userId, criterionIds]
   );
 
 export const createOjt = async (req, res) => {
@@ -270,7 +379,7 @@ export const createOjt = async (req, res) => {
         [participant.id, participant.employee_id, body.start_date, body.days, userId]
       );
       await insertRows(conn, "tr_ojt_observer", "employee_id", ojt.insertId, body.observer_ids, userId);
-      await insertRows(conn, "tr_ojt_criterion", "criterion_id", ojt.insertId, body.criterion_ids, userId);
+      await snapshotSubskills(conn, ojt.insertId, body.criterion_ids, userId);
       await conn.commit();
       res.status(201).json({ id: ojt.insertId, message: "OJT dibuat" });
     } catch (err) {
@@ -285,7 +394,7 @@ export const createOjt = async (req, res) => {
   }
 };
 
-/** Mengubah tanggal, jumlah hari, dan pemantau. Kriteria hanya bisa diubah selama belum ada nilai. */
+/** Mengubah tanggal, jumlah hari, dan pemantau. Kriteria hanya bisa diubah selama belum ada nilai; kalau diubah, sub-skill disalin ulang dari master. */
 export const updateOjt = async (req, res) => {
   const conn = await academyPool.getConnection();
   const fail = async (status, message) => {
@@ -303,10 +412,12 @@ export const updateOjt = async (req, res) => {
     if (invalid) return await fail(400, invalid);
 
     const [scored] = await conn.query(`SELECT DISTINCT score_date FROM tr_ojt_score WHERE ojt_id = ?`, [current.id]);
-    const inRange = new Set(dateRange(body.start_date, body.days));
-    if (scored.some((s) => !inRange.has(s.score_date))) return await fail(400, "Ada tanggal yang sudah dinilai di luar periode baru");
+    const allowed = new Set(scorableDates(body.start_date, body.days));
+    if (scored.some((s) => !allowed.has(s.score_date))) {
+      return await fail(400, "Hari pertama atau hari terakhir yang sudah dinilai tidak boleh berubah");
+    }
 
-    const [existing] = await conn.query(`SELECT criterion_id FROM tr_ojt_criterion WHERE ojt_id = ?`, [current.id]);
+    const [existing] = await conn.query(`SELECT DISTINCT criterion_id FROM tr_ojt_subskill WHERE ojt_id = ?`, [current.id]);
     const existingIds = new Set(existing.map((c) => c.criterion_id));
     const sameCriteria = existingIds.size === body.criterion_ids.length && body.criterion_ids.every((id) => existingIds.has(id));
     if (!sameCriteria && scored.length) return await fail(400, "Kriteria tidak bisa diubah setelah ada nilai");
@@ -319,8 +430,8 @@ export const updateOjt = async (req, res) => {
     await conn.query(`DELETE FROM tr_ojt_observer WHERE ojt_id = ?`, [current.id]);
     await insertRows(conn, "tr_ojt_observer", "employee_id", current.id, body.observer_ids, userId);
     if (!sameCriteria) {
-      await conn.query(`DELETE FROM tr_ojt_criterion WHERE ojt_id = ?`, [current.id]);
-      await insertRows(conn, "tr_ojt_criterion", "criterion_id", current.id, body.criterion_ids, userId);
+      await conn.query(`DELETE FROM tr_ojt_subskill WHERE ojt_id = ?`, [current.id]);
+      await snapshotSubskills(conn, current.id, body.criterion_ids, userId);
     }
     await conn.commit();
     res.json({ message: "OJT diperbarui" });

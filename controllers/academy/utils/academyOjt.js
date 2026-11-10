@@ -2,6 +2,7 @@
 // kalau aturan berubah, ubah keduanya bersamaan.
 import { averageScore } from "./academyScoring.js";
 
+export const MIN_OJT_DAYS = 2;
 export const MAX_OJT_DAYS = 60;
 export const MIN_SCORE = 1;
 export const MAX_SCORE = 4;
@@ -27,23 +28,50 @@ export function dateRange(start, days) {
   return Array.from({ length: days }, (_, i) => addDays(start, i));
 }
 
+/** Hanya hari pertama dan hari terakhir OJT yang dinilai, untuk melihat kemajuan. */
+export const scorableDates = (start, days) => [start, addDays(start, days - 1)];
+
+/** NAIK, TURUN, atau TETAP dari nilai hari pertama ke hari terakhir. null kalau salah satunya belum dinilai. */
+export function scoreProgress(first, last) {
+  if (first === null || first === undefined || last === null || last === undefined) return null;
+  if (last > first) return "NAIK";
+  return last < first ? "TURUN" : "TETAP";
+}
+
+/**
+ * Kemajuan per sub-skill, dikelompokkan per kriteria. subskills = baris tr_ojt_subskill OJT itu (urut kriteria lalu nama),
+ * scoreRows = baris tr_ojt_score ({ score_date, ojt_subskill_id, score }). Nilai di tanggal selain hari pertama dan terakhir diabaikan.
+ * Hasil: [{ id, name, subskills: [{ id, name, first_score, last_score, progress }] }].
+ */
+export function buildSubskillProgress(subskills, scoreRows, firstDate, lastDate) {
+  const scoreOf = (subskillId, date) => scoreRows.find((r) => r.ojt_subskill_id === subskillId && r.score_date === date)?.score ?? null;
+  const byCriterion = new Map();
+  for (const s of subskills) {
+    if (!byCriterion.has(s.criterion_id)) byCriterion.set(s.criterion_id, { id: s.criterion_id, name: s.criterion_name, subskills: [] });
+    const first = scoreOf(s.id, firstDate);
+    const last = scoreOf(s.id, lastDate);
+    byCriterion.get(s.criterion_id).subskills.push({ id: s.id, name: s.name, first_score: first, last_score: last, progress: scoreProgress(first, last) });
+  }
+  return [...byCriterion.values()];
+}
+
 /** BELUM_MULAI, BERJALAN, atau SELESAI. Tanggal berbentuk YYYY-MM-DD, jadi bisa dibandingkan sebagai teks. */
 export function ojtPhase(start, end, today) {
   if (today < start) return "BELUM_MULAI";
   return today > end ? "SELESAI" : "BERJALAN";
 }
 
-/** Nilai satu hari: rata-rata nilai kriteria hari itu. */
+/** Nilai satu hari: rata-rata nilai semua sub-skill hari itu, tanpa memandang kriteria. */
 export const dayAverage = (scores) => averageScore(scores);
 
 /** Nilai akhir OJT: rata-rata nilai harian. Hari yang belum dinilai (null) tidak ikut dihitung. */
 export const ojtAverage = (dayAverages) => averageScore(dayAverages.filter((a) => a !== null && a !== undefined));
 
-/** Nilai satu hari harus mencakup persis semua kriteria OJT, masing-masing bilangan bulat 1 sampai 4. */
-export function validateDayScores(criterionIds, scores) {
-  const submitted = new Map((Array.isArray(scores) ? scores : []).map((s) => [Number(s.criterion_id), Number(s.score)]));
-  if (submitted.size !== criterionIds.length || criterionIds.some((id) => !submitted.has(id))) {
-    return "Semua kriteria wajib dinilai";
+/** Nilai satu hari harus mencakup persis semua sub-skill OJT, masing-masing bilangan bulat 1 sampai 4. */
+export function validateDayScores(subskillIds, scores) {
+  const submitted = new Map((Array.isArray(scores) ? scores : []).map((s) => [Number(s.subskill_id), Number(s.score)]));
+  if (submitted.size !== subskillIds.length || subskillIds.some((id) => !submitted.has(id))) {
+    return "Semua sub-skill wajib dinilai";
   }
   for (const score of submitted.values()) {
     if (!Number.isInteger(score) || score < MIN_SCORE || score > MAX_SCORE) return "Nilai harus 1 sampai 4";
@@ -58,8 +86,8 @@ const uniqueIntegers = (list) =>
 export function validateOjtPayload(body) {
   if (!Number.isInteger(body.participant_id)) return "Peserta wajib dipilih";
   if (!isValidDate(body.start_date)) return "Tanggal mulai tidak valid";
-  if (!Number.isInteger(body.days) || body.days < 1 || body.days > MAX_OJT_DAYS) {
-    return `Jumlah hari harus 1 sampai ${MAX_OJT_DAYS}`;
+  if (!Number.isInteger(body.days) || body.days < MIN_OJT_DAYS || body.days > MAX_OJT_DAYS) {
+    return `Jumlah hari harus ${MIN_OJT_DAYS} sampai ${MAX_OJT_DAYS}`;
   }
   if (!uniqueIntegers(body.observer_ids)) return "Pemantau wajib dipilih, tanpa duplikat";
   if (!uniqueIntegers(body.criterion_ids)) return "Kriteria penilaian wajib dipilih, tanpa duplikat";

@@ -118,6 +118,7 @@ export const createTraining = async (req, res) => {
 export const updateTraining = async (req, res) => {
   const name = String(req.body.name ?? "").trim();
   if (!name) return res.status(400).json({ message: "Nama training wajib diisi" });
+  if (name.length > 150) return res.status(400).json({ message: "Nama training maksimal 150 karakter" });
 
   try {
     const [result] = await safeAcademyQuery(`UPDATE mst_training SET name = ?, is_active = ? WHERE id = ?`, [

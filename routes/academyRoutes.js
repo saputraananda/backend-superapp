@@ -39,11 +39,14 @@ import {
   saveMentorScores,
   getEssays,
   gradeEssays,
+  getParticipantAnswers,
 } from "../controllers/academy/batchController.js";
 import {
   getOjtCriteria,
   createOjtCriterion,
   updateOjtCriterion,
+  createOjtSubskill,
+  updateOjtSubskill,
   getOjtOptions,
   getOjtList,
   getOjtById,
@@ -111,10 +114,13 @@ router.get("/participants/:id/mentor-scores", getMentorForm);
 router.put("/participants/:id/mentor-scores", saveMentorScores);
 router.get("/participants/:id/essays", getEssays);
 router.put("/participants/:id/essays", gradeEssays);
+router.get("/participants/:id/answers", getParticipantAnswers);
 
 router.get("/ojt/criteria", getOjtCriteria);
 router.post("/ojt/criteria", createOjtCriterion);
 router.put("/ojt/criteria/:id", updateOjtCriterion);
+router.post("/ojt/criteria/:id/subskills", createOjtSubskill);
+router.put("/ojt/subskills/:id", updateOjtSubskill);
 router.get("/ojt/options", getOjtOptions);
 router.get("/ojt", getOjtList);
 router.post("/ojt", createOjt);

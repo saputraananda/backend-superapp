@@ -1,4 +1,5 @@
 import { academyPool, safeAcademyQuery, safeMyWaschenQuery, safeQuery } from "../../db/pool.js";
+import { buildParticipantAnswers } from "./utils/academyAnswers.js";
 import { toMysqlDatetime, validateBatchPayload } from "./utils/academyBatch.js";
 import { matchKeywords } from "./utils/academyEssay.js";
 import { computeParticipantScores, questionMaxPoints, testScoreFromAnswers } from "./utils/academyScoring.js";
@@ -635,6 +636,59 @@ export const getEssays = async (req, res) => {
   } catch (err) {
     console.error("getEssays error:", err);
     res.status(500).json({ message: "Gagal memuat jawaban essay" });
+  }
+};
+
+/** Semua jawaban peserta (pilihan ganda, checkbox, essay) beserta kunci dan poin, untuk dilihat HR. Baca saja. */
+export const getParticipantAnswers = async (req, res) => {
+  try {
+    const [[participant]] = await safeAcademyQuery(
+      `SELECT p.id, p.pre_score, p.post_score, b.version_id
+       FROM tr_participant p JOIN tr_training_batch b ON b.id = p.batch_id
+       WHERE p.id = ?`,
+      [req.params.id]
+    );
+    if (!participant) return res.status(404).json({ message: "Peserta tidak ditemukan" });
+
+    const [answerRows] = await safeAcademyQuery(
+      `SELECT a.phase, a.question_id, a.answer_text, a.is_correct, ao.option_id
+       FROM tr_test_answer a
+       LEFT JOIN tr_test_answer_option ao ON ao.answer_id = a.id
+       WHERE a.participant_id = ?`,
+      [participant.id]
+    );
+
+    const tests = [];
+    for (const [phase, scoreColumn] of [["PRE", "pre_score"], ["POST", "post_score"]]) {
+      // Soal fase itu untuk topik yang di-assign ke peserta, urutan sama dengan nomor soal di rapor Waschen.
+      const [questions] = await safeAcademyQuery(
+        `SELECT q.id, q.type, q.question_text, q.answer_guide, tp.name AS topic_name
+         FROM mst_question q
+         JOIN tr_participant_topic pt ON pt.topic_id = q.topic_id AND pt.participant_id = ?
+         JOIN mst_training_topic tp ON tp.id = q.topic_id
+         WHERE q.version_id = ? AND q.phase = ?
+         ORDER BY q.sort_order, q.id`,
+        [participant.id, participant.version_id, phase]
+      );
+      let options = [];
+      if (questions.length) {
+        [options] = await safeAcademyQuery(
+          `SELECT id, question_id, option_text, is_correct FROM mst_question_option
+           WHERE question_id IN (?) ORDER BY sort_order, id`,
+          [questions.map((q) => q.id)]
+        );
+      }
+      const withOptions = questions.map((q) => ({ ...q, options: options.filter((o) => o.question_id === q.id) }));
+      tests.push({
+        phase,
+        score: participant[scoreColumn],
+        questions: buildParticipantAnswers(withOptions, answerRows.filter((r) => r.phase === phase)),
+      });
+    }
+    res.json({ tests });
+  } catch (err) {
+    console.error("getParticipantAnswers error:", err);
+    res.status(500).json({ message: "Gagal memuat jawaban peserta" });
   }
 };
 
