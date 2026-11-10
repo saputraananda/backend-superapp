@@ -1,7 +1,7 @@
 import { academyPool, safeAcademyQuery, safeMyWaschenQuery, safeQuery } from "../../db/pool.js";
 import { toMysqlDatetime, validateBatchPayload } from "./utils/academyBatch.js";
 import { matchKeywords } from "./utils/academyEssay.js";
-import { computeParticipantScores, testScoreFromAnswers } from "./utils/academyScoring.js";
+import { computeParticipantScores, questionMaxPoints, testScoreFromAnswers } from "./utils/academyScoring.js";
 
 // Peserta Academy hanya karyawan Waschen (sama dengan WASCHEN_COMPANY_ID di waschen-mobile).
 const WASCHEN_COMPANY_ID = 5;
@@ -16,7 +16,7 @@ const groupBy = (rows, key) => {
 };
 
 /** Karyawan Waschen aktif beserta cabangnya. Cabang ada di mst_role (DB my_waschen), bukan di mst_employee. */
-async function getWaschenEmployees(employeeIds = null) {
+export async function getWaschenEmployees(employeeIds = null) {
   const filter = employeeIds ? "AND e.employee_id IN (?)" : "";
   const [employees] = await safeQuery(
     `SELECT e.employee_id, e.full_name, e.employee_code, e.position_id, p.position_name
@@ -125,12 +125,15 @@ async function getParticipantIndicators(runQuery, participantId) {
 async function recalcTestScores(conn, participantId) {
   for (const [phase, column] of [["PRE", "pre_score"], ["POST", "post_score"]]) {
     const [answers] = await conn.query(
-      `SELECT q.type, a.is_correct FROM tr_test_answer a JOIN mst_question q ON q.id = a.question_id
+      `SELECT q.type, a.is_correct,
+              (SELECT COUNT(*) FROM mst_question_option o WHERE o.question_id = q.id AND o.is_correct = 1) AS correct_count
+       FROM tr_test_answer a JOIN mst_question q ON q.id = a.question_id
        WHERE a.participant_id = ? AND a.phase = ?`,
       [participantId, phase]
     );
     if (!answers.length) continue;
-    await conn.query(`UPDATE tr_participant SET ${column} = ? WHERE id = ?`, [testScoreFromAnswers(answers), participantId]);
+    const scored = answers.map((a) => ({ ...a, max_points: questionMaxPoints(a.type, a.correct_count) }));
+    await conn.query(`UPDATE tr_participant SET ${column} = ? WHERE id = ?`, [testScoreFromAnswers(scored), participantId]);
   }
   await recalcParticipant(conn, participantId);
 }

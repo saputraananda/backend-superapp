@@ -40,6 +40,16 @@ import {
   getEssays,
   gradeEssays,
 } from "../controllers/academy/batchController.js";
+import {
+  getOjtCriteria,
+  createOjtCriterion,
+  updateOjtCriterion,
+  getOjtOptions,
+  getOjtList,
+  getOjtById,
+  createOjt,
+  updateOjt,
+} from "../controllers/academy/ojtController.js";
 import { getTrainingDashboard, getSkillDashboard } from "../controllers/academy/dashboardController.js";
 
 const router = express.Router();
@@ -101,6 +111,15 @@ router.get("/participants/:id/mentor-scores", getMentorForm);
 router.put("/participants/:id/mentor-scores", saveMentorScores);
 router.get("/participants/:id/essays", getEssays);
 router.put("/participants/:id/essays", gradeEssays);
+
+router.get("/ojt/criteria", getOjtCriteria);
+router.post("/ojt/criteria", createOjtCriterion);
+router.put("/ojt/criteria/:id", updateOjtCriterion);
+router.get("/ojt/options", getOjtOptions);
+router.get("/ojt", getOjtList);
+router.post("/ojt", createOjt);
+router.get("/ojt/:id", getOjtById);
+router.put("/ojt/:id", updateOjt);
 
 router.get("/dashboard/training", getTrainingDashboard);
 router.get("/dashboard/skill", getSkillDashboard);

@@ -27,14 +27,19 @@ export const getTrainingDashboard = async (req, res) => {
     let weakTopics = [];
     if (participants.length) {
       const ids = participants.map((p) => p.id);
-      // Topik perlu perbaikan: soal post-test yang salah atau indikator mentor di bawah 2,5.
+      // Topik perlu perbaikan: soal post-test yang poinnya belum penuh atau indikator mentor di bawah 2,5.
       const [rows] = await safeAcademyQuery(
         `SELECT tp.id AS topic_id, tp.name AS topic_name, t.name AS training_name, a.participant_id
          FROM tr_test_answer a
          JOIN mst_question q ON q.id = a.question_id
          JOIN mst_training_topic tp ON tp.id = q.topic_id
          JOIN mst_training t ON t.id = tp.training_id
-         WHERE a.phase = 'POST' AND a.is_correct = 0 AND a.participant_id IN (?)
+         WHERE a.phase = 'POST' AND a.participant_id IN (?)
+           AND a.is_correct < CASE q.type
+             WHEN 'ESSAY' THEN 2
+             WHEN 'MULTI' THEN (SELECT COUNT(*) FROM mst_question_option o WHERE o.question_id = q.id AND o.is_correct = 1)
+             ELSE 1
+           END
          UNION
          SELECT tp.id, tp.name, t.name, s.participant_id
          FROM tr_mentor_score s

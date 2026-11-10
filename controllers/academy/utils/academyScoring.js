@@ -7,19 +7,27 @@ const round = (value, digits) => {
   return Math.round((value + Number.EPSILON) * factor) / factor;
 };
 
-/** Benar ÷ jumlah soal × 100, dibulatkan ke angka bulat. */
-export function testScore(correct, total) {
-  return total ? round((correct / total) * 100, 0) : null;
+/** Poin ÷ poin maksimum × 100, dibulatkan ke angka bulat. */
+export function testScore(points, maxPoints) {
+  return maxPoints ? round((points / maxPoints) * 100, 0) : null;
+}
+
+/** Poin maksimum satu soal: pilihan ganda 1, checkbox sebanyak kunci jawaban, essay 2. */
+export function questionMaxPoints(type, correctCount) {
+  if (type === "ESSAY") return 2;
+  return type === "MULTI" ? correctCount : 1;
 }
 
 /**
- * Nilai test dari poin tiap soal: pilihan ganda dan checkbox benar = 2, salah = 0; essay = 0, 1, atau 2 dari HR.
- * answers = [{ type, is_correct }]. null kalau ada soal yang belum dinilai (essay) atau tidak ada jawaban.
+ * Nilai test dari poin tiap soal. is_correct menyimpan poin yang didapat: pilihan ganda 0 atau 1,
+ * checkbox jumlah kunci yang terpilih, essay 0, 1, atau 2 dari HR.
+ * answers = [{ is_correct, max_points }]. null kalau ada soal yang belum dinilai (essay) atau tidak ada jawaban.
  */
 export function testScoreFromAnswers(answers) {
   if (!answers.length || answers.some((a) => a.is_correct === null || a.is_correct === undefined)) return null;
-  const points = answers.reduce((sum, a) => sum + (a.type === "ESSAY" ? Number(a.is_correct) : a.is_correct ? 2 : 0), 0);
-  return testScore(points, answers.length * 2);
+  const points = answers.reduce((sum, a) => sum + Number(a.is_correct), 0);
+  const maxPoints = answers.reduce((sum, a) => sum + a.max_points, 0);
+  return testScore(points, maxPoints);
 }
 
 /** Rata-rata skala 1–4, dibulatkan 1 desimal. */
