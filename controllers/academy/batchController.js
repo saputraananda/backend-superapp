@@ -61,8 +61,7 @@ async function getTopicReadiness(runQuery, trainingId, versionId) {
      ORDER BY tp.id`,
     [versionId, versionId, versionId, versionId, trainingId]
   );
-  // Topik siap kalau punya soal Pre dan Post. Topik pengetahuan murni boleh tanpa indikator Praktik.
-  return topics.map((t) => ({ ...t, ready: Boolean(t.is_active) && t.pre_count > 0 && t.post_count > 0 }));
+  return topics;
 }
 
 /** Menghitung ulang nilai mentor dan nilai akhir peserta dari data yang tersimpan. Dipanggil di dalam transaksi. */
@@ -305,11 +304,14 @@ async function prepareBatch(conn, body, trainingId, isEdit = false) {
   );
   if (!attitude.n) return { error: "Training belum punya indikator Sikap" };
 
-  const error = validateBatchPayload(
-    body,
-    topics.filter((t) => t.ready).map((t) => t.id),
-    topics.filter((t) => t.practice_count > 0).map((t) => t.id)
-  );
+  const active = topics.filter((t) => t.is_active);
+  const idsWith = (count) => active.filter((t) => t[count] > 0).map((t) => t.id);
+  const error = validateBatchPayload(body, {
+    active: active.map((t) => t.id),
+    pre: idsWith("pre_count"),
+    post: idsWith("post_count"),
+    practice: idsWith("practice_count"),
+  });
   if (error) return { error };
 
   const participantIds = body.participants.map((p) => Number(p.employee_id));

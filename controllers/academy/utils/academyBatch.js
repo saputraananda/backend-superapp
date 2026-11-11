@@ -9,10 +9,11 @@ export const toMysqlDatetime = (value) => {
 
 /**
  * Mengembalikan pesan error, atau null kalau valid.
- * readyTopicIds = topik aktif yang sudah punya soal PRE dan POST di versi terbaru.
- * practiceTopicIds = topik yang punya indikator Praktik. Tiap peserta butuh minimal satu, supaya nilai mentor bisa dihitung.
+ * topics = id topik aktif training itu: active (semua), pre / post (punya soal PRE / POST di versi terbaru),
+ * practice (punya indikator Praktik). Topik boleh tanpa soal atau indikator, tetapi gabungan topik tiap peserta
+ * butuh minimal satu soal Pre, satu soal Post, dan satu indikator Praktik, supaya tes dan nilai mentor bisa jalan.
  */
-export function validateBatchPayload(body, readyTopicIds, practiceTopicIds) {
+export function validateBatchPayload(body, topics) {
   const { source, start_at, request_id, sm_position_id, mentors = [], participants = [] } = body;
 
   if (!SOURCES.includes(source)) return "Sumber training tidak dikenal";
@@ -36,12 +37,11 @@ export function validateBatchPayload(body, readyTopicIds, practiceTopicIds) {
 
     const topicIds = participant.topic_ids ?? [];
     if (!topicIds.length) return "Tiap peserta wajib punya minimal satu topik";
-    if (topicIds.some((t) => !readyTopicIds.includes(Number(t)))) {
-      return "Ada topik yang soal Pre atau Post-nya belum lengkap";
-    }
-    if (!topicIds.some((t) => practiceTopicIds.includes(Number(t)))) {
-      return "Tiap peserta wajib punya minimal satu topik yang punya indikator Praktik";
-    }
+    if (topicIds.some((t) => !topics.active.includes(Number(t)))) return "Ada topik yang tidak valid atau sudah nonaktif";
+    const hasAny = (ids) => topicIds.some((t) => ids.includes(Number(t)));
+    if (!hasAny(topics.pre)) return "Tiap peserta wajib punya minimal satu topik yang punya soal Pre-test";
+    if (!hasAny(topics.post)) return "Tiap peserta wajib punya minimal satu topik yang punya soal Post-test";
+    if (!hasAny(topics.practice)) return "Tiap peserta wajib punya minimal satu topik yang punya indikator Praktik";
   }
 
   return null;
