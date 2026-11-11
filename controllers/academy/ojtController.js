@@ -214,7 +214,7 @@ export const updateOjtSubskill = async (req, res) => {
 
 // ─── Pilihan untuk form OJT ───────────────────────────────────────────────
 
-/** Peserta yang sudah selesai training (semua hasil), karyawan untuk pemantau, dan kriteria aktif yang punya sub-skill aktif. */
+/** Peserta batch yang aktif (kecuali tidak hadir) dengan hasil apa pun, karyawan untuk pemantau, dan kriteria aktif yang punya sub-skill aktif. */
 export const getOjtOptions = async (_req, res) => {
   try {
     const [participants] = await safeAcademyQuery(
@@ -222,7 +222,7 @@ export const getOjtOptions = async (_req, res) => {
        FROM tr_participant p
        JOIN tr_training_batch b ON b.id = p.batch_id
        JOIN mst_training t ON t.id = b.training_id
-       WHERE p.status = 'FEEDBACK_DONE' AND b.status = 'SCHEDULED'
+       WHERE p.status <> 'ABSENT' AND b.status = 'SCHEDULED'
        ORDER BY b.start_at DESC, p.id DESC`
     );
     const names = await getNames(participants.map((p) => p.employee_id));
@@ -400,10 +400,12 @@ export const createOjt = async (req, res) => {
 
   try {
     const [[participant]] = await safeAcademyQuery(
-      `SELECT id, employee_id FROM tr_participant WHERE id = ? AND status = 'FEEDBACK_DONE'`,
+      `SELECT p.id, p.employee_id FROM tr_participant p
+       JOIN tr_training_batch b ON b.id = p.batch_id
+       WHERE p.id = ? AND p.status <> 'ABSENT' AND b.status = 'SCHEDULED'`,
       [body.participant_id]
     );
-    if (!participant) return res.status(400).json({ message: "Peserta belum menyelesaikan training" });
+    if (!participant) return res.status(400).json({ message: "Peserta tidak bisa diberi OJT (tidak hadir atau batch sudah tidak aktif)" });
     const problem = (await checkObservers(body.observer_ids)) ?? (await checkCriteria(body.criterion_ids));
     if (problem) return res.status(400).json({ message: problem });
 
