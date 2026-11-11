@@ -82,6 +82,17 @@ export function validateDayScores(subskillIds, scores) {
 const uniqueIntegers = (list) =>
   Array.isArray(list) && list.length > 0 && list.every(Number.isInteger) && new Set(list).size === list.length;
 
+/** Urutan baru sub-skill satu kriteria harus memuat persis semua id kriteria itu, tanpa ganda. Mengembalikan pesan error, atau null. */
+export function validateSubskillOrder(currentIds, submittedIds) {
+  const same =
+    Array.isArray(submittedIds) &&
+    submittedIds.every(Number.isInteger) &&
+    new Set(submittedIds).size === submittedIds.length &&
+    submittedIds.length === currentIds.length &&
+    currentIds.every((id) => submittedIds.includes(id));
+  return same ? null : "Urutan sub-skill tidak valid";
+}
+
 /** Data OJT dari HR. Mengembalikan pesan error, atau null kalau valid. */
 export function validateOjtPayload(body) {
   if (!Number.isInteger(body.participant_id)) return "Peserta wajib dipilih";

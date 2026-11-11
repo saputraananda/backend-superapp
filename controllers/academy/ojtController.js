@@ -9,6 +9,7 @@ import {
   scorableDates,
   scoreProgress,
   validateOjtPayload,
+  validateSubskillOrder,
 } from "./utils/academyOjt.js";
 
 const MAX_NAME_LENGTH = 200;
@@ -60,7 +61,7 @@ export const getOjtCriteria = async (_req, res) => {
   try {
     const [rows] = await safeAcademyQuery(`SELECT id, name, is_active FROM mst_ojt_criterion ORDER BY is_active DESC, name`);
     const [subskills] = await safeAcademyQuery(
-      `SELECT id, criterion_id, name, is_active FROM mst_ojt_subskill ORDER BY is_active DESC, name`
+      `SELECT id, criterion_id, name, is_active FROM mst_ojt_subskill ORDER BY sort_order, id`
     );
     res.json({
       data: rows.map((r) => ({
@@ -143,15 +144,51 @@ export const createOjtSubskill = async (req, res) => {
     const problem = await checkSubskillName(criterion.id, name);
     if (problem) return res.status(400).json({ message: problem });
 
-    const [result] = await safeAcademyQuery(`INSERT INTO mst_ojt_subskill (criterion_id, name, created_by) VALUES (?, ?, ?)`, [
-      criterion.id,
-      name,
-      req.session.employeeId,
-    ]);
+    const [[{ next }]] = await safeAcademyQuery(
+      `SELECT COALESCE(MAX(sort_order), 0) + 1 AS next FROM mst_ojt_subskill WHERE criterion_id = ?`,
+      [criterion.id]
+    );
+    const [result] = await safeAcademyQuery(
+      `INSERT INTO mst_ojt_subskill (criterion_id, name, sort_order, created_by) VALUES (?, ?, ?, ?)`,
+      [criterion.id, name, next, req.session.employeeId]
+    );
     res.status(201).json({ id: result.insertId, message: "Sub-skill ditambahkan" });
   } catch (err) {
     console.error("createOjtSubskill error:", err);
     res.status(500).json({ message: "Gagal menambah sub-skill" });
+  }
+};
+
+/** Urutan sub-skill satu kriteria: body { subskill_ids } berisi semua id kriteria itu menurut urutan baru. */
+export const reorderOjtSubskills = async (req, res) => {
+  const conn = await academyPool.getConnection();
+  try {
+    const [[criterion]] = await conn.query(`SELECT id FROM mst_ojt_criterion WHERE id = ?`, [req.params.id]);
+    if (!criterion) return res.status(404).json({ message: "Kriteria tidak ditemukan" });
+
+    const [current] = await conn.query(`SELECT id FROM mst_ojt_subskill WHERE criterion_id = ?`, [criterion.id]);
+    const problem = validateSubskillOrder(
+      current.map((s) => s.id),
+      req.body.subskill_ids
+    );
+    if (problem) return res.status(400).json({ message: problem });
+
+    await conn.beginTransaction();
+    for (const [index, subskillId] of req.body.subskill_ids.entries()) {
+      await conn.query(`UPDATE mst_ojt_subskill SET sort_order = ? WHERE id = ? AND criterion_id = ?`, [
+        index + 1,
+        subskillId,
+        criterion.id,
+      ]);
+    }
+    await conn.commit();
+    res.json({ message: "Urutan disimpan" });
+  } catch (err) {
+    await conn.rollback();
+    console.error("reorderOjtSubskills error:", err);
+    res.status(500).json({ message: "Gagal menyimpan urutan" });
+  } finally {
+    conn.release();
   }
 };
 
@@ -192,7 +229,7 @@ export const getOjtOptions = async (_req, res) => {
     const employees = await getWaschenEmployees();
     const [criteria] = await safeAcademyQuery(`SELECT id, name FROM mst_ojt_criterion WHERE is_active = 1 ORDER BY name`);
     const [subskills] = await safeAcademyQuery(
-      `SELECT id, criterion_id, name FROM mst_ojt_subskill WHERE is_active = 1 ORDER BY name`
+      `SELECT id, criterion_id, name FROM mst_ojt_subskill WHERE is_active = 1 ORDER BY sort_order, id`
     );
 
     res.json({
@@ -266,7 +303,7 @@ export const getOjtById = async (req, res) => {
 
     const [observers] = await safeAcademyQuery(`SELECT employee_id FROM tr_ojt_observer WHERE ojt_id = ? ORDER BY id`, [ojt.id]);
     const [subskills] = await safeAcademyQuery(
-      `SELECT id, criterion_id, criterion_name, name FROM tr_ojt_subskill WHERE ojt_id = ? ORDER BY criterion_name, name`,
+      `SELECT id, criterion_id, criterion_name, name FROM tr_ojt_subskill WHERE ojt_id = ? ORDER BY criterion_name, sort_order, id`,
       [ojt.id]
     );
     const [scores] = await safeAcademyQuery(
@@ -349,8 +386,8 @@ const insertRows = (conn, table, column, ojtId, values, userId) =>
 /** Menyalin sub-skill aktif dari kriteria terpilih ke OJT ini. Setelah ini daftar OJT tidak ikut berubah bila master berubah. */
 const snapshotSubskills = (conn, ojtId, criterionIds, userId) =>
   conn.query(
-    `INSERT INTO tr_ojt_subskill (ojt_id, criterion_id, subskill_id, criterion_name, name, created_by)
-     SELECT ?, c.id, s.id, c.name, s.name, ?
+    `INSERT INTO tr_ojt_subskill (ojt_id, criterion_id, subskill_id, criterion_name, name, sort_order, created_by)
+     SELECT ?, c.id, s.id, c.name, s.name, s.sort_order, ?
      FROM mst_ojt_subskill s JOIN mst_ojt_criterion c ON c.id = s.criterion_id
      WHERE s.is_active = 1 AND c.id IN (?)`,
     [ojtId, userId, criterionIds]

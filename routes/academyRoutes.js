@@ -46,6 +46,7 @@ import {
   createOjtCriterion,
   updateOjtCriterion,
   createOjtSubskill,
+  reorderOjtSubskills,
   updateOjtSubskill,
   getOjtOptions,
   getOjtList,
@@ -120,6 +121,7 @@ router.get("/ojt/criteria", getOjtCriteria);
 router.post("/ojt/criteria", createOjtCriterion);
 router.put("/ojt/criteria/:id", updateOjtCriterion);
 router.post("/ojt/criteria/:id/subskills", createOjtSubskill);
+router.put("/ojt/criteria/:id/subskills/order", reorderOjtSubskills);
 router.put("/ojt/subskills/:id", updateOjtSubskill);
 router.get("/ojt/options", getOjtOptions);
 router.get("/ojt", getOjtList);
