@@ -1,5 +1,6 @@
 import { academyPool, safeAcademyQuery, safeQuery } from "../../db/pool.js";
 import { getWaschenEmployees } from "./batchController.js";
+import { buildAttendancePhotoUrl } from "../MyWaschen/HRIS/hrisAssetHelpers.js";
 import {
   addDays,
   buildSubskillProgress,
@@ -310,7 +311,16 @@ export const getOjtById = async (req, res) => {
       `SELECT score_date, ojt_subskill_id, score, assessor_id FROM tr_ojt_score WHERE ojt_id = ?`,
       [ojt.id]
     );
-    const names = await getNames([ojt.employee_id, ...observers.map((o) => o.employee_id), ...scores.map((s) => s.assessor_id)]);
+    const [photos] = await safeAcademyQuery(
+      `SELECT id, photo_date, photo_path, photo_name, taken_by, created_at FROM tr_ojt_photo WHERE ojt_id = ? ORDER BY id`,
+      [ojt.id]
+    );
+    const names = await getNames([
+      ojt.employee_id,
+      ...observers.map((o) => o.employee_id),
+      ...scores.map((s) => s.assessor_id),
+      ...photos.map((p) => p.taken_by),
+    ]);
     const subskillById = new Map(subskills.map((s, index) => [s.id, { ...s, order: index }]));
     const byDate = scoresByDate(scores);
     const end = endDateOf(ojt);
@@ -326,6 +336,14 @@ export const getOjtById = async (req, res) => {
         scored: Boolean(rows),
         average: rows ? dayAverage(rows.map((r) => r.score)) : null,
         assessor_name: rows ? names.get(rows[0].assessor_id) ?? null : null,
+        photos: photos
+          .filter((p) => p.photo_date === date)
+          .map((p) => ({
+            id: p.id,
+            url: buildAttendancePhotoUrl(req, p.photo_path, p.photo_name),
+            taken_by_name: names.get(p.taken_by) ?? null,
+            taken_at: p.created_at,
+          })),
         scores: rows
           ? rows
               .map((r) => ({ ...subskillById.get(r.ojt_subskill_id), score: r.score }))
@@ -451,9 +469,10 @@ export const updateOjt = async (req, res) => {
     if (invalid) return await fail(400, invalid);
 
     const [scored] = await conn.query(`SELECT DISTINCT score_date FROM tr_ojt_score WHERE ojt_id = ?`, [current.id]);
+    const [photoDates] = await conn.query(`SELECT DISTINCT photo_date FROM tr_ojt_photo WHERE ojt_id = ?`, [current.id]);
     const allowed = new Set(scorableDates(body.start_date, body.days));
-    if (scored.some((s) => !allowed.has(s.score_date))) {
-      return await fail(400, "Hari pertama atau hari terakhir yang sudah dinilai tidak boleh berubah");
+    if (scored.some((s) => !allowed.has(s.score_date)) || photoDates.some((p) => !allowed.has(p.photo_date))) {
+      return await fail(400, "Hari pertama atau hari terakhir yang sudah dinilai atau punya foto tidak boleh berubah");
     }
 
     const [existing] = await conn.query(`SELECT DISTINCT criterion_id FROM tr_ojt_subskill WHERE ojt_id = ?`, [current.id]);

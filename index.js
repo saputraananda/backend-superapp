@@ -147,6 +147,7 @@ import {
   getWaschenMobileAttendanceDir,
   getWaschenMobileLeaveDir,
   getWaschenMobileKasbonDir,
+  getWaschenMobileOjtDir,
   getWaschenMobileQcDir,
 } from "./controllers/MyWaschen/HRIS/hrisAssetHelpers.js";
 
@@ -327,6 +328,11 @@ if (WASCHEN_MOBILE_LEAVE_DIR && fs.existsSync(WASCHEN_MOBILE_LEAVE_DIR)) {
 }
 if (WASCHEN_MOBILE_KASBON_DIR && fs.existsSync(WASCHEN_MOBILE_KASBON_DIR)) {
   app.use("/uploads/assets/kasbon", express.static(WASCHEN_MOBILE_KASBON_DIR));
+}
+// Foto peserta penilaian OJT (Alora Academy). Folder baru ada setelah foto pertama diunggah, jadi restart Alsa sesudahnya.
+const WASCHEN_MOBILE_OJT_DIR = getWaschenMobileOjtDir();
+if (WASCHEN_MOBILE_OJT_DIR && fs.existsSync(WASCHEN_MOBILE_OJT_DIR)) {
+  app.use("/uploads/assets/academy/ojt", express.static(WASCHEN_MOBILE_OJT_DIR));
 }
 
 const ALORA_BOD_DIR =
