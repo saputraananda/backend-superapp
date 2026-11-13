@@ -382,7 +382,7 @@ export const listBast = async (req, res) => {
               DATE_FORMAT(b.bast_date, '%Y-%m-%d %H:%i:%s') AS bast_date,
               b.sender_name, b.sender_position, COALESCE(b.receiver_name, b.rs_inspector_name) AS receiver_name, b.receiver_position, b.ga_head_name, b.ga_head_position,
               CASE
-                WHEN COUNT(DISTINCT IFNULL(COALESCE(d.room_id, b.room_id), 0)) > 1 THEN 'Beberapa Unit'
+                WHEN COUNT(DISTINCT IFNULL(COALESCE(d.room_id, b.room_id), 0)) > 1 THEN 'Multi Ruangan'
                 ELSE COALESCE(MAX(rd.room_name), r.room_name)
               END AS room_name,
               COALESCE(SUM(d.qty_pengiriman), 0) AS total_pengiriman,
@@ -452,11 +452,16 @@ async function nextNumber(conn, hospitalId, dateOnly) {
   const code = String(hosp[0]?.hospital_id || hospitalId).replace(/[^\w-]/g, "").slice(0, 12) || hospitalId;
   const ymd = dateOnly.replace(/-/g, "");
   const prefix = `BAST-${code}-${ymd}-`;
+  // Pakai nomor urut tertinggi (bukan jumlah baris) agar tidak bentrok setelah ada BAST yang dihapus/dipindah tanggal.
   const [rows] = await conn.query(
-    "SELECT COUNT(*) AS cnt FROM tr_bast_linen_sewa WHERE hospital_id = ? AND DATE(bast_date) = ? FOR UPDATE",
-    [hospitalId, dateOnly]
+    "SELECT bast_number FROM tr_bast_linen_sewa WHERE bast_number LIKE ? FOR UPDATE",
+    [`${prefix}%`]
   );
-  return `${prefix}${String(Number(rows[0].cnt) + 1).padStart(3, "0")}`;
+  const maxSeq = rows.reduce((max, row) => {
+    const seq = Number(String(row.bast_number).slice(prefix.length));
+    return Number.isFinite(seq) && seq > max ? seq : max;
+  }, 0);
+  return `${prefix}${String(maxSeq + 1).padStart(3, "0")}`;
 }
 
 async function readHeader(conn, id) {
