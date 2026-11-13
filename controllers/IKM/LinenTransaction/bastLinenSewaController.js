@@ -452,11 +452,16 @@ async function nextNumber(conn, hospitalId, dateOnly) {
   const code = String(hosp[0]?.hospital_id || hospitalId).replace(/[^\w-]/g, "").slice(0, 12) || hospitalId;
   const ymd = dateOnly.replace(/-/g, "");
   const prefix = `BAST-${code}-${ymd}-`;
+  // Pakai nomor urut tertinggi (bukan jumlah baris) agar tidak bentrok setelah ada BAST yang dihapus/dipindah tanggal.
   const [rows] = await conn.query(
-    "SELECT COUNT(*) AS cnt FROM tr_bast_linen_sewa WHERE hospital_id = ? AND DATE(bast_date) = ? FOR UPDATE",
-    [hospitalId, dateOnly]
+    "SELECT bast_number FROM tr_bast_linen_sewa WHERE bast_number LIKE ? FOR UPDATE",
+    [`${prefix}%`]
   );
-  return `${prefix}${String(Number(rows[0].cnt) + 1).padStart(3, "0")}`;
+  const maxSeq = rows.reduce((max, row) => {
+    const seq = Number(String(row.bast_number).slice(prefix.length));
+    return Number.isFinite(seq) && seq > max ? seq : max;
+  }, 0);
+  return `${prefix}${String(maxSeq + 1).padStart(3, "0")}`;
 }
 
 async function readHeader(conn, id) {
