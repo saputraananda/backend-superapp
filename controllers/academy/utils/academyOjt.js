@@ -61,11 +61,28 @@ export function ojtPhase(start, end, today) {
   return today > end ? "SELESAI" : "BERJALAN";
 }
 
-/** Nilai satu hari: rata-rata nilai semua sub-skill hari itu, tanpa memandang kriteria. */
+/** Nilai satu hari: rata-rata nilai sub-skill satu kriteria pada hari itu. */
 export const dayAverage = (scores) => averageScore(scores);
 
-/** Nilai akhir OJT: rata-rata nilai harian. Hari yang belum dinilai (null) tidak ikut dihitung. */
+/** Nilai OJT satu kriteria: rata-rata nilai harian. Hari yang belum dinilai (null) tidak ikut dihitung. */
 export const ojtAverage = (dayAverages) => averageScore(dayAverages.filter((a) => a !== null && a !== undefined));
+
+/**
+ * Ringkasan satu kriteria: jumlah hari yang sudah dinilai (maksimal 2), nilai OJT kriteria itu, dan kemajuannya.
+ * subskillIds = id tr_ojt_subskill milik kriteria itu; scoreRows = baris tr_ojt_score ({ score_date, ojt_subskill_id, score }).
+ */
+export function summarizeCriterion(subskillIds, scoreRows, firstDate, lastDate) {
+  const mine = scoreRows.filter((r) => subskillIds.includes(r.ojt_subskill_id));
+  const averages = [firstDate, lastDate].map((date) => {
+    const rows = mine.filter((r) => r.score_date === date);
+    return rows.length ? dayAverage(rows.map((r) => r.score)) : null;
+  });
+  return {
+    scored_days: averages.filter((a) => a !== null).length,
+    average: ojtAverage(averages),
+    progress: scoreProgress(averages[0], averages[1]),
+  };
+}
 
 /** Nilai satu hari harus mencakup persis semua sub-skill OJT, masing-masing bilangan bulat 1 sampai 4. */
 export function validateDayScores(subskillIds, scores) {

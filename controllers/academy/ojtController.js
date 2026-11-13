@@ -5,10 +5,9 @@ import {
   addDays,
   buildSubskillProgress,
   dayAverage,
-  ojtAverage,
   ojtPhase,
   scorableDates,
-  scoreProgress,
+  summarizeCriterion,
   validateOjtPayload,
   validateSubskillOrder,
 } from "./utils/academyOjt.js";
@@ -30,30 +29,26 @@ async function getNames(employeeIds) {
   return new Map(rows.map((r) => [r.employee_id, r.full_name]));
 }
 
-/** Nilai harian dari baris tr_ojt_score: { tanggal: [nilai kriteria] }. */
-function scoresByDate(rows) {
-  const byDate = new Map();
-  for (const row of rows) {
-    if (!byDate.has(row.score_date)) byDate.set(row.score_date, []);
-    byDate.get(row.score_date).push(row);
+/** Sub-skill OJT dikelompokkan per kriteria: Map criterion_id ke id sub-skill. */
+function subskillIdsByCriterion(subskills) {
+  const byCriterion = new Map();
+  for (const s of subskills) {
+    if (!byCriterion.has(s.criterion_id)) byCriterion.set(s.criterion_id, []);
+    byCriterion.get(s.criterion_id).push(s.id);
   }
-  return byDate;
+  return byCriterion;
 }
 
 /**
- * Nilai OJT, jumlah penilaian (maksimal 2: hari pertama dan hari terakhir), dan kemajuan rata-rata
- * dari baris nilai satu OJT. ojt = { start_date, days }.
+ * Jumlah penilaian yang sudah masuk dan totalnya (2 untuk tiap kriteria: hari pertama dan hari terakhir).
+ * ojt = { start_date, days }; subskills = baris tr_ojt_subskill OJT itu; scoreRows = baris tr_ojt_score OJT itu.
  */
-function summarize(rows, ojt) {
-  const byDate = scoresByDate(rows);
-  const averages = scorableDates(ojt.start_date, ojt.days).map((date) =>
-    byDate.has(date) ? dayAverage(byDate.get(date).map((r) => r.score)) : null
-  );
-  return {
-    scored_days: averages.filter((a) => a !== null).length,
-    average: ojtAverage(averages),
-    progress: scoreProgress(averages[0], averages[1]),
-  };
+function assessmentCounts(ojt, subskills, scoreRows) {
+  const byCriterion = subskillIdsByCriterion(subskills);
+  const dates = scorableDates(ojt.start_date, ojt.days);
+  let scored = 0;
+  for (const ids of byCriterion.values()) scored += summarizeCriterion(ids, scoreRows, ...dates).scored_days;
+  return { scored_count: scored, total_count: byCriterion.size * 2 };
 }
 
 // ─── Master kriteria dan sub-skill ────────────────────────────────────────
@@ -260,14 +255,12 @@ export const getOjtList = async (_req, res) => {
     );
     if (!ojts.length) return res.json({ data: [] });
 
-    const [scores] = await safeAcademyQuery(`SELECT ojt_id, score_date, score FROM tr_ojt_score WHERE ojt_id IN (?)`, [
-      ojts.map((o) => o.id),
-    ]);
-    const scoresByOjt = new Map();
-    for (const row of scores) {
-      if (!scoresByOjt.has(row.ojt_id)) scoresByOjt.set(row.ojt_id, []);
-      scoresByOjt.get(row.ojt_id).push(row);
-    }
+    const ids = ojts.map((o) => o.id);
+    const [subskills] = await safeAcademyQuery(`SELECT id, ojt_id, criterion_id FROM tr_ojt_subskill WHERE ojt_id IN (?)`, [ids]);
+    const [scores] = await safeAcademyQuery(
+      `SELECT ojt_id, score_date, ojt_subskill_id, score FROM tr_ojt_score WHERE ojt_id IN (?)`,
+      [ids]
+    );
     const names = await getNames(ojts.map((o) => o.employee_id));
     const today = await getToday();
 
@@ -279,7 +272,7 @@ export const getOjtList = async (_req, res) => {
           full_name: names.get(o.employee_id) ?? "Karyawan tidak ditemukan",
           end_date: end,
           phase: ojtPhase(o.start_date, end, today),
-          ...summarize(scoresByOjt.get(o.id) ?? [], o),
+          ...assessmentCounts(o, subskills.filter((s) => s.ojt_id === o.id), scores.filter((s) => s.ojt_id === o.id)),
         };
       }),
     });
@@ -312,7 +305,7 @@ export const getOjtById = async (req, res) => {
       [ojt.id]
     );
     const [photos] = await safeAcademyQuery(
-      `SELECT id, photo_date, photo_path, photo_name, taken_by, created_at FROM tr_ojt_photo WHERE ojt_id = ? ORDER BY id`,
+      `SELECT id, criterion_id, photo_date, photo_path, photo_name, taken_by, created_at FROM tr_ojt_photo WHERE ojt_id = ? ORDER BY id`,
       [ojt.id]
     );
     const names = await getNames([
@@ -321,35 +314,47 @@ export const getOjtById = async (req, res) => {
       ...scores.map((s) => s.assessor_id),
       ...photos.map((p) => p.taken_by),
     ]);
-    const subskillById = new Map(subskills.map((s, index) => [s.id, { ...s, order: index }]));
-    const byDate = scoresByDate(scores);
     const end = endDateOf(ojt);
     const today = await getToday();
 
     const [firstDate, lastDate] = scorableDates(ojt.start_date, ojt.days);
-    const criteria = buildSubskillProgress(subskills, scores, firstDate, lastDate);
-    const daysDetail = [firstDate, lastDate].map((date, index) => {
-      const rows = byDate.get(date);
+    const subskillProgress = new Map(buildSubskillProgress(subskills, scores, firstDate, lastDate).map((c) => [c.id, c.subskills]));
+    const idsByCriterion = subskillIdsByCriterion(subskills);
+    const criteria = [...idsByCriterion.entries()].map(([criterionId, ids]) => {
+      const mine = scores.filter((r) => ids.includes(r.ojt_subskill_id));
+      const items = subskills.filter((s) => s.criterion_id === criterionId);
       return {
-        date,
-        kind: index === 0 ? "FIRST" : "LAST",
-        scored: Boolean(rows),
-        average: rows ? dayAverage(rows.map((r) => r.score)) : null,
-        assessor_name: rows ? names.get(rows[0].assessor_id) ?? null : null,
-        photos: photos
-          .filter((p) => p.photo_date === date)
-          .map((p) => ({
-            id: p.id,
-            url: buildAttendancePhotoUrl(req, p.photo_path, p.photo_name),
-            taken_by_name: names.get(p.taken_by) ?? null,
-            taken_at: p.created_at,
-          })),
-        scores: rows
-          ? rows
-              .map((r) => ({ ...subskillById.get(r.ojt_subskill_id), score: r.score }))
-              .sort((a, b) => a.order - b.order)
-              .map((s) => ({ subskill_id: s.id, name: s.name, criterion_id: s.criterion_id, criterion_name: s.criterion_name, score: s.score }))
-          : [],
+        id: criterionId,
+        name: items[0].criterion_name,
+        ...summarizeCriterion(ids, scores, firstDate, lastDate),
+        subskills: subskillProgress.get(criterionId),
+        days_detail: [firstDate, lastDate].map((date, index) => {
+          const rows = mine.filter((r) => r.score_date === date);
+          return {
+            date,
+            kind: index === 0 ? "FIRST" : "LAST",
+            scored: rows.length > 0,
+            average: rows.length ? dayAverage(rows.map((r) => r.score)) : null,
+            assessor_name: rows.length ? names.get(rows[0].assessor_id) ?? null : null,
+            photos: photos
+              .filter((p) => p.criterion_id === criterionId && p.photo_date === date)
+              .map((p) => ({
+                id: p.id,
+                url: buildAttendancePhotoUrl(req, p.photo_path, p.photo_name),
+                taken_by_name: names.get(p.taken_by) ?? null,
+                taken_at: p.created_at,
+              })),
+            scores: items
+              .filter((s) => rows.some((r) => r.ojt_subskill_id === s.id))
+              .map((s) => ({
+                subskill_id: s.id,
+                name: s.name,
+                criterion_id: s.criterion_id,
+                criterion_name: s.criterion_name,
+                score: rows.find((r) => r.ojt_subskill_id === s.id).score,
+              })),
+          };
+        }),
       };
     });
 
@@ -367,8 +372,6 @@ export const getOjtById = async (req, res) => {
         phase: ojtPhase(ojt.start_date, end, today),
         observers: observers.map((o) => ({ employee_id: o.employee_id, full_name: names.get(o.employee_id) ?? "Karyawan tidak ditemukan" })),
         criteria,
-        days_detail: daysDetail,
-        ...summarize(scores, ojt),
       },
     });
   } catch (err) {
@@ -478,7 +481,7 @@ export const updateOjt = async (req, res) => {
     const [existing] = await conn.query(`SELECT DISTINCT criterion_id FROM tr_ojt_subskill WHERE ojt_id = ?`, [current.id]);
     const existingIds = new Set(existing.map((c) => c.criterion_id));
     const sameCriteria = existingIds.size === body.criterion_ids.length && body.criterion_ids.every((id) => existingIds.has(id));
-    if (!sameCriteria && scored.length) return await fail(400, "Kriteria tidak bisa diubah setelah ada nilai");
+    if (!sameCriteria && (scored.length || photoDates.length)) return await fail(400, "Kriteria tidak bisa diubah setelah ada nilai atau foto");
 
     const problem = (await checkObservers(body.observer_ids)) ?? (sameCriteria ? null : await checkCriteria(body.criterion_ids));
     if (problem) return await fail(400, problem);
