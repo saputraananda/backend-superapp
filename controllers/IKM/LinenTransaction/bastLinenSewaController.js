@@ -382,7 +382,7 @@ export const listBast = async (req, res) => {
               DATE_FORMAT(b.bast_date, '%Y-%m-%d %H:%i:%s') AS bast_date,
               b.sender_name, b.sender_position, COALESCE(b.receiver_name, b.rs_inspector_name) AS receiver_name, b.receiver_position, b.ga_head_name, b.ga_head_position,
               CASE
-                WHEN COUNT(DISTINCT IFNULL(COALESCE(d.room_id, b.room_id), 0)) > 1 THEN 'Beberapa Unit'
+                WHEN COUNT(DISTINCT IFNULL(COALESCE(d.room_id, b.room_id), 0)) > 1 THEN 'Multi Ruangan'
                 ELSE COALESCE(MAX(rd.room_name), r.room_name)
               END AS room_name,
               COALESCE(SUM(d.qty_pengiriman), 0) AS total_pengiriman,
