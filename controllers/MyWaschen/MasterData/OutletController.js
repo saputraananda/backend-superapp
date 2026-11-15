@@ -16,6 +16,14 @@ function parseCoordinates(body) {
   return { lat, lon };
 }
 
+/** Flag 0/1 dari body. Tidak dikirim → fallback (null = tidak diubah saat update). */
+function parseFlag(value, fallback) {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (value === true || value === "true") return 1;
+  if (value === false || value === "false") return 0;
+  return Number(value) === 1 ? 1 : 0;
+}
+
 export const getOutlets = async (req, res) => {
   try {
     const search = String(req.query.search || "").trim();
@@ -73,6 +81,10 @@ export const createOutlet = async (req, res) => {
     if (coords.error) return res.status(400).json({ success: false, message: coords.error });
 
     const formattedCode = outlet_code.trim().toUpperCase();
+    // Outlet baru default aktif, bukan drop point, dan wajib buka shift.
+    const isDropPoint = parseFlag(req.body.is_drop_point, 0);
+    const isActive = parseFlag(req.body.is_active, 1);
+    const requiresShift = parseFlag(req.body.requires_shift, 1);
 
     const [exist] = await safeMyWaschenQuery("SELECT id FROM mst_outlet WHERE outlet_code = ?", [formattedCode]);
     if (exist.length) {
@@ -80,9 +92,13 @@ export const createOutlet = async (req, res) => {
     }
 
     const [result] = await safeMyWaschenQuery(
-      `INSERT INTO mst_outlet (outlet_code, name, full_name, address, lat, lon) VALUES (?, ?, ?, ?, ?, ?)`,
-      [formattedCode, name.trim(), full_name.trim(), address?.trim() || null, coords.lat, coords.lon]
+      `INSERT INTO mst_outlet (outlet_code, name, full_name, address, lat, lon, is_drop_point, is_active, requires_shift)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [formattedCode, name.trim(), full_name.trim(), address?.trim() || null, coords.lat, coords.lon, isDropPoint, isActive, requiresShift]
     );
+
+    // Outlet baru TIDAK otomatis mendapat layanan (tidak ada baris mst_service_outlet = tidak tersedia).
+    // Admin menambahkan layanannya manual lewat Master Layanan (keputusan user 2026-11-15).
 
     res.status(201).json({ success: true, message: "Outlet berhasil ditambahkan", id: result.insertId });
   } catch (err) {
@@ -112,6 +128,10 @@ export const updateOutlet = async (req, res) => {
     }
 
     const formattedCode = outlet_code.trim().toUpperCase();
+    // Tidak dikirim → nilai lama dipertahankan.
+    const isDropPoint = parseFlag(req.body.is_drop_point, null);
+    const isActive = parseFlag(req.body.is_active, null);
+    const requiresShift = parseFlag(req.body.requires_shift, null);
 
     const [dup] = await safeMyWaschenQuery(
       "SELECT id FROM mst_outlet WHERE outlet_code = ? AND id != ?",
@@ -123,9 +143,11 @@ export const updateOutlet = async (req, res) => {
 
     await safeMyWaschenQuery(
       `UPDATE mst_outlet
-       SET outlet_code = ?, name = ?, full_name = ?, address = ?, lat = ?, lon = ?, updated_at = NOW()
+       SET outlet_code = ?, name = ?, full_name = ?, address = ?, lat = ?, lon = ?,
+           is_drop_point = COALESCE(?, is_drop_point), is_active = COALESCE(?, is_active),
+           requires_shift = COALESCE(?, requires_shift), updated_at = NOW()
        WHERE id = ?`,
-      [formattedCode, name.trim(), full_name.trim(), address?.trim() || null, coords.lat, coords.lon, id]
+      [formattedCode, name.trim(), full_name.trim(), address?.trim() || null, coords.lat, coords.lon, isDropPoint, isActive, requiresShift, id]
     );
 
     res.json({ success: true, message: "Outlet berhasil diperbarui" });
@@ -165,6 +187,7 @@ export const deleteOutlet = async (req, res) => {
       });
     }
 
+    await safeMyWaschenQuery("DELETE FROM mst_service_outlet WHERE outlet_id = ?", [id]);
     await safeMyWaschenQuery("DELETE FROM mst_outlet WHERE id = ?", [id]);
     res.json({ success: true, message: "Outlet berhasil dihapus" });
   } catch (err) {

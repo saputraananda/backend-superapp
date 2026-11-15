@@ -105,7 +105,8 @@ function mapTransactionRow(row) {
     paidAt: row.paid_at,
     workStatus: num(row.work_status, 10),
     isDelivery: Boolean(row.is_delivery),
-    isEvent: Number(row.is_event) === 1,
+    // Nota di outlet drop point (dari mst_outlet.is_drop_point; tr_transaction tidak menyimpan flag sendiri)
+    isDropPoint: Number(row.outlet_is_drop_point) === 1,
     deliveryAddress: row.delivery_address || null,
     deliveryNotes: row.delivery_notes || null,
     orderDate: row.order_date,
@@ -203,7 +204,7 @@ const TXN_SELECT = `
          COALESCE(NULLIF(TRIM(c.full_address), ''), NULLIF(TRIM(c.address), '')) AS customer_address,
          COALESCE(c.deposit_balance, 0) AS deposit_balance,
          o.outlet_code, o.name AS outlet_name, o.full_name AS outlet_full_name,
-         o.address AS outlet_address,
+         o.address AS outlet_address, o.is_drop_point AS outlet_is_drop_point,
          ss.name AS speed_name,
          pf.name AS parfume_name,
          (SELECT COUNT(*) FROM tr_transaction_detail td WHERE td.transaction_id = t.id) AS item_count,
@@ -250,13 +251,9 @@ export const getTransactions = async (req, res) => {
     const workMax = req.query.workMax !== undefined && req.query.workMax !== "" ? Number(req.query.workMax) : null;
     const includeDeleted = String(req.query.includeDeleted || "") === "1";
     const listType = String(req.query.listType || "active").trim(); // active | delete (refund → GET /refunds)
-    // Menu Event B2B: hanya nota outlet event (tr_transaction.is_event = 1)
-    const eventOnly = String(req.query.eventOnly || "") === "1";
 
     const where = [];
     const params = [];
-
-    if (eventOnly) where.push("t.is_event = 1");
 
     if (listType === "delete") {
       where.push("t.is_delete_requested = 1");

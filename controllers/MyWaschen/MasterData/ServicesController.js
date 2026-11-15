@@ -59,6 +59,47 @@ async function syncServiceInventory(serviceId, rawLines) {
   }
 }
 
+// ── Layanan per outlet (mst_service_outlet) ──
+// Satu baris = layanan tersedia di outlet. Kolom override NULL = ikut master.
+
+/** Daftar id outlet valid dari body. undefined = tidak dikirim (jangan ubah). */
+function parseOutletIds(raw) {
+  if (!Array.isArray(raw)) return undefined;
+  return [...new Set(raw.map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+}
+
+/** Aktifkan layanan di outlet terpilih; outlet lain yang tidak dipilih dinonaktifkan (nilai custom tetap disimpan). */
+async function syncServiceOutlets(serviceId, outletIds) {
+  if (outletIds === undefined) return;
+  for (const outletId of outletIds) {
+    await safeMyWaschenQuery(
+      `INSERT INTO mst_service_outlet (service_id, outlet_id, is_active) VALUES (?, ?, 1)
+       ON DUPLICATE KEY UPDATE is_active = 1`,
+      [serviceId, outletId]
+    );
+  }
+  // Outlet yang tidak dipilih tetap punya baris (is_active = 0) agar status "tidak tersedia" tercatat.
+  await safeMyWaschenQuery(
+    `INSERT INTO mst_service_outlet (service_id, outlet_id, is_active)
+     SELECT ?, id, 0 FROM mst_outlet ${outletIds.length ? "WHERE id NOT IN (?)" : ""}
+     ON DUPLICATE KEY UPDATE is_active = 0`,
+    outletIds.length ? [serviceId, outletIds] : [serviceId]
+  );
+}
+
+/** "" / null / undefined = ikut master (NULL). Angka tidak valid / negatif = error. */
+function overrideNumber(raw, label) {
+  if (raw === undefined || raw === null || String(raw).trim() === "") return { value: null };
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return { error: `${label} tidak valid` };
+  return { value: n };
+}
+
+function overrideText(raw) {
+  const s = raw == null ? "" : String(raw).trim();
+  return s ? s : null;
+}
+
 // ── Helper: kode otomatis, sama dengan seed agent/addLayanan.js ──
 // WS-KG (kategori KILOAN) · WS-ADD (kategori non-produksi) · WS-MTR (unit m², id 10) · WS-SAT (lainnya)
 const generateNextServiceCode = async (categoryId, unitId) => {
@@ -129,7 +170,14 @@ export const getServices = async (req, res) => {
       `SELECT s.*, c.name AS category_name, c.code AS category_code,
               u.name AS unit_name_full, u.symbol AS unit_symbol, u.code AS unit_code,
               (SELECT COUNT(*) FROM mst_service_inventory si
-               WHERE si.service_id = s.id AND si.is_active = 1) AS inventory_item_count
+               WHERE si.service_id = s.id AND si.is_active = 1) AS inventory_item_count,
+              (SELECT COUNT(*) FROM mst_service_outlet so
+               WHERE so.service_id = s.id AND so.is_active = 1) AS outlet_count,
+              (SELECT COUNT(*) FROM mst_service_outlet so
+               WHERE so.service_id = s.id AND so.is_active = 1
+                 AND (so.name IS NOT NULL OR so.category_id IS NOT NULL OR so.unit_id IS NOT NULL OR so.unit IS NOT NULL
+                      OR so.price IS NOT NULL OR so.regular_duration_days IS NOT NULL
+                      OR so.min_order_qty IS NOT NULL OR so.dc_price_add IS NOT NULL)) AS custom_outlet_count
        FROM mst_service s
        LEFT JOIN mst_service_category c ON s.category_id = c.id
        LEFT JOIN mst_unit u ON s.unit_id = u.id
@@ -162,7 +210,12 @@ export const getServiceById = async (req, res) => {
       return res.status(404).json({ success: false, message: "Layanan tidak ditemukan" });
     }
     const inventory_items = await fetchServiceInventory(id);
-    res.json({ success: true, data: { ...rows[0], inventory_items } });
+    const [outletRows] = await safeMyWaschenQuery(
+      "SELECT outlet_id FROM mst_service_outlet WHERE service_id = ? AND is_active = 1",
+      [id]
+    );
+    const outlet_ids = outletRows.map((r) => Number(r.outlet_id));
+    res.json({ success: true, data: { ...rows[0], inventory_items, outlet_ids } });
   } catch (err) {
     console.error("getServiceById error:", err);
     res.status(500).json({ success: false, message: err.message });
@@ -211,6 +264,14 @@ export const createService = async (req, res) => {
     );
 
     await syncServiceInventory(result.insertId, inventory_items);
+
+    // Outlet yang memakai layanan ini. Tidak dikirim = semua outlet (termasuk drop point).
+    let outletIds = parseOutletIds(req.body.outlet_ids);
+    if (outletIds === undefined) {
+      const [allOutlets] = await safeMyWaschenQuery("SELECT id FROM mst_outlet");
+      outletIds = allOutlets.map((r) => Number(r.id));
+    }
+    await syncServiceOutlets(result.insertId, outletIds);
 
     res.status(201).json({
       success: true,
@@ -287,6 +348,7 @@ export const updateService = async (req, res) => {
     );
 
     await syncServiceInventory(id, inventory_items);
+    await syncServiceOutlets(Number(id), parseOutletIds(req.body.outlet_ids));
 
     res.json({ success: true, message: "Layanan berhasil diperbarui" });
   } catch (err) {
@@ -305,10 +367,157 @@ export const deleteService = async (req, res) => {
     }
 
     await safeMyWaschenQuery("DELETE FROM mst_service_inventory WHERE service_id = ?", [id]);
+    await safeMyWaschenQuery("DELETE FROM mst_service_outlet WHERE service_id = ?", [id]);
     await safeMyWaschenQuery("DELETE FROM mst_service WHERE id = ?", [id]);
     res.json({ success: true, message: "Layanan berhasil dihapus" });
   } catch (err) {
     console.error("deleteService error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ── 6. LAYANAN PER OUTLET: daftar semua master + status & nilai di outlet ──
+export const getOutletServices = async (req, res) => {
+  try {
+    const outletId = Number(req.params.outletId);
+    const [outlet] = await safeMyWaschenQuery(
+      "SELECT id, outlet_code, name, full_name, COALESCE(is_drop_point, 0) AS is_drop_point FROM mst_outlet WHERE id = ?",
+      [outletId]
+    );
+    if (!outlet.length) return res.status(404).json({ success: false, message: "Outlet tidak ditemukan" });
+
+    const search = String(req.query.search || "").trim();
+    const categoryId = req.query.categoryId ? Number(req.query.categoryId) : null;
+    const available = req.query.available;
+    const where = [];
+    const params = [outletId];
+    if (search) {
+      where.push("(s.code LIKE ? OR s.name LIKE ? OR so.name LIKE ?)");
+      const like = `%${search}%`;
+      params.push(like, like, like);
+    }
+    if (categoryId) {
+      where.push("COALESCE(so.category_id, s.category_id) = ?");
+      params.push(categoryId);
+    }
+    if (available === "1") where.push("(so.id IS NOT NULL AND so.is_active = 1)");
+    if (available === "0") where.push("(so.id IS NULL OR so.is_active = 0)");
+    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+    const [rows] = await safeMyWaschenQuery(
+      `SELECT s.id, s.code, s.is_active AS master_active, s.is_cleanox, s.is_featured, s.is_dc_required,
+              s.name AS master_name, s.category_id AS master_category_id, mc.name AS master_category_name,
+              s.unit_id AS master_unit_id, COALESCE(s.unit, mu.symbol) AS master_unit,
+              s.price AS master_price, s.regular_duration_days AS master_duration_days,
+              s.min_order_qty AS master_min_order_qty, s.dc_price_add AS master_dc_price_add,
+              so.id AS outlet_row_id, COALESCE(so.is_active, 0) AS outlet_active,
+              so.name AS override_name, so.category_id AS override_category_id, so.unit_id AS override_unit_id,
+              so.unit AS override_unit, so.price AS override_price,
+              so.regular_duration_days AS override_duration_days, so.min_order_qty AS override_min_order_qty,
+              so.dc_price_add AS override_dc_price_add,
+              COALESCE(so.name, s.name) AS name,
+              COALESCE(so.category_id, s.category_id) AS category_id, ec.name AS category_name,
+              COALESCE(so.unit, s.unit, eu.symbol) AS unit,
+              COALESCE(so.price, s.price) AS price,
+              COALESCE(so.regular_duration_days, s.regular_duration_days) AS regular_duration_days,
+              COALESCE(so.min_order_qty, s.min_order_qty) AS min_order_qty,
+              COALESCE(so.dc_price_add, s.dc_price_add) AS dc_price_add
+       FROM mst_service s
+       LEFT JOIN mst_service_outlet so ON so.service_id = s.id AND so.outlet_id = ?
+       LEFT JOIN mst_service_category mc ON mc.id = s.category_id
+       LEFT JOIN mst_unit mu ON mu.id = s.unit_id
+       LEFT JOIN mst_service_category ec ON ec.id = COALESCE(so.category_id, s.category_id)
+       LEFT JOIN mst_unit eu ON eu.id = COALESCE(so.unit_id, s.unit_id)
+       ${whereSql}
+       ORDER BY s.id ASC`,
+      params
+    );
+
+    res.json({ success: true, outlet: outlet[0], data: rows });
+  } catch (err) {
+    console.error("getOutletServices error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ── 7. SIMPAN NILAI CUSTOM LAYANAN DI 1 OUTLET (kosong = ikut master) ──
+export const upsertOutletService = async (req, res) => {
+  try {
+    const serviceId = Number(req.params.id);
+    const outletId = Number(req.params.outletId);
+    const [svc] = await safeMyWaschenQuery("SELECT id FROM mst_service WHERE id = ?", [serviceId]);
+    if (!svc.length) return res.status(404).json({ success: false, message: "Layanan tidak ditemukan" });
+    const [outlet] = await safeMyWaschenQuery("SELECT id FROM mst_outlet WHERE id = ?", [outletId]);
+    if (!outlet.length) return res.status(404).json({ success: false, message: "Outlet tidak ditemukan" });
+
+    const b = req.body || {};
+    const price = overrideNumber(b.price, "Tarif");
+    const duration = overrideNumber(b.regular_duration_days, "Durasi");
+    const minOrder = overrideNumber(b.min_order_qty, "Min. order");
+    const dcAdd = overrideNumber(b.dc_price_add, "Tambahan DC");
+    const bad = [price, duration, minOrder, dcAdd].find((r) => r.error);
+    if (bad) return res.status(400).json({ success: false, message: bad.error });
+    if (minOrder.value !== null && minOrder.value <= 0) {
+      return res.status(400).json({ success: false, message: "Min. order harus lebih dari 0" });
+    }
+
+    const categoryId = b.category_id ? Number(b.category_id) : null;
+    if (categoryId) {
+      const [cat] = await safeMyWaschenQuery("SELECT id FROM mst_service_category WHERE id = ?", [categoryId]);
+      if (!cat.length) return res.status(400).json({ success: false, message: "Kategori tidak ditemukan" });
+    }
+    const unitId = b.unit_id ? Number(b.unit_id) : null;
+    const isActive = b.is_active === undefined ? 1 : Number(b.is_active) === 1 ? 1 : 0;
+
+    await safeMyWaschenQuery(
+      `INSERT INTO mst_service_outlet
+         (service_id, outlet_id, name, category_id, unit_id, unit, price, regular_duration_days, min_order_qty, dc_price_add, is_active)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         name = VALUES(name), category_id = VALUES(category_id), unit_id = VALUES(unit_id), unit = VALUES(unit),
+         price = VALUES(price), regular_duration_days = VALUES(regular_duration_days),
+         min_order_qty = VALUES(min_order_qty), dc_price_add = VALUES(dc_price_add), is_active = VALUES(is_active)`,
+      [
+        serviceId, outletId, overrideText(b.name), categoryId, unitId, overrideText(b.unit),
+        price.value, duration.value, minOrder.value, dcAdd.value, isActive,
+      ]
+    );
+    res.json({ success: true, message: "Layanan outlet berhasil disimpan" });
+  } catch (err) {
+    console.error("upsertOutletService error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ── 8. TERSEDIA / TIDAK TERSEDIA (massal) DI 1 OUTLET ──
+export const setOutletServiceAvailability = async (req, res) => {
+  try {
+    const outletId = Number(req.params.outletId);
+    const ids = parseOutletIds(req.body?.service_ids) || [];
+    const available = req.body?.available ? 1 : 0;
+    if (!ids.length) return res.status(400).json({ success: false, message: "Pilih minimal 1 layanan" });
+    const [outlet] = await safeMyWaschenQuery("SELECT id FROM mst_outlet WHERE id = ?", [outletId]);
+    if (!outlet.length) return res.status(404).json({ success: false, message: "Outlet tidak ditemukan" });
+
+    if (available) {
+      await safeMyWaschenQuery(
+        `INSERT INTO mst_service_outlet (service_id, outlet_id, is_active)
+         SELECT id, ?, 1 FROM mst_service WHERE id IN (?)
+         ON DUPLICATE KEY UPDATE is_active = 1`,
+        [outletId, ids]
+      );
+    } else {
+      await safeMyWaschenQuery(
+        "UPDATE mst_service_outlet SET is_active = 0 WHERE outlet_id = ? AND service_id IN (?)",
+        [outletId, ids]
+      );
+    }
+    res.json({
+      success: true,
+      message: `${ids.length} layanan ${available ? "ditambahkan ke" : "dinonaktifkan dari"} outlet`,
+    });
+  } catch (err) {
+    console.error("setOutletServiceAvailability error:", err);
     res.status(500).json({ success: false, message: err.message });
   }
 };
