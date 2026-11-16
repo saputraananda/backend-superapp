@@ -4,6 +4,8 @@ import bcrypt from "bcrypt";
 
 const router = express.Router();
 
+const REMEMBER_ME_MS = 1000 * 60 * 60 * 24 * 30; // 30 hari
+
 // REGISTER
 export async function register(req, res) {
   const { name, full_name, email, password, username } = req.body;
@@ -91,6 +93,12 @@ export async function login(req, res) {
     }
 
     const employee = empRows[0];
+
+    // "Ingat saya": sesi bertahan 30 hari (diperpanjang tiap ada aktivitas, karena rolling: true).
+    // Tanpa centang: tetap default 2 jam dari konfigurasi session di index.js.
+    if (req.body.remember === true) {
+      req.session.cookie.maxAge = REMEMBER_ME_MS;
+    }
 
     req.session.userId       = user.id;
     req.session.userEmail    = user.email;

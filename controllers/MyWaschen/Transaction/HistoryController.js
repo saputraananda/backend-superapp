@@ -1,6 +1,7 @@
 import { safeMyWaschenQuery, safeQuery, myWaschenPool } from "../../../db/pool.js";
 import { buildProduksiPhotoUrl } from "../HRIS/hrisAssetHelpers.js";
 import { attachQueueNo } from "../../../utils/queueNo.js";
+import { fetchSmartlinkWorkLog, groupSmartlinkWork, isSmartlinkTransaction, smartlinkEmployeeIds } from "../../../utils/smartlinkWorkLog.js";
 import { posFileUrl, uploadDeleteRequestAttachment, uploadRefundApprovalProof } from "../../../utils/waschenPosUpload.js";
 
 function resolvePaymentStatus(paidAmount, grandTotal) {
@@ -99,6 +100,16 @@ function mapTransactionRow(row) {
     paidAmount: num(row.paid_amount),
     changeAmount: num(row.change_amount),
     discountAmount: num(row.discount_amount),
+    // Rincian harga: subtotal item, biaya express, nama promo (discount_notes)
+    subtotal: num(row.subtotal),
+    speedSurcharge: num(row.speed_surcharge),
+    promoName: row.discount_notes || null,
+    speedId: row.speed_id != null ? Number(row.speed_id) : null,
+    // speed_id 2 = Express (mst_service_speed); speed_surcharge lama sering tersimpan 0
+    isExpress:
+      Number(row.speed_id) === 2 ||
+      num(row.speed_surcharge) > 0 ||
+      /express|kilat/i.test(String(row.speed_name || "")),
     paymentStatus: row.payment_status || "Outstanding",
     paymentMethod: row.payment_method,
     paymentProofUrl: row.payment_proof_url,
@@ -445,6 +456,11 @@ export const getTransactionById = async (req, res) => {
       ),
     ]);
 
+    // Nota Smartlink: riwayat pengerjaan lama dari tr_smartlink_work_log
+    const smartlinkRows = isSmartlinkTransaction(row)
+      ? await fetchSmartlinkWorkLog((sql, params) => myWaschenPool.query(sql, params), row.id)
+      : [];
+
     // Per item: tahap terakhir per stage (QC ulang menimpa tampilan), lalu rincian jenis per plastik
     const bagsByDetail = {};
     for (const b of bagRows) {
@@ -472,6 +488,7 @@ export const getTransactionById = async (req, res) => {
       ...progressRows.map((p) => p.employee_id),
       ...progressRows.map((p) => p.hold_resolved_by),
       ...logs.map((l) => l.cashier_employee_id),
+      ...smartlinkEmployeeIds(smartlinkRows),
       row.cashier_employee_id,
       row.settled_by_employee_id,
     ]);
@@ -530,9 +547,11 @@ export const getTransactionById = async (req, res) => {
       };
     });
 
+    const smartlinkByDetail = groupSmartlinkWork(details, smartlinkRows, (eid) => empMap[eid] || null);
+    const byTime = (a, b) => new Date(a.completed_at || 0) - new Date(b.completed_at || 0);
     const items = details.map((d) => ({
       ...d,
-      workers: progressByDetail[d.id] || [],
+      workers: [...(smartlinkByDetail[d.id] || []), ...(progressByDetail[d.id] || [])].sort(byTime),
       bag_history: Object.values(bagsByDetail[d.id] || {}),
       kg_items: kgByDetail[d.id] || [],
     }));
@@ -556,6 +575,8 @@ export const getTransactionById = async (req, res) => {
       cashier_name: cashierName,
       settled_by_name: settledByName,
     });
+    // PIN nota digital pelanggan (4 digit) — hanya di detail, tidak di list
+    order.accessCode = row.access_code ? String(row.access_code) : null;
     res.json({
       success: true,
       data: {
