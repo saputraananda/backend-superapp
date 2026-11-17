@@ -11,6 +11,8 @@ import {
   getKpiOnlySummary,
   getKpiOnlyDetail,
   getKpiOnlyAvailablePeriods,
+  getKpiAllSummary,
+  exportKpiAllExcel,
 } from "../../controllers/Cleanox/kpiProduksiController.js";
 
 const router = express.Router();
@@ -26,5 +28,8 @@ router.get("/sla-items/export", requireAuth, exportSlaItems);
 router.get("/only/summary", requireAuth, getKpiOnlySummary);
 router.get("/only/detail", requireAuth, getKpiOnlyDetail);
 router.get("/only/available-periods", requireAuth, getKpiOnlyAvailablePeriods);
+
+router.get("/all/summary", requireAuth, getKpiAllSummary);
+router.get("/all/export-excel", requireAuth, exportKpiAllExcel);
 
 export default router;

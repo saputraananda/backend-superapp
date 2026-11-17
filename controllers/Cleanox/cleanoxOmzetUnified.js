@@ -32,7 +32,7 @@ export function buildUnifiedOmzetWhere({
 	let sql = `
     (${omzet}) >= ?
     AND (${omzet}) <= ?
-    AND ${a}.payment_status = 'lunas'
+    AND ${a}.payment_status IN ('lunas', 'dp')
     AND (
       ${a}.source_system = 'smartlink'
       OR (${a}.source_system = 'pos' AND ${a}.status <> 'Cancelled')
@@ -47,6 +47,17 @@ export function buildUnifiedOmzetWhere({
 	}
 
 	return { sql, params };
+}
+
+/**
+ * Nominal omzet satu baris view: POS = uang yang sudah terbayar (maksimum sebesar tagihan, jadi DP ikut
+ * dihitung dan kelebihan bayar tidak); Smartlink = tagihan penuh. Query wajib join
+ * `tr_transactions <txAlias> ON <viewAlias>.source_system = 'pos' AND <txAlias>.id = <viewAlias>.pos_transaction_id`.
+ */
+export function omzetAmountExpr(viewAlias = "v", txAlias = "tx") {
+	return `CASE WHEN ${viewAlias}.source_system = 'pos'
+    THEN LEAST(COALESCE(${txAlias}.paid_amount, 0), ${viewAlias}.final_amount)
+    ELSE ${viewAlias}.final_amount END`;
 }
 
 export function mapKategori(group) {
@@ -68,22 +79,25 @@ export function isTunaiKategori(kategori) {
 		.toUpperCase() === "TUNAI";
 }
 
-/** API summary non_tunai: POS bank methods; exclude SMARTLINK / COLLABORATION / TUNAI / empty. */
+/** Kategori yang bukan uang masuk Tunai maupun Non Tunai (tidak ikut dijumlah di keduanya). */
+const EXCLUDED_FROM_NON_TUNAI = new Set(["COLLABORATION", "COMPENSATION"]);
+
+/** API summary non_tunai: POS bank methods; exclude SMARTLINK / COLLABORATION / COMPENSATION / TUNAI / empty. */
 export function isNonTunaiSummaryKategori(kategori) {
 	const k = String(kategori || "")
 		.trim()
 		.toUpperCase();
 	if (!k || k === "-" || isTunaiKategori(k)) return false;
-	if (k === "SMARTLINK" || k === "COLLABORATION") return false;
+	if (k === "SMARTLINK" || EXCLUDED_FROM_NON_TUNAI.has(k)) return false;
 	return true;
 }
 
-/** Excel rekonsiliasi NON TUNAI: all non-tunai including SMARTLINK; exclude COLLABORATION. */
+/** Excel rekonsiliasi NON TUNAI: all non-tunai including SMARTLINK; exclude COLLABORATION / COMPENSATION. */
 export function isNonTunaiReconKategori(kategori) {
 	const k = String(kategori || "")
 		.trim()
 		.toUpperCase();
 	if (!k || k === "-" || isTunaiKategori(k)) return false;
-	if (k === "COLLABORATION") return false;
+	if (EXCLUDED_FROM_NON_TUNAI.has(k)) return false;
 	return true;
 }
