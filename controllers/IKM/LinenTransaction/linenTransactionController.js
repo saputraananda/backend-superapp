@@ -384,6 +384,24 @@ export const getLinenTransactionById = async (req, res) => {
       }));
     }
 
+    // TTD Serah Terima per Unit (fitur LMS). Tabel/kolom dibuat oleh LMS saat start; bila belum ada, abaikan.
+    let unitSign = { required: false, rooms: [] };
+    try {
+      const [[flag]] = await safeIKMQuery(
+        `SELECT unit_sign_required FROM tr_linen_transaction WHERE id = ?`, [id]);
+      const [signRows] = await safeIKMQuery(
+        `SELECT rs.room_id, r.room_name,
+                rs.nurse_name_pickup, rs.signature_nurse_pickup, rs.signature_valet_pickup, rs.signed_pickup_at,
+                rs.nurse_name_delivery, rs.signature_nurse_delivery, rs.signature_valet_delivery, rs.signed_delivery_at
+           FROM tr_linen_transaction_room_sign rs
+           INNER JOIN mst_rooms_rs r ON r.id = rs.room_id
+          WHERE rs.transaction_id = ?
+          ORDER BY r.room_name`, [id]);
+      unitSign = { required: Number(flag?.unit_sign_required) === 1, rooms: signRows };
+    } catch (e) {
+      if (e?.code !== "ER_NO_SUCH_TABLE" && e?.code !== "ER_BAD_FIELD_ERROR") throw e;
+    }
+
     res.json({
       success: true,
       data: {
@@ -396,7 +414,8 @@ export const getLinenTransactionById = async (req, res) => {
           };
         }),
         auditLogs: enrichedLogs,
-        kurangKirimDeliveries: enrichedDeliveries
+        kurangKirimDeliveries: enrichedDeliveries,
+        unitSign
       }
     });
 
