@@ -6,47 +6,6 @@ const router = express.Router();
 
 const REMEMBER_ME_MS = 1000 * 60 * 60 * 24 * 30; // 30 hari
 
-// REGISTER
-export async function register(req, res) {
-  const { name, full_name, email, password, username } = req.body;
-
-  const finalFullName = full_name ?? name;
-  if (!finalFullName) return res.status(400).json({ message: "Full name is required" });
-  if (!email)         return res.status(400).json({ message: "Email is required" });
-  if (!password)      return res.status(400).json({ message: "Password is required" });
-
-  try {
-    const [exist] = await safeQuery(`SELECT id FROM users WHERE email = ?`, [email]);
-    if (exist.length > 0) {
-      return res.status(409).json({ message: "Email already registered" });
-    }
-
-    // Cek username jika diberikan
-    if (username) {
-      const [existUsername] = await safeQuery(`SELECT id FROM users WHERE username = ?`, [username]);
-      if (existUsername.length > 0) {
-        return res.status(409).json({ message: "Username already taken" });
-      }
-    }
-
-    const password_hash = await bcrypt.hash(password, 10);
-    await safeQuery(
-      `INSERT INTO users (name, email, username, password_hash, role) VALUES (?, ?, ?, ?, ?)`,
-      [finalFullName, email, username || null, password_hash, "employee"]
-    );
-
-    await safeQuery(
-      `INSERT INTO mst_employee (full_name, email) VALUES (?, ?)`,
-      [finalFullName, email]
-    );
-
-    res.json({ message: "Registration successful" });
-  } catch (error) {
-    console.error("Register error:", error);
-    res.status(500).json({ message: error.message });
-  }
-}
-
 // LOGIN
 export async function login(req, res) {
   const { email, password, identifier } = req.body;
