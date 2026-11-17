@@ -124,7 +124,7 @@ import methodLaundryRoutes from "./routes/MyWaschen/MasterData/MethodLaundryRout
 import outletWaschenRoutes from "./routes/MyWaschen/MasterData/OutletRoutes.js";
 import historyWaschenRoutes from "./routes/MyWaschen/Transaction/HistoryRoutes.js";
 import pettyCashRoutes from "./routes/MyWaschen/Transaction/PettyCashRoutes.js";
-import { getCutoffYears } from "./controllers/MyWaschen/CutoffYearsController.js";
+import { getCutoffYears } from "./controllers/MyWaschen/utils/CutoffYearsController.js";
 import { requireAuth as requireAuthCutoffYears } from "./middleware/auth.js";
 import dailyReportRoutes from "./routes/MyWaschen/Transaction/DailyRoutes.js";
 import printerSettingsRoutes from "./routes/MyWaschen/Settings/PrinterSettingsRoutes.js";

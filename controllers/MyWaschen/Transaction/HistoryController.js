@@ -1,8 +1,9 @@
 import { safeMyWaschenQuery, safeQuery, myWaschenPool } from "../../../db/pool.js";
 import { buildProduksiPhotoUrl } from "../HRIS/hrisAssetHelpers.js";
-import { attachQueueNo } from "../../../utils/queueNo.js";
-import { fetchSmartlinkWorkLog, groupSmartlinkWork, isSmartlinkTransaction, smartlinkEmployeeIds } from "../../../utils/smartlinkWorkLog.js";
-import { posFileUrl, uploadDeleteRequestAttachment, uploadRefundApprovalProof } from "../../../utils/waschenPosUpload.js";
+import { attachQueueNo } from "../utils/queueNo.js";
+import { loadItemPhotos } from "../utils/itemPhotos.js";
+import { fetchSmartlinkWorkLog, groupSmartlinkWork, isSmartlinkTransaction, smartlinkEmployeeIds } from "../utils/smartlinkWorkLog.js";
+import { posFileUrl, uploadDeleteRequestAttachment, uploadRefundApprovalProof } from "../utils/waschenPosUpload.js";
 
 function resolvePaymentStatus(paidAmount, grandTotal) {
   const paid = Number(paidAmount) || 0;
@@ -549,8 +550,10 @@ export const getTransactionById = async (req, res) => {
 
     const smartlinkByDetail = groupSmartlinkWork(details, smartlinkRows, (eid) => empMap[eid] || null);
     const byTime = (a, b) => new Date(a.completed_at || 0) - new Date(b.completed_at || 0);
+    const photosByDetail = await loadItemPhotos((sql, params) => myWaschenPool.query(sql, params), details);
     const items = details.map((d) => ({
       ...d,
+      photos: photosByDetail[d.id] || [],
       workers: [...(smartlinkByDetail[d.id] || []), ...(progressByDetail[d.id] || [])].sort(byTime),
       bag_history: Object.values(bagsByDetail[d.id] || {}),
       kg_items: kgByDetail[d.id] || [],

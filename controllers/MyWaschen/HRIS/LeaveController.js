@@ -1,6 +1,6 @@
 import { safeMyWaschenQuery } from "../../../db/pool.js";
 
-import { defaultCutoffDateRange } from "../cutoffHelpers.js";
+import { defaultCutoffDateRange } from "../utils/cutoffHelpers.js";
 
 import { getEmployeeNameMap, toISODate, resolveMstRoleEmployeeIds, appendEmployeeIdInClause } from "./hrisHelpers.js";
 
