@@ -68,6 +68,165 @@ function buildAttachmentUrl(filename) {
   return `${base}/storage/linenreport/${name}`;
 }
 
+// ── GET dashboard — agregat laporan linen untuk periode & filter terpilih ───
+function shiftISODate(iso, days) {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
+}
+
+export const getLinenReportDashboard = async (req, res) => {
+  try {
+    const { startDate, endDate, area_id, hospital_id, finding_location, floor } = req.query;
+
+    const defaultCutoff = getDefaultCutoffDates();
+    let start = toISODateString(startDate) || defaultCutoff.start;
+    let end   = toISODateString(endDate)   || defaultCutoff.end;
+    if (start > end) [start, end] = [end, start];
+
+    // Periode pembanding: rentang sama panjang tepat sebelum periode aktif
+    const spanDays = Math.round((Date.parse(end) - Date.parse(start)) / 86400000) + 1;
+    const prevEnd = shiftISODate(start, -1);
+    const prevStart = shiftISODate(prevEnd, -(spanDays - 1));
+
+    const buildWhere = (from, to) => {
+      const where = ["lr.report_date >= ?", "lr.report_date <= ?"];
+      const params = [from, to];
+      if (toPositiveInt(area_id)) { where.push("lr.area_id = ?"); params.push(toPositiveInt(area_id)); }
+      if (toPositiveInt(hospital_id)) { where.push("lr.hospital_id = ?"); params.push(toPositiveInt(hospital_id)); }
+      if (finding_location && ["Rumah Sakit", "IKM"].includes(finding_location)) {
+        where.push("lr.finding_location = ?");
+        params.push(finding_location);
+      }
+      if (floor) { where.push("f.floor = ?"); params.push(floor); }
+      return { whereSql: `WHERE ${where.join(" AND ")}`, params };
+    };
+
+    const FROM = `
+      FROM tr_linen_report lr
+      LEFT JOIN mst_area a ON a.id = lr.area_id
+      LEFT JOIN mst_hospital h ON h.id = lr.hospital_id
+      LEFT JOIN mst_floor f ON f.employee_id = lr.reported_by`;
+
+    const cur = buildWhere(start, end);
+    const prev = buildWhere(prevStart, prevEnd);
+
+    const totalsSql = (whereSql) => `
+      SELECT COUNT(*) AS reports,
+             COALESCE(SUM(lr.finding_qty), 0) AS total_qty,
+             COALESCE(SUM(lr.status = 'terkirim'), 0) AS sent,
+             COALESCE(SUM(lr.status = 'proses'), 0) AS processing,
+             COALESCE(SUM(lr.status = 'selesai'), 0) AS done,
+             AVG(CASE WHEN lr.status = 'selesai' AND lr.completed_at IS NOT NULL
+                      THEN TIMESTAMPDIFF(MINUTE, lr.created_at, lr.completed_at) END) AS avg_minutes
+      ${FROM}
+      ${whereSql}`;
+
+    // Agregat per dimensi: laporan & qty. `dimSql` = ekspresi kolom pengelompokan.
+    const groupSql = (dimSql, extraWhere = "") => `
+      SELECT ${dimSql} AS name, COUNT(*) AS reports, COALESCE(SUM(lr.finding_qty), 0) AS qty
+      ${FROM}
+      ${cur.whereSql} ${extraWhere}
+      GROUP BY name
+      ORDER BY reports DESC, qty DESC
+      LIMIT 8`;
+
+    const [
+      [[totals]],
+      [[prevTotals]],
+      [trend],
+      [byFinding],
+      [byLinen],
+      [byLocation],
+      [byOwnership],
+      [byHospital],
+      [byArea],
+      [byFloor],
+      [attention],
+    ] = await Promise.all([
+      safeIKMQuery(totalsSql(cur.whereSql), cur.params),
+      safeIKMQuery(totalsSql(prev.whereSql), prev.params),
+      safeIKMQuery(
+        `SELECT DATE_FORMAT(lr.report_date, '%Y-%m-%d') AS date,
+                COUNT(*) AS reports, COALESCE(SUM(lr.finding_qty), 0) AS qty
+         ${FROM}
+         ${cur.whereSql}
+         GROUP BY lr.report_date
+         ORDER BY lr.report_date ASC`,
+        cur.params
+      ),
+      safeIKMQuery(groupSql("lr.finding_type"), cur.params),
+      safeIKMQuery(groupSql("lr.linen_type"), cur.params),
+      safeIKMQuery(
+        `SELECT lr.finding_location AS name, COUNT(*) AS reports, COALESCE(SUM(lr.finding_qty), 0) AS qty
+         ${FROM} ${cur.whereSql} GROUP BY lr.finding_location`,
+        cur.params
+      ),
+      safeIKMQuery(
+        `SELECT lr.ownership_type AS name, COUNT(*) AS reports, COALESCE(SUM(lr.finding_qty), 0) AS qty
+         ${FROM} ${cur.whereSql} GROUP BY lr.ownership_type`,
+        cur.params
+      ),
+      safeIKMQuery(groupSql("h.hospital_name"), cur.params),
+      safeIKMQuery(groupSql("a.area_name"), cur.params),
+      safeIKMQuery(groupSql("f.floor", "AND f.floor IS NOT NULL AND f.floor != ''"), cur.params),
+      safeIKMQuery(
+        `SELECT lr.id, DATE_FORMAT(lr.report_date, '%Y-%m-%d') AS report_date,
+                h.hospital_name, a.area_name, lr.linen_type, lr.finding_type,
+                lr.finding_qty, lr.status,
+                DATEDIFF(CURDATE(), lr.report_date) AS age_days
+         ${FROM}
+         ${cur.whereSql} AND lr.status <> 'selesai'
+         ORDER BY lr.report_date ASC, lr.id ASC
+         LIMIT 10`,
+        cur.params
+      ),
+    ]);
+
+    const summarize = (t) => ({
+      reports: Number(t?.reports || 0),
+      totalQty: Number(t?.total_qty || 0),
+      sent: Number(t?.sent || 0),
+      processing: Number(t?.processing || 0),
+      done: Number(t?.done || 0),
+      avgMinutes: t?.avg_minutes == null ? null : Math.round(Number(t.avg_minutes)),
+    });
+    const rows = (list, fallback = "-") =>
+      list.map((r) => ({ name: r.name || fallback, reports: Number(r.reports), qty: Number(r.qty) }));
+
+    res.json({
+      period: { startDate: start, endDate: end, prevStartDate: prevStart, prevEndDate: prevEnd },
+      summary: summarize(totals),
+      previous: summarize(prevTotals),
+      trend: trend.map((r) => ({ date: r.date, reports: Number(r.reports), qty: Number(r.qty) })),
+      byFinding: rows(byFinding),
+      byLinen: rows(byLinen),
+      byLocation: rows(byLocation),
+      byOwnership: byOwnership.map((r) => ({
+        key: r.name === "rental" ? "SEWA" : r.name === "hospital" ? "RS" : "NONE",
+        reports: Number(r.reports),
+        qty: Number(r.qty),
+      })),
+      byHospital: rows(byHospital),
+      byArea: rows(byArea),
+      byFloor: rows(byFloor),
+      attention: attention.map((r) => ({
+        id: r.id,
+        report_date: r.report_date,
+        hospital_name: r.hospital_name || "-",
+        area_name: r.area_name || "-",
+        linen_type: r.linen_type,
+        finding_type: r.finding_type,
+        qty: Number(r.finding_qty),
+        status: r.status,
+        age_days: Math.max(0, Number(r.age_days) || 0),
+      })),
+    });
+  } catch (err) {
+    console.error("getLinenReportDashboard error:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
 // ── GET list ───────────────────────────────────────────────────────────────
 export const getLinenReports = async (req, res) => {
   try {
