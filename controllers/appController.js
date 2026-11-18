@@ -1,4 +1,5 @@
 import { safeQuery, safeSmartlinkQuery } from "../db/pool.js";
+import { effectiveCustomerTarget, loadCustomerTargets, loadTargetSalesRows, targetSalesDerivedSql } from "./MyWaschen/utils/targetWaschen.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Employee Stats — data real dari mst_employee
@@ -89,6 +90,8 @@ export const getApps = async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 export const getSalesStats = async (req, res) => {
   try {
+    // Target dari myWaschen.mst_target_waschen (bukan lagi waschen_smartlink.target_sales)
+    const targetSql = targetSalesDerivedSql(await loadTargetSalesRows());
 
     // Query kompleks dari user (dengan sedikit penyesuaian)
     const sql = `
@@ -196,7 +199,7 @@ export const getSalesStats = async (req, res) => {
           )
         ))*100,2) AS persen_gap
       FROM param p
-      CROSS JOIN target_sales t
+      CROSS JOIN ${targetSql} t
         ON t.tahun = YEAR(p.date_end) AND t.bulan = MONTH(p.date_end)
       LEFT JOIN actual a 
         ON a.outlet COLLATE utf8mb4_unicode_ci
@@ -249,17 +252,12 @@ export const getCustomerTargets = async (req, res) => {
     const obsStart = `${currentYear}-01-26`;
     const obsEnd = `${currentYear}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 
-    const [targetRows] = await safeSmartlinkQuery(
-      "SELECT jumlah FROM target_customer WHERE tahun = ?",
-      [currentYear]
-    );
-    const targetCustomer = targetRows.length > 0 ? Number(targetRows[0].jumlah) : 0;
-
-    const [existingRows] = await safeSmartlinkQuery(
-      "SELECT jumlah FROM target_customer WHERE tahun = ?",
-      [currentYear - 1]
-    );
-    const existingCustomer = existingRows.length > 0 ? Number(existingRows[0].jumlah) : 0;
+    // Target customer dari myWaschen.mst_target_customer_waschen.
+    // Tahun berjalan yang belum diisi otomatis mengikuti target tahun sebelumnya.
+    const customerTargets = await loadCustomerTargets();
+    const targetCustomer = effectiveCustomerTarget(customerTargets, currentYear)?.jumlah ?? 0;
+    // Tahun lalu = nilai tersimpan saja (dipakai sebagai basis customer yang sudah ada)
+    const existingCustomer = customerTargets.find((r) => r.tahun === currentYear - 1)?.jumlah ?? 0;
 
     const sql = `
       WITH cust AS (

@@ -16,6 +16,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { pool } from "../db/pool.js";
 
+import { mstOutlet } from "../utils/outletSource.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -121,7 +122,7 @@ const resolveEntity = async ({ company_id, outlet_id, entity }) => {
 
   const outletId = companyId === OUTLET_COMPANY_ID && outlet_id ? Number(outlet_id) : null;
   if (outletId) {
-    const out = await safeQuery(`SELECT full_name FROM mst_outlet WHERE id = ?`, [outletId]);
+    const out = await safeQuery(`SELECT full_name FROM ${mstOutlet()} WHERE id = ?`, [outletId]);
     if (!out.length) return { error: "Outlet tidak ditemukan" };
     return { companyId, outletId, entity: out[0].full_name };
   }
@@ -258,7 +259,7 @@ export const listDocuments = async (req, res) => {
               (SELECT COUNT(*) FROM mst_document_attachment a WHERE a.document_id = d.id AND a.is_deleted = 0) AS attachment_count
        FROM mst_document d
        LEFT JOIN mst_company ec ON ec.company_id = d.company_id
-       LEFT JOIN mst_outlet eo ON eo.id = d.outlet_id
+       LEFT JOIN ${mstOutlet()} eo ON eo.id = d.outlet_id
        LEFT JOIN mst_employee e ON e.employee_id = d.pic_id
        LEFT JOIN mst_department dept ON dept.department_id = d.department_id
        LEFT JOIN mst_company c ON c.company_id = d.archive_location
@@ -289,7 +290,7 @@ export const getDocument = async (req, res) => {
               c.company_name AS archive_location_name
        FROM mst_document d
        LEFT JOIN mst_company ec ON ec.company_id = d.company_id
-       LEFT JOIN mst_outlet eo ON eo.id = d.outlet_id
+       LEFT JOIN ${mstOutlet()} eo ON eo.id = d.outlet_id
        LEFT JOIN mst_employee e ON e.employee_id = d.pic_id
        LEFT JOIN mst_department dept ON dept.department_id = d.department_id
        LEFT JOIN mst_company c ON c.company_id = d.archive_location
@@ -691,7 +692,7 @@ export const getDashboardOverview = async (req, res) => {
                       WHERE t.document_id = d.id AND t.is_deleted = 0 AND t.status IN ('borrowed','overdue')) AS is_borrowed
        FROM mst_document d
        LEFT JOIN mst_company c ON c.company_id = d.company_id
-       LEFT JOIN mst_outlet o ON o.id = d.outlet_id
+       LEFT JOIN ${mstOutlet()} o ON o.id = d.outlet_id
        LEFT JOIN mst_employee e ON e.employee_id = d.pic_id
        LEFT JOIN mst_department dept ON dept.department_id = d.department_id
        WHERE ${attentionWhere}
@@ -1065,7 +1066,7 @@ export const lookupOutlets = async (_req, res) => {
   try {
     const data = await safeQuery(
       `SELECT id AS outlet_id, name AS outlet_name, full_name, ? AS company_id
-       FROM mst_outlet ORDER BY name`,
+       FROM ${mstOutlet()} ORDER BY name`,
       [OUTLET_COMPANY_ID]
     );
     res.json({ data });

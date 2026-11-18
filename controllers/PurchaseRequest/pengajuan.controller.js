@@ -74,6 +74,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { pool } from "../../db/pool.js";
 
+import { mstOutlet } from "../../utils/outletSource.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
@@ -312,7 +313,7 @@ const resolveScopeSelection = async (companyIdsRaw, outletIdsRaw, fallbackCompan
     let outlets = [];
     if (hasWaschen && outletIds.length) {
         outlets = await safeQuery(
-            `SELECT id AS outlet_id, full_name FROM mst_outlet
+            `SELECT id AS outlet_id, full_name FROM ${mstOutlet()}
              WHERE id IN (${outletIds.map(() => "?").join(",")}) ORDER BY full_name`,
             outletIds
         );
@@ -355,7 +356,7 @@ const getScopesOfPr = async (prId) => {
         `SELECT prs.company_id, c.company_name, prs.outlet_id, o.full_name AS outlet_name
          FROM tr_purchase_request_scope prs
          LEFT JOIN mst_company c ON c.company_id = prs.company_id
-         LEFT JOIN mst_outlet  o ON o.id         = prs.outlet_id
+         LEFT JOIN ${mstOutlet()}  o ON o.id         = prs.outlet_id
          WHERE prs.pr_id = ?
          ORDER BY c.company_name, o.full_name`,
         [prId]
@@ -381,7 +382,7 @@ const SCOPE_COMPANY_SELECT = `COALESCE((SELECT GROUP_CONCAT(DISTINCT mc.company_
                       WHERE prs.pr_id = pr.pr_id), c.company_name) AS company_name`;
 const SCOPE_OUTLET_SELECT = `COALESCE((SELECT GROUP_CONCAT(DISTINCT mo.full_name ORDER BY mo.full_name SEPARATOR ', ')
                       FROM tr_purchase_request_scope prs
-                      JOIN mst_outlet mo ON mo.id = prs.outlet_id
+                      JOIN ${mstOutlet()} mo ON mo.id = prs.outlet_id
                       WHERE prs.pr_id = pr.pr_id), o.full_name) AS outlet_name`;
 
 // Filter kategori: cocokkan kolom lama pr.company_id ATAU baris di scope (multi-kategori)
@@ -527,7 +528,7 @@ const getAllocationsOfPr = async (prId) => {
              FROM tr_purchase_request_allocation a
              JOIN mst_purchase_classification c ON c.id = a.classification_id
              LEFT JOIN mst_company mc ON mc.company_id = a.company_id
-             LEFT JOIN mst_outlet o ON o.id = a.outlet_id
+             LEFT JOIN ${mstOutlet()} o ON o.id = a.outlet_id
              WHERE a.pr_id = ?
              ORDER BY c.classification_name, mc.company_name, o.full_name`,
             [prId]
@@ -599,7 +600,7 @@ export const getCompanies = async (_req, res) => {
 export const getOutlets = async (_req, res) => {
     try {
         const data = await safeQuery(
-            `SELECT id AS outlet_id, name, full_name FROM mst_outlet ORDER BY name`
+            `SELECT id AS outlet_id, name, full_name FROM ${mstOutlet()} ORDER BY name`
         );
         res.json({ data });
     } catch (err) {
@@ -1185,7 +1186,7 @@ export const getClassificationItems = async (req, res) => {
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
              LEFT JOIN mst_satuan     s ON s.satuan_id     = pr.satuan_id
              LEFT JOIN mst_company    c ON c.company_id    = pr.company_id
-             LEFT JOIN mst_outlet     o ON o.id            = pr.outlet_id
+             LEFT JOIN ${mstOutlet()}     o ON o.id            = pr.outlet_id
              WHERE a.gkey = ?
              ORDER BY a.amt ${order}, pr.pr_id DESC
              LIMIT ? OFFSET ?`,
@@ -1241,7 +1242,7 @@ export const exportByClassification = async (req, res) => {
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
              LEFT JOIN mst_satuan     s ON s.satuan_id     = pr.satuan_id
              LEFT JOIN mst_company    c ON c.company_id    = pr.company_id
-             LEFT JOIN mst_outlet     o ON o.id            = pr.outlet_id
+             LEFT JOIN ${mstOutlet()}     o ON o.id            = pr.outlet_id
              WHERE ${where}
              ORDER BY pr.created_at DESC
              LIMIT ?`,
@@ -1306,7 +1307,7 @@ export const listMy = async (req, res) => {
              FROM tr_purchase_request pr
              LEFT JOIN mst_satuan  s ON s.satuan_id  = pr.satuan_id
              LEFT JOIN mst_company c ON c.company_id = pr.company_id
-             LEFT JOIN mst_outlet  o ON o.id         = pr.outlet_id
+             LEFT JOIN ${mstOutlet()}  o ON o.id         = pr.outlet_id
              ${where}
              ORDER BY pr.created_at DESC LIMIT ? OFFSET ?`,
             [...params, limit, offset]
@@ -1422,7 +1423,7 @@ export const listDepartment = async (req, res) => {
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
              LEFT JOIN mst_satuan     s ON s.satuan_id     = pr.satuan_id
              LEFT JOIN mst_company    c ON c.company_id    = pr.company_id
-             LEFT JOIN mst_outlet     o ON o.id            = pr.outlet_id
+             LEFT JOIN ${mstOutlet()}     o ON o.id            = pr.outlet_id
              ${where}
              ORDER BY pr.created_at DESC
              LIMIT ? OFFSET ?`,
@@ -1492,7 +1493,7 @@ export const listApproval = async (req, res) => {
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
              LEFT JOIN mst_satuan     s ON s.satuan_id     = pr.satuan_id
              LEFT JOIN mst_company    c ON c.company_id    = pr.company_id
-             LEFT JOIN mst_outlet     o ON o.id            = pr.outlet_id
+             LEFT JOIN ${mstOutlet()}     o ON o.id            = pr.outlet_id
              ${where}
              ORDER BY pr.created_at ASC`,
             params
@@ -1523,7 +1524,7 @@ export const getDetail = async (req, res) => {
              LEFT JOIN mst_department d   ON d.department_id = pr.department_id
              LEFT JOIN mst_satuan     s   ON s.satuan_id     = pr.satuan_id
              LEFT JOIN mst_company    c   ON c.company_id    = pr.company_id
-             LEFT JOIN mst_outlet     o   ON o.id            = pr.outlet_id
+             LEFT JOIN ${mstOutlet()}     o   ON o.id            = pr.outlet_id
              LEFT JOIN mst_bank       bnk ON bnk.bank_id     = pr.bank_id
              LEFT JOIN mst_purchase_classification pc ON pc.id = pr.classification_id
              WHERE pr.pr_id = ? AND pr.is_deleted = 0`,
@@ -2229,7 +2230,7 @@ export const updateHeaderInfo = async (req, res) => {
              LEFT JOIN mst_employee   e ON e.employee_id   = pr.employee_id
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
              LEFT JOIN mst_company    c ON c.company_id    = pr.company_id
-             LEFT JOIN mst_outlet     o ON o.id            = pr.outlet_id
+             LEFT JOIN ${mstOutlet()}     o ON o.id            = pr.outlet_id
              WHERE pr.pr_id = ? AND pr.is_deleted = 0`,
             [id]
         );
@@ -2613,7 +2614,7 @@ export const listAll = async (req, res) => {
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
              LEFT JOIN mst_satuan     s ON s.satuan_id     = pr.satuan_id
              LEFT JOIN mst_company    c ON c.company_id    = pr.company_id
-             LEFT JOIN mst_outlet     o ON o.id            = pr.outlet_id
+             LEFT JOIN ${mstOutlet()}     o ON o.id            = pr.outlet_id
              ${where}
              ORDER BY pr.created_at DESC
              LIMIT ? OFFSET ?`,
@@ -2676,7 +2677,7 @@ export const listGaReview = async (req, res) => {
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
              LEFT JOIN mst_satuan     s ON s.satuan_id     = pr.satuan_id
              LEFT JOIN mst_company    c ON c.company_id    = pr.company_id
-             LEFT JOIN mst_outlet     o ON o.id            = pr.outlet_id
+             LEFT JOIN ${mstOutlet()}     o ON o.id            = pr.outlet_id
              ${where}
              ORDER BY pr.created_at ASC`,
             params
@@ -2883,7 +2884,7 @@ export const getPOData = async (req, res) => {
              LEFT JOIN mst_department d       ON d.department_id   = pr.department_id
              LEFT JOIN mst_satuan     s       ON s.satuan_id       = pr.satuan_id
              LEFT JOIN mst_company    c       ON c.company_id      = pr.company_id
-             LEFT JOIN mst_outlet     o       ON o.id              = pr.outlet_id
+             LEFT JOIN ${mstOutlet()}     o       ON o.id              = pr.outlet_id
              LEFT JOIN mst_bank       bnk     ON bnk.bank_id       = pr.bank_id
              LEFT JOIN mst_employee   spv_e   ON spv_e.employee_id = pr.approved_spv_by
              LEFT JOIN mst_employee   bod_e   ON bod_e.employee_id = pr.approved_bod_by
@@ -2961,7 +2962,7 @@ export const listFinanceReview = async (req, res) => {
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
              LEFT JOIN mst_satuan     s ON s.satuan_id     = pr.satuan_id
              LEFT JOIN mst_company    c ON c.company_id    = pr.company_id
-             LEFT JOIN mst_outlet     o ON o.id            = pr.outlet_id
+             LEFT JOIN ${mstOutlet()}     o ON o.id            = pr.outlet_id
              ${where}
              ORDER BY pr.created_at ASC`,
             params
@@ -3147,7 +3148,7 @@ export const listPaymentPending = async (req, res) => {
              LEFT JOIN mst_department d   ON d.department_id = pr.department_id
              LEFT JOIN mst_satuan     s   ON s.satuan_id     = pr.satuan_id
              LEFT JOIN mst_company    c   ON c.company_id    = pr.company_id
-             LEFT JOIN mst_outlet     o   ON o.id            = pr.outlet_id
+             LEFT JOIN ${mstOutlet()}     o   ON o.id            = pr.outlet_id
              LEFT JOIN mst_bank       bnk ON bnk.bank_id     = pr.bank_id
              ${where}
              ORDER BY pr.created_at ASC`,
@@ -3674,7 +3675,7 @@ export const listCredit = async (req, res) => {
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
              LEFT JOIN mst_satuan     s ON s.satuan_id     = pr.satuan_id
              LEFT JOIN mst_company    c ON c.company_id    = pr.company_id
-             LEFT JOIN mst_outlet     o ON o.id            = pr.outlet_id
+             LEFT JOIN ${mstOutlet()}     o ON o.id            = pr.outlet_id
              ${where}
              ORDER BY pr.created_at DESC`,
             params

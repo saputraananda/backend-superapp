@@ -98,7 +98,7 @@ export const getDayOffList = async (req, res) => {
       const outletIds = [...new Set(roles.map((r) => Number(r.outlet_id)).filter(Boolean))];
       const outletName = new Map();
       if (outletIds.length) {
-        const [outlets] = await safeQuery(
+        const [outlets] = await safeMyWaschenQuery(
           `SELECT id, name, full_name FROM mst_outlet WHERE id IN (${outletIds.map(() => "?").join(",")})`,
           outletIds,
         );

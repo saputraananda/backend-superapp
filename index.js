@@ -12,7 +12,8 @@ import session from "express-session";
 import MySQLStore from "express-mysql-session";
 import cron from "node-cron";
 
-import { pool, startDbPing } from "./db/pool.js";
+import { pool, startDbPing, safeQuery } from "./db/pool.js";
+import { verifyOutletSource } from "./utils/outletSource.js";
 
 import authRoutes from "./routes/auth/authRoutes.js";
 import appRoutes from "./routes/appRoutes.js";
@@ -32,13 +33,11 @@ import masterDepartmentRoutes from "./routes/masterDataSuperApp/masterDepartment
 import masterEducationLevelRoutes from "./routes/masterDataSuperApp/masterEducationLevelRoutes.js";
 import masterEmployeeStatusRoutes from "./routes/masterDataSuperApp/masterEmployeeStatusRoutes.js";
 import masterJobLevelRoutes from "./routes/masterDataSuperApp/masterJobLevelRoutes.js";
-import masterOutletRoutes from "./routes/masterDataSuperApp/masterOutletRoutes.js";
 import masterPositionRoutes from "./routes/masterDataSuperApp/masterPositionRoutes.js";
 import masterReligionRoutes from "./routes/masterDataSuperApp/masterReligionRoutes.js";
 import masterSatuanRoutes from "./routes/masterDataSuperApp/masterSatuanRoutes.js";
 import masterVendorRoutes from "./routes/masterDataSuperApp/masterVendorRoutes.js";
 import asetRoutes from "./routes/asetRoutes.js";
-import targetWaschenRoutes from "./routes/targetWaschenRoutes.js";
 import salesRoutes from "./routes/salesRoutes.js";
 import personalTasklistRoutes from "./routes/personalTasklistRoutes.js";
 import absensiIKMRoutes from "./routes/IKM/absensiIKMRoutes.js";
@@ -122,6 +121,7 @@ import statusWorkRoutes from "./routes/MyWaschen/MasterData/StatusWorkRoutes.js"
 import materialRoutes from "./routes/MyWaschen/MasterData/MaterialRoutes.js";
 import methodLaundryRoutes from "./routes/MyWaschen/MasterData/MethodLaundryRoutes.js";
 import outletWaschenRoutes from "./routes/MyWaschen/MasterData/OutletRoutes.js";
+import targetWaschenRoutes from "./routes/MyWaschen/MasterData/TargetRoutes.js";
 import historyWaschenRoutes from "./routes/MyWaschen/Transaction/HistoryRoutes.js";
 import pettyCashRoutes from "./routes/MyWaschen/Transaction/PettyCashRoutes.js";
 import { getCutoffYears } from "./controllers/MyWaschen/utils/CutoffYearsController.js";
@@ -392,13 +392,11 @@ app.use("/departments", masterDepartmentRoutes);
 app.use("/education-levels", masterEducationLevelRoutes);
 app.use("/employment-statuses", masterEmployeeStatusRoutes);
 app.use("/job-levels", masterJobLevelRoutes);
-app.use("/outlets", masterOutletRoutes);
 app.use("/positions", masterPositionRoutes);
 app.use("/religions", masterReligionRoutes);
 app.use("/satuan", masterSatuanRoutes);
 app.use("/vendors", masterVendorRoutes);
 app.use("/aset", asetRoutes);
-app.use("/target-waschen", targetWaschenRoutes);
 app.use("/sales", salesRoutes);
 app.use("/personal-tasklist", personalTasklistRoutes);
 app.use("/ikm/absensi", absensiIKMRoutes);
@@ -485,6 +483,7 @@ app.use("/waschen/work-statuses", statusWorkRoutes);
 app.use("/waschen/materials", materialRoutes);
 app.use("/waschen/method-laundries", methodLaundryRoutes);
 app.use("/waschen/outlets", outletWaschenRoutes);
+app.use("/waschen/targets", targetWaschenRoutes);
 app.use("/waschen/transactions", historyWaschenRoutes);
 app.use("/waschen/petty-cash", pettyCashRoutes);
 app.use("/waschen/daily-report", dailyReportRoutes);
@@ -540,6 +539,9 @@ app.listen(PORT, "0.0.0.0", () => {
 
   // Ping DB setiap 30 detik
   startDbPing(30_000);
+
+  // Master outlet seluruh SuperApp = myWaschen.mst_outlet (JOIN lintas DB dari koneksi utama)
+  verifyOutletSource(safeQuery);
 
   // ─── Daily blast 15:30 WIB (UTC+7 = 08:30 UTC) ───────────────
   // cron.schedule("30 8 * * *", async () => {

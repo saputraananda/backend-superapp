@@ -1,6 +1,7 @@
 import { academyPool, safeAcademyQuery, safeMyWaschenQuery, safeQuery } from "../../db/pool.js";
 import { validateSkillStructure } from "./utils/academySkill.js";
 
+import { mstOutlet } from "../../utils/outletSource.js";
 const LO_COMPANY_ID = 1;
 
 /** Bagian karyawan yang ada saat ini, langsung dari mst_role (DB my_waschen). */
@@ -216,7 +217,7 @@ export const getLoOptions = async (_req, res) => {
        ORDER BY full_name ASC`,
       [LO_COMPANY_ID]
     );
-    const [outlets] = await safeQuery(`SELECT id, name FROM mst_outlet ORDER BY name ASC`);
+    const [outlets] = await safeQuery(`SELECT id, name FROM ${mstOutlet()} ORDER BY name ASC`);
     res.json({ employees, outlets });
   } catch (err) {
     console.error("getLoOptions error:", err);
@@ -235,7 +236,7 @@ export const getLoAssignments = async (_req, res) => {
       `SELECT employee_id, full_name, exit_date, is_deleted FROM mst_employee WHERE employee_id IN (?)`,
       [[...new Set(assignments.map((a) => a.employee_id))]]
     );
-    const [outlets] = await safeQuery(`SELECT id, name FROM mst_outlet`);
+    const [outlets] = await safeQuery(`SELECT id, name FROM ${mstOutlet()}`);
     const employeeById = new Map(employees.map((e) => [e.employee_id, e]));
     const outletById = new Map(outlets.map((o) => [o.id, o.name]));
 
@@ -268,7 +269,7 @@ export const createLoAssignment = async (req, res) => {
     );
     if (!employees.length) return res.status(400).json({ message: "LO harus karyawan aktif PT Waschen Alora Indonesia" });
 
-    const [outlets] = await safeQuery(`SELECT id FROM mst_outlet WHERE id = ? LIMIT 1`, [outlet_id]);
+    const [outlets] = await safeQuery(`SELECT id FROM ${mstOutlet()} WHERE id = ? LIMIT 1`, [outlet_id]);
     if (!outlets.length) return res.status(400).json({ message: "Cabang tidak ditemukan" });
 
     await safeAcademyQuery(

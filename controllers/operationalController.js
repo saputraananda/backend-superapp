@@ -2,6 +2,7 @@ import { safeQuery } from "../db/pool.js";
 import fs from "fs";
 import path from "path";
 
+import { mstOutlet } from "../utils/outletSource.js";
 const isProd = process.env.NODE_ENV === "production";
 const ASSETS_BASE = isProd
   ? process.env.UPLOAD_BASE_DIR || "/home/u420573163/domains/api.waschenalora.com/storage/assets/"
@@ -103,7 +104,7 @@ export const getCompanies = async (req, res) => {
 export const getOutlets = async (req, res) => {
   try {
     const [rows] = await safeQuery(
-      "SELECT id, name, full_name FROM mst_outlet ORDER BY name ASC",
+      `SELECT id, name, full_name FROM ${mstOutlet()} ORDER BY name ASC`,
       []
     );
     res.json(rows);
@@ -124,7 +125,7 @@ export const getChemicalLeaderMeta = async (_req, res) => {
     );
 
     const [outlets] = await safeQuery(
-      "SELECT id, name, full_name FROM mst_outlet ORDER BY name ASC",
+      `SELECT id, name, full_name FROM ${mstOutlet()} ORDER BY name ASC`,
       []
     );
 
@@ -171,7 +172,7 @@ export const createChemicalLeaderReport = async (req, res) => {
     }
 
     const [outletRows] = await safeQuery(
-      "SELECT id, name, full_name FROM mst_outlet WHERE id = ? LIMIT 1",
+      `SELECT id, name, full_name FROM ${mstOutlet()} WHERE id = ? LIMIT 1`,
       [outletId]
     );
     if (outletRows.length === 0) {
@@ -346,7 +347,7 @@ export const updateChemicalLeaderReport = async (req, res) => {
     }
 
     const [outletRows] = await safeQuery(
-      "SELECT id, name, full_name FROM mst_outlet WHERE id = ? LIMIT 1",
+      `SELECT id, name, full_name FROM ${mstOutlet()} WHERE id = ? LIMIT 1`,
       [outletId]
     );
     if (outletRows.length === 0) {
