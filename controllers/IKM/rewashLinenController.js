@@ -44,6 +44,172 @@ function resolveReportedBy(req) {
   );
 }
 
+// ── GET Dashboard — agregat rewash untuk periode & RS terpilih ──
+function shiftISODate(iso, days) {
+  const [y, m, d] = iso.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d + days));
+  return dt.toISOString().slice(0, 10);
+}
+
+export const getRewashDashboard = async (req, res) => {
+  try {
+    const { startDate, endDate, hospital_id } = req.query;
+
+    const defaultCutoff = getDefaultCutoffDates();
+    let start = toISODateString(startDate) || defaultCutoff.start;
+    let end   = toISODateString(endDate)   || defaultCutoff.end;
+    if (start > end) [start, end] = [end, start];
+    const hospitalId = toPositiveInt(hospital_id);
+
+    // Periode pembanding: rentang sama panjang tepat sebelum periode aktif
+    const spanDays = Math.round((Date.parse(end) - Date.parse(start)) / 86400000) + 1;
+    const prevEnd = shiftISODate(start, -1);
+    const prevStart = shiftISODate(prevEnd, -(spanDays - 1));
+
+    const buildWhere = (from, to) => {
+      const where = ["tr.report_date >= ?", "tr.report_date <= ?"];
+      const params = [from, to];
+      if (hospitalId) { where.push("tr.hospital_id = ?"); params.push(hospitalId); }
+      return { whereSql: `WHERE ${where.join(" AND ")}`, params };
+    };
+
+    // qty/clear bertipe UNSIGNED → cast ke SIGNED agar selisih negatif tidak error
+    const KOTOR = "GREATEST(CAST(d.qty AS SIGNED) - CAST(COALESCE(d.`clear`, 0) AS SIGNED), 0)";
+    const LINEN_JOINS = `
+      LEFT JOIN mst_hospital_linen hl ON hl.id = d.hospital_linen_id
+      LEFT JOIN mst_linen l ON l.id = hl.linen_id
+      LEFT JOIN mst_size sz ON l.size_id = sz.id
+      LEFT JOIN mst_color cl ON l.color_id = cl.id
+      LEFT JOIN mst_material mt ON l.material_id = mt.id`;
+    const LINEN_NAME = "TRIM(CONCAT_WS(' ', l.linen_name, sz.size_name, cl.color_name, mt.material_name))";
+
+    const cur = buildWhere(start, end);
+    const prev = buildWhere(prevStart, prevEnd);
+
+    const totalsSql = (whereSql) => `
+      SELECT COUNT(DISTINCT tr.id) AS reports,
+             COALESCE(SUM(d.qty), 0) AS total_qty,
+             COALESCE(SUM(LEAST(COALESCE(d.\`clear\`, 0), d.qty)), 0) AS total_clear,
+             COALESCE(SUM(${KOTOR}), 0) AS total_dirty
+      FROM tr_rewash tr
+      LEFT JOIN tr_rewash_detail d ON d.rewash_id = tr.id
+      ${whereSql}`;
+
+    const [
+      [[totals]],
+      [[prevTotals]],
+      [trend],
+      [byHospital],
+      [byLinen],
+      [byOwnership],
+      [attention],
+    ] = await Promise.all([
+      safeIKMQuery(totalsSql(cur.whereSql), cur.params),
+      safeIKMQuery(totalsSql(prev.whereSql), prev.params),
+      safeIKMQuery(
+        `SELECT DATE_FORMAT(tr.report_date, '%Y-%m-%d') AS date,
+                COALESCE(SUM(d.qty), 0) AS qty
+         FROM tr_rewash tr
+         JOIN tr_rewash_detail d ON d.rewash_id = tr.id
+         ${cur.whereSql}
+         GROUP BY tr.report_date
+         ORDER BY tr.report_date ASC`,
+        cur.params
+      ),
+      safeIKMQuery(
+        `SELECT tr.hospital_id, h.hospital_name,
+                SUM(d.qty) AS qty,
+                SUM(LEAST(COALESCE(d.\`clear\`, 0), d.qty)) AS clear_qty,
+                SUM(${KOTOR}) AS dirty_qty
+         FROM tr_rewash tr
+         JOIN tr_rewash_detail d ON d.rewash_id = tr.id
+         LEFT JOIN mst_hospital h ON h.id = tr.hospital_id
+         ${cur.whereSql}
+         GROUP BY tr.hospital_id, h.hospital_name
+         ORDER BY qty DESC
+         LIMIT 8`,
+        cur.params
+      ),
+      safeIKMQuery(
+        `SELECT hl.linen_id, ${LINEN_NAME} AS linen_name, SUM(d.qty) AS qty
+         FROM tr_rewash tr
+         JOIN tr_rewash_detail d ON d.rewash_id = tr.id
+         ${LINEN_JOINS}
+         ${cur.whereSql}
+         GROUP BY hl.linen_id, linen_name
+         ORDER BY qty DESC
+         LIMIT 8`,
+        cur.params
+      ),
+      safeIKMQuery(
+        `SELECT hl.ownership_type, SUM(d.qty) AS qty
+         FROM tr_rewash tr
+         JOIN tr_rewash_detail d ON d.rewash_id = tr.id
+         LEFT JOIN mst_hospital_linen hl ON hl.id = d.hospital_linen_id
+         ${cur.whereSql}
+         GROUP BY hl.ownership_type`,
+        cur.params
+      ),
+      safeIKMQuery(
+        `SELECT d.id, DATE_FORMAT(tr.report_date, '%Y-%m-%d') AS report_date,
+                h.hospital_name, ${LINEN_NAME} AS linen_name, hl.ownership_type,
+                d.qty, COALESCE(d.\`clear\`, 0) AS clear_qty, ${KOTOR} AS dirty_qty
+         FROM tr_rewash tr
+         JOIN tr_rewash_detail d ON d.rewash_id = tr.id
+         LEFT JOIN mst_hospital h ON h.id = tr.hospital_id
+         ${LINEN_JOINS}
+         ${cur.whereSql} AND ${KOTOR} > 0
+         ORDER BY dirty_qty DESC, tr.report_date DESC
+         LIMIT 10`,
+        cur.params
+      ),
+    ]);
+
+    const summarize = (t) => ({
+      reports: Number(t?.reports || 0),
+      totalQty: Number(t?.total_qty || 0),
+      totalClear: Number(t?.total_clear || 0),
+      totalDirty: Number(t?.total_dirty || 0),
+    });
+
+    res.json({
+      period: { startDate: start, endDate: end, prevStartDate: prevStart, prevEndDate: prevEnd },
+      summary: summarize(totals),
+      previous: summarize(prevTotals),
+      trend: trend.map((r) => ({ date: r.date, qty: Number(r.qty) })),
+      byHospital: byHospital.map((r) => ({
+        hospital_id: r.hospital_id,
+        hospital_name: r.hospital_name || "-",
+        qty: Number(r.qty),
+        clear: Number(r.clear_qty),
+        dirty: Number(r.dirty_qty),
+      })),
+      byLinen: byLinen.map((r) => ({
+        linen_id: r.linen_id,
+        linen_name: r.linen_name || "-",
+        qty: Number(r.qty),
+      })),
+      byOwnership: byOwnership.map((r) => ({
+        ownership_type: r.ownership_type === "SEWA" ? "SEWA" : "RS",
+        qty: Number(r.qty),
+      })),
+      attention: attention.map((r) => ({
+        id: r.id,
+        report_date: r.report_date,
+        hospital_name: r.hospital_name || "-",
+        linen_name: r.linen_name || "-",
+        ownership_type: r.ownership_type === "SEWA" ? "SEWA" : "RS",
+        qty: Number(r.qty),
+        clear: Number(r.clear_qty),
+        dirty: Number(r.dirty_qty),
+      })),
+    });
+  } catch (err) {
+    console.error("getRewashDashboard error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 // ── GET List — headers grouped ──
 export const getRewashLinens = async (req, res) => {
   try {

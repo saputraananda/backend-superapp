@@ -8,11 +8,13 @@ import {
   updateRewashHeader,
   deleteRewashDetail,
   getRewashAuditLogs,
+  getRewashDashboard,
 } from "../../controllers/IKM/rewashLinenController.js";
 
 const router = express.Router();
 
 router.get("/meta", requireAuth, getRewashLinenMeta);
+router.get("/dashboard", requireAuth, getRewashDashboard);
 router.get("/:id/audit", requireAuth, getRewashAuditLogs);
 router.get("/", requireAuth, getRewashLinens);
 router.post("/", requireAuth, createRewashLinen);
