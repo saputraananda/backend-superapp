@@ -81,7 +81,7 @@ export const listWaschenEmployees = async (req, res) => {
     );
 
     // Fetch outlets to resolve outlet names
-    const [outletRows] = await safeQuery("SELECT id, name, full_name FROM mst_outlet");
+    const [outletRows] = await safeMyWaschenQuery("SELECT id, name, full_name FROM mst_outlet");
     const outletMap = {};
     for (const o of outletRows) {
       outletMap[o.id] = o.name;
@@ -163,7 +163,7 @@ export const exportWaschenEmployees = async (req, res) => {
     const roleMap = {};
     for (const rr of roleRows) roleMap[rr.employee_id] = rr;
 
-    const [outletRows] = await safeQuery("SELECT id, name FROM mst_outlet");
+    const [outletRows] = await safeMyWaschenQuery("SELECT id, name FROM mst_outlet");
     const outletMap = {};
     for (const o of outletRows) outletMap[o.id] = o.name;
 
@@ -444,7 +444,7 @@ export const getWaschenEmployee = async (req, res) => {
     const role = roleRows[0] || null;
     let outlet_name = null;
     if (role?.outlet_id) {
-      const [outlets] = await safeQuery("SELECT name FROM mst_outlet WHERE id = ? LIMIT 1", [role.outlet_id]);
+      const [outlets] = await safeMyWaschenQuery("SELECT name FROM mst_outlet WHERE id = ? LIMIT 1", [role.outlet_id]);
       outlet_name = outlets[0]?.name || null;
     }
 

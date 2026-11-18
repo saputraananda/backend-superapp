@@ -1,5 +1,22 @@
 import { safeIKMQuery, safeQuery } from "../../db/pool.js";
 
+// Saklar "Wajib TTD per Unit" (kolom dibuat oleh LMS saat start). Dicek dulu supaya Alsa tetap jalan
+// bila LMS belum ter-deploy di lingkungan ini. Hasil positif di-cache; hasil negatif dicek ulang.
+let unitSignColumnExists = false;
+const hasUnitSignColumn = async () => {
+  if (unitSignColumnExists) return true;
+  const [[row]] = await safeIKMQuery(
+    `SELECT COUNT(*) AS n FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'mst_hospital' AND COLUMN_NAME = 'require_unit_signature'`
+  );
+  unitSignColumnExists = Number(row?.n) > 0;
+  return unitSignColumnExists;
+};
+const saveUnitSignFlag = async (hospitalId, value) => {
+  if (value === undefined || !(await hasUnitSignColumn())) return;
+  await safeIKMQuery(`UPDATE mst_hospital SET require_unit_signature = ? WHERE id = ?`, [value ? 1 : 0, hospitalId]);
+};
+
 const parseCoord = (v) => {
   if (v === "" || v === null || v === undefined) return null;
   const n = parseFloat(v);
@@ -83,10 +100,11 @@ async function insertPriceLog(hospitalId, oldPrice, newPrice, actor, priceType =
 // ── GET ALL ────────────────────────────────────────────────────────────────
 export const getHospitals = async (req, res) => {
   try {
+    const unitSignCol = (await hasUnitSignColumn()) ? "require_unit_signature" : "0 AS require_unit_signature";
     const [rows] = await safeIKMQuery(
       `SELECT id, hospital_name, hospital_id, company_name, address,
               latitude, longitude, username, password, username_unit, password_unit, password_to_valet,
-              billing_by_kg, allow_express, price_per_kg, express_price_per_kg, kg_agreement, created_at, updated_at
+              billing_by_kg, allow_express, price_per_kg, express_price_per_kg, kg_agreement, ${unitSignCol}, created_at, updated_at
        FROM mst_hospital
        ORDER BY hospital_name ASC`
     );
@@ -152,6 +170,7 @@ export const createHospital = async (req, res) => {
     price_per_kg,
     express_price_per_kg,
     kg_agreement,
+    require_unit_signature,
     rooms,
   } = req.body;
 
@@ -214,6 +233,7 @@ export const createHospital = async (req, res) => {
         kgAgreement,
       ]
     );
+    await saveUnitSignFlag(result.insertId, require_unit_signature);
 
     if (pricePerKg != null || expressPricePerKg != null) {
       const actor = await resolveActor(req);
@@ -270,6 +290,7 @@ export const updateHospital = async (req, res) => {
     price_per_kg,
     express_price_per_kg,
     kg_agreement,
+    require_unit_signature,
     rooms,
   } = req.body;
 
@@ -344,6 +365,7 @@ export const updateHospital = async (req, res) => {
         id,
       ]
     );
+    await saveUnitSignFlag(id, require_unit_signature);
 
     const regulerChanged = !pricesEqual(oldPrice, pricePerKg);
     const expressChanged = !pricesEqual(oldExpressPrice, expressPricePerKg);

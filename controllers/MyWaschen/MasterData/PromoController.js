@@ -3,6 +3,13 @@ import { safeMyWaschenQuery } from "../../../db/pool.js";
 const SORT_COLUMNS = ["id", "code", "name", "discount_type", "sort_order", "created_at"];
 const DISCOUNT_TYPES = ["none", "percentage", "nominal"];
 
+// Batas maksimal potongan (Rp): kosong/0/negatif = tanpa batas (NULL).
+const maxDiscountOf = (v) => {
+  const n = Number(v);
+  return v === "" || v == null || !Number.isFinite(n) || n <= 0 ? null : n;
+};
+const isMissingMaxCol = (err) => /max_discount/i.test(err?.message || "") && /unknown column/i.test(err?.message || "");
+
 export const getPromos = async (req, res) => {
   try {
     const search = String(req.query.search || "").trim();
@@ -60,7 +67,7 @@ export const getPromoById = async (req, res) => {
 
 export const createPromo = async (req, res) => {
   try {
-    const { code, name, discount_type, discount_value, description, sort_order, is_active } = req.body;
+    const { code, name, discount_type, discount_value, max_discount, description, sort_order, is_active } = req.body;
 
     if (!code?.trim() || !name?.trim()) {
       return res.status(400).json({ success: false, message: "Kode dan Nama promo wajib diisi" });
@@ -74,19 +81,32 @@ export const createPromo = async (req, res) => {
       return res.status(400).json({ success: false, message: `Kode "${formattedCode}" sudah digunakan` });
     }
 
-    const [result] = await safeMyWaschenQuery(
-      `INSERT INTO mst_promo (code, name, discount_type, discount_value, description, sort_order, is_active)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [
-        formattedCode,
-        name.trim(),
-        discType,
-        discount_value !== undefined ? Number(discount_value) : 0,
-        description?.trim() || null,
-        sort_order !== undefined ? Number(sort_order) : 0,
-        is_active !== undefined ? Number(is_active) : 1,
-      ]
-    );
+    const base = [
+      formattedCode,
+      name.trim(),
+      discType,
+      discount_value !== undefined ? Number(discount_value) : 0,
+    ];
+    const rest = [
+      description?.trim() || null,
+      sort_order !== undefined ? Number(sort_order) : 0,
+      is_active !== undefined ? Number(is_active) : 1,
+    ];
+    let result;
+    try {
+      [result] = await safeMyWaschenQuery(
+        `INSERT INTO mst_promo (code, name, discount_type, discount_value, max_discount, description, sort_order, is_active)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [...base, maxDiscountOf(max_discount), ...rest]
+      );
+    } catch (e) {
+      if (!isMissingMaxCol(e)) throw e; // kolom belum dimigrasi
+      [result] = await safeMyWaschenQuery(
+        `INSERT INTO mst_promo (code, name, discount_type, discount_value, description, sort_order, is_active)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [...base, ...rest]
+      );
+    }
 
     res.status(201).json({ success: true, message: "Promo berhasil ditambahkan", id: result.insertId });
   } catch (err) {
@@ -98,7 +118,7 @@ export const createPromo = async (req, res) => {
 export const updatePromo = async (req, res) => {
   try {
     const { id } = req.params;
-    const { code, name, discount_type, discount_value, description, sort_order, is_active } = req.body;
+    const { code, name, discount_type, discount_value, max_discount, description, sort_order, is_active } = req.body;
 
     const [exist] = await safeMyWaschenQuery("SELECT id FROM mst_promo WHERE id = ?", [id]);
     if (!exist.length) {
@@ -119,28 +139,36 @@ export const updatePromo = async (req, res) => {
 
     const discType = DISCOUNT_TYPES.includes(discount_type) ? discount_type : "none";
 
-    await safeMyWaschenQuery(
-      `UPDATE mst_promo
-       SET code = COALESCE(?, code),
-           name = ?,
-           discount_type = ?,
-           discount_value = ?,
-           description = ?,
-           sort_order = ?,
-           is_active = ?,
-           updated_at = NOW()
-       WHERE id = ?`,
-      [
-        formattedCode,
-        name.trim(),
-        discType,
-        discount_value !== undefined ? Number(discount_value) : 0,
-        description?.trim() || null,
-        sort_order !== undefined ? Number(sort_order) : 0,
-        is_active !== undefined ? Number(is_active) : 1,
-        id,
-      ]
-    );
+    const base = [
+      formattedCode,
+      name.trim(),
+      discType,
+      discount_value !== undefined ? Number(discount_value) : 0,
+    ];
+    const rest = [
+      description?.trim() || null,
+      sort_order !== undefined ? Number(sort_order) : 0,
+      is_active !== undefined ? Number(is_active) : 1,
+      id,
+    ];
+    try {
+      await safeMyWaschenQuery(
+        `UPDATE mst_promo
+         SET code = COALESCE(?, code), name = ?, discount_type = ?, discount_value = ?, max_discount = ?,
+             description = ?, sort_order = ?, is_active = ?, updated_at = NOW()
+         WHERE id = ?`,
+        [...base, maxDiscountOf(max_discount), ...rest]
+      );
+    } catch (e) {
+      if (!isMissingMaxCol(e)) throw e; // kolom belum dimigrasi
+      await safeMyWaschenQuery(
+        `UPDATE mst_promo
+         SET code = COALESCE(?, code), name = ?, discount_type = ?, discount_value = ?,
+             description = ?, sort_order = ?, is_active = ?, updated_at = NOW()
+         WHERE id = ?`,
+        [...base, ...rest]
+      );
+    }
 
     res.json({ success: true, message: "Promo berhasil diperbarui" });
   } catch (err) {

@@ -2,7 +2,7 @@ import { safeQuery } from "../db/pool.js";
 import { pool } from "../db/pool.js";
 
 // Helper checking if user is HRD based on position_id
-const isHRDUser = (employee) => {
+export const isHRDUser = (employee) => {
   if (!employee) return false;
   return [1, 8, 17, 18, 19].includes(Number(employee.position_id));
 };

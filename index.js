@@ -12,7 +12,8 @@ import session from "express-session";
 import MySQLStore from "express-mysql-session";
 import cron from "node-cron";
 
-import { pool, startDbPing } from "./db/pool.js";
+import { pool, startDbPing, safeQuery } from "./db/pool.js";
+import { verifyOutletSource } from "./utils/outletSource.js";
 
 import authRoutes from "./routes/auth/authRoutes.js";
 import appRoutes from "./routes/appRoutes.js";
@@ -32,13 +33,11 @@ import masterDepartmentRoutes from "./routes/masterDataSuperApp/masterDepartment
 import masterEducationLevelRoutes from "./routes/masterDataSuperApp/masterEducationLevelRoutes.js";
 import masterEmployeeStatusRoutes from "./routes/masterDataSuperApp/masterEmployeeStatusRoutes.js";
 import masterJobLevelRoutes from "./routes/masterDataSuperApp/masterJobLevelRoutes.js";
-import masterOutletRoutes from "./routes/masterDataSuperApp/masterOutletRoutes.js";
 import masterPositionRoutes from "./routes/masterDataSuperApp/masterPositionRoutes.js";
 import masterReligionRoutes from "./routes/masterDataSuperApp/masterReligionRoutes.js";
 import masterSatuanRoutes from "./routes/masterDataSuperApp/masterSatuanRoutes.js";
 import masterVendorRoutes from "./routes/masterDataSuperApp/masterVendorRoutes.js";
 import asetRoutes from "./routes/asetRoutes.js";
-import targetWaschenRoutes from "./routes/targetWaschenRoutes.js";
 import salesRoutes from "./routes/salesRoutes.js";
 import personalTasklistRoutes from "./routes/personalTasklistRoutes.js";
 import absensiIKMRoutes from "./routes/IKM/absensiIKMRoutes.js";
@@ -87,6 +86,7 @@ import payslipAloraRoutes from "./routes/Alora/payslipAloraRoutes.js";
 import attendanceModeRequestAloraRoutes from "./routes/Alora/attendanceModeRequestAloraRoutes.js";
 import bugarAloraRoutes from "./routes/Alora/bugarAloraRoutes.js";
 import holidayAloraRoutes from "./routes/Alora/holidayAloraRoutes.js";
+import payrollAloraRoutes from "./routes/Alora/payrollAloraRoutes.js";
 import kasbonCleanoxRoutes from "./routes/Cleanox/kasbonCleanoxRoutes.js";
 import overtimeCleanoxRoutes from "./routes/Cleanox/overtimeCleanoxRoutes.js";
 import mealCleanoxRoutes from "./routes/Cleanox/mealCleanoxRoutes.js";
@@ -121,9 +121,11 @@ import statusWorkRoutes from "./routes/MyWaschen/MasterData/StatusWorkRoutes.js"
 import materialRoutes from "./routes/MyWaschen/MasterData/MaterialRoutes.js";
 import methodLaundryRoutes from "./routes/MyWaschen/MasterData/MethodLaundryRoutes.js";
 import outletWaschenRoutes from "./routes/MyWaschen/MasterData/OutletRoutes.js";
+import targetWaschenRoutes from "./routes/MyWaschen/MasterData/TargetRoutes.js";
 import historyWaschenRoutes from "./routes/MyWaschen/Transaction/HistoryRoutes.js";
-import eventB2BWaschenRoutes from "./routes/MyWaschen/EventB2B/EventB2BRoutes.js";
 import pettyCashRoutes from "./routes/MyWaschen/Transaction/PettyCashRoutes.js";
+import { getCutoffYears } from "./controllers/MyWaschen/utils/CutoffYearsController.js";
+import { requireAuth as requireAuthCutoffYears } from "./middleware/auth.js";
 import dailyReportRoutes from "./routes/MyWaschen/Transaction/DailyRoutes.js";
 import printerSettingsRoutes from "./routes/MyWaschen/Settings/PrinterSettingsRoutes.js";
 import inventoryWaschenRoutes from "./routes/MyWaschen/Inventory/InventoryRoutes.js";
@@ -137,12 +139,14 @@ import payrollWaschenRoutes from "./routes/MyWaschen/HRIS/PayrollRoutes.js";
 import dayOffPolicyRoutes from "./routes/MyWaschen/MasterData/DayOffPolicyRoutes.js";
 import dashboardInventoryRoutes from "./routes/MyWaschen/Inventory/DashboardInventoryRoutes.js";
 import trainingRoutes from "./routes/trainingRoutes.js";
+import academyRoutes from "./routes/academyRoutes.js";
 import projectManagementRoutes from "./routes/ProjectManagement/projectManagementRoutes.js";
 import personalChatRoutes from "./routes/ProjectManagement/personalChatRoutes.js";
 import {
   getWaschenMobileAttendanceDir,
   getWaschenMobileLeaveDir,
   getWaschenMobileKasbonDir,
+  getWaschenMobileOjtDir,
   getWaschenMobileQcDir,
 } from "./controllers/MyWaschen/HRIS/hrisAssetHelpers.js";
 
@@ -324,6 +328,11 @@ if (WASCHEN_MOBILE_LEAVE_DIR && fs.existsSync(WASCHEN_MOBILE_LEAVE_DIR)) {
 if (WASCHEN_MOBILE_KASBON_DIR && fs.existsSync(WASCHEN_MOBILE_KASBON_DIR)) {
   app.use("/uploads/assets/kasbon", express.static(WASCHEN_MOBILE_KASBON_DIR));
 }
+// Foto peserta penilaian OJT (Alora Academy). Folder baru ada setelah foto pertama diunggah, jadi restart Alsa sesudahnya.
+const WASCHEN_MOBILE_OJT_DIR = getWaschenMobileOjtDir();
+if (WASCHEN_MOBILE_OJT_DIR && fs.existsSync(WASCHEN_MOBILE_OJT_DIR)) {
+  app.use("/uploads/assets/academy/ojt", express.static(WASCHEN_MOBILE_OJT_DIR));
+}
 
 const ALORA_BOD_DIR =
   process.env.ALORA_MOBILE_ATTENDANCE_DIR || path.join(__dirname, "uploads", "alora-bod");
@@ -383,13 +392,11 @@ app.use("/departments", masterDepartmentRoutes);
 app.use("/education-levels", masterEducationLevelRoutes);
 app.use("/employment-statuses", masterEmployeeStatusRoutes);
 app.use("/job-levels", masterJobLevelRoutes);
-app.use("/outlets", masterOutletRoutes);
 app.use("/positions", masterPositionRoutes);
 app.use("/religions", masterReligionRoutes);
 app.use("/satuan", masterSatuanRoutes);
 app.use("/vendors", masterVendorRoutes);
 app.use("/aset", asetRoutes);
-app.use("/target-waschen", targetWaschenRoutes);
 app.use("/sales", salesRoutes);
 app.use("/personal-tasklist", personalTasklistRoutes);
 app.use("/ikm/absensi", absensiIKMRoutes);
@@ -406,6 +413,7 @@ app.use("/alora/payslips", payslipAloraRoutes);
 app.use("/alora/attendance-mode-requests", attendanceModeRequestAloraRoutes);
 app.use("/alora/bugar", bugarAloraRoutes);
 app.use("/alora/holidays", holidayAloraRoutes);
+app.use("/alora/payroll", payrollAloraRoutes);
 app.use("/ikm/master-absensi", masterAbsensiRoutes);
 app.use("/ikm/master-rs", masterRsIkmRoutes);
 app.use("/ikm/complaints", complaintIkmRoutes);
@@ -454,6 +462,7 @@ app.use("/cleanox/piutang-dashboard", piutangDashboardCleanoxRoutes);
 app.use("/cleanox/customer-aging", customerAgingCleanoxRoutes);
 app.use("/cleanox/master-aging-services", masterAgingServicesRoutes);
 app.use("/cleanox/cross-sell", crossSellCleanoxRoutes);
+app.get("/waschen/cutoff-years", requireAuthCutoffYears, getCutoffYears);
 app.use("/waschen/employees", employeeWaschenRoutes);
 app.use("/waschen/dashboard", dashboardWaschenRoutes);
 app.use("/waschen/customers", customerRoutes);
@@ -474,8 +483,8 @@ app.use("/waschen/work-statuses", statusWorkRoutes);
 app.use("/waschen/materials", materialRoutes);
 app.use("/waschen/method-laundries", methodLaundryRoutes);
 app.use("/waschen/outlets", outletWaschenRoutes);
+app.use("/waschen/targets", targetWaschenRoutes);
 app.use("/waschen/transactions", historyWaschenRoutes);
-app.use("/waschen/event", eventB2BWaschenRoutes);
 app.use("/waschen/petty-cash", pettyCashRoutes);
 app.use("/waschen/daily-report", dailyReportRoutes);
 app.use("/waschen/printer-settings", printerSettingsRoutes);
@@ -490,6 +499,7 @@ app.use("/waschen/hris/time-masters", timeMasterWaschenRoutes);
 app.use("/waschen/hris/payroll", payrollWaschenRoutes);
 app.use("/waschen/day-off-policies", dayOffPolicyRoutes);
 app.use("/training", trainingRoutes);
+app.use("/academy", academyRoutes);
 app.use("/api/pm2", projectManagementRoutes);
 app.use("/api/pm2/chat", personalChatRoutes);
 // 404
@@ -529,6 +539,9 @@ app.listen(PORT, "0.0.0.0", () => {
 
   // Ping DB setiap 30 detik
   startDbPing(30_000);
+
+  // Master outlet seluruh SuperApp = myWaschen.mst_outlet (JOIN lintas DB dari koneksi utama)
+  verifyOutletSource(safeQuery);
 
   // ─── Daily blast 15:30 WIB (UTC+7 = 08:30 UTC) ───────────────
   // cron.schedule("30 8 * * *", async () => {

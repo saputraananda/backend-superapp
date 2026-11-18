@@ -10,7 +10,7 @@ export const FIELD_LABELS = [
   { key: "show_item_price", label: "Harga Item" },
   { key: "show_item_detail", label: "Detail Item (merk/warna/ukuran)" },
   { key: "show_perfume", label: "Aroma Parfum" },
-  { key: "show_express", label: "Tipe Pengerjaan" },
+  { key: "show_express", label: "Tipe Pengerjaan (Express/Reguler)" },
   { key: "show_delivery", label: "Tipe Pengambilan" },
   { key: "show_discount", label: "Diskon Promo" },
   { key: "show_total", label: "Total Tagihan" },
@@ -18,7 +18,7 @@ export const FIELD_LABELS = [
   { key: "show_member_balance", label: "Saldo Member" },
   { key: "show_notes", label: "Catatan Order" },
   { key: "show_qr", label: "QR Tracking" },
-  { key: "show_perhatian", label: "Syarat & Ketentuan" },
+  { key: "show_perhatian", label: "Syarat & Ketentuan (PERHATIAN)" },
   { key: "show_footer_thanks", label: "Footer Terima Kasih" },
 ];
 

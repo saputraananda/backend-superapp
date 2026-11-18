@@ -1,5 +1,6 @@
 import { cleanoxPool } from "../../db/pool.js";
 import ExcelJS from "exceljs";
+import { combineWorkerKpi, KPI_TARGET_HOURS } from "./utils/kpiOverall.js";
 
 const TRANSAKSI_TABLE = "tr_rekap_transaksi_reguler_waschen";
 
@@ -73,8 +74,8 @@ const onlyServiceModeSql = (serviceMode) => {
 };
 
 const TARGET_HOURS_PER_MONTH = 208;
-const DURATION_PICKUP_MENIT = 30;
-const DURATION_PENGANTARAN_MENIT = 30;
+const DURATION_PICKUP_MENIT = 15;
+const DURATION_PENGANTARAN_MENIT = 15;
 
 async function loadServiceDurationMap() {
   try {
@@ -168,14 +169,8 @@ function resolveItemDuration(itemName, serviceMap) {
 }
 
 /* ── KPI Summary ────────────────────────────────────────── */
-export const getKpiSummary = async (req, res) => {
-  const { date_start, date_end, date_field = "tgl_terima", outlet } = req.query;
-
-  if (!date_start || !date_end) {
-    return res.status(400).json({ message: "date_start dan date_end wajib diisi" });
-  }
-
-  const dateFieldSafe = date_field === "tgl_selesai" ? "tgl_selesai" : "tgl_terima";
+async function buildWaschenKpiSummary({ dateStart, dateEnd, dateField = "tgl_terima", outlet }) {
+  const dateFieldSafe = dateField === "tgl_selesai" ? "tgl_selesai" : "tgl_terima";
   const outletWhere = outlet ? "AND outlet = ?" : "";
   const outletParams = outlet ? [outlet] : [];
 
@@ -186,305 +181,316 @@ export const getKpiSummary = async (req, res) => {
     ${outletWhere}
   `;
 
-  try {
-    const [rows] = await cleanoxPool.query(
-      `SELECT
-         id, no_nota, nama_item, jumlah, satuan_item,
-         COALESCE(total_tagihan, 0) AS total_tagihan,
-         pickup_by, pickup_at,
-         cuci_jemur_by, cuci_jemur_at,
-         packing_by, packing_at,
-         pengantaran_by, pengantaran_at,
-         tgl_selesai
-       FROM ${TRANSAKSI_TABLE}
-       WHERE ${baseWhere}`,
-      [date_start, date_end, ...outletParams]
-    );
+  const [rows] = await cleanoxPool.query(
+    `SELECT
+       id, no_nota, nama_item, jumlah, satuan_item,
+       COALESCE(total_tagihan, 0) AS total_tagihan,
+       pickup_by, pickup_at,
+       cuci_jemur_by, cuci_jemur_at,
+       packing_by, packing_at,
+       pengantaran_by, pengantaran_at,
+       tgl_selesai
+     FROM ${TRANSAKSI_TABLE}
+     WHERE ${baseWhere}`,
+    [dateStart, dateEnd, ...outletParams]
+  );
 
-    const serviceMap = await loadServiceDurationMap();
+  const serviceMap = await loadServiceDurationMap();
 
-    // Aggregate per employee
-    const empMap = {};
+  // Aggregate per employee
+  const empMap = {};
 
-    const ensure = (name) => {
-      if (!empMap[name]) {
-        empMap[name] = {
-          name,
-          pickup: 0,
-          cuci_jemur: 0,
-          packing: 0,
-          pengantaran: 0,
-          total: 0,
-          pickup_minutes: 0,
-          cuci_jemur_minutes: 0,
-          packing_minutes: 0,
-          pengantaran_minutes: 0,
-          total_minutes: 0,
-          total_hours: 0,
-          target_hours: TARGET_HOURS_PER_MONTH,
-          achievement_pct: 0,
-        };
-      }
-      return empMap[name];
-    };
-
-    for (const r of rows) {
-      const svc = resolveItemDuration(r.nama_item, serviceMap);
-      const delayMins = svc.delay_time_menit != null ? Number(svc.delay_time_menit) : 15;
-      const cuciJemurMins = ((svc.durasi_cuci_menit || 0) + (svc.durasi_jemur_menit || 0) || (svc.total_durasi_kerja_menit || 30)) + delayMins;
-      const packingMins = (svc.durasi_packing_menit || (svc.total_durasi_kerja_menit ? Math.round(svc.total_durasi_kerja_menit * 0.2) : 15)) + delayMins;
-      const pickupMins = DURATION_PICKUP_MENIT + delayMins;
-      const pengMins = DURATION_PENGANTARAN_MENIT + delayMins;
-
-      const stages = [
-        { names: parseJson(r.pickup_by), key: "pickup", mins: pickupMins },
-        { names: parseJson(r.cuci_jemur_by), key: "cuci_jemur", mins: cuciJemurMins },
-        { names: parseJson(r.packing_by), key: "packing", mins: packingMins },
-        { names: parseJson(r.pengantaran_by), key: "pengantaran", mins: pengMins },
-      ];
-      for (const { names, key, mins } of stages) {
-        for (const name of names) {
-          if (!name || name === "Admin") continue;
-          const emp = ensure(name);
-          emp[key] += 1;
-          emp[`${key}_minutes`] += mins;
-          emp.total_minutes += mins;
-        }
-      }
-    }
-
-    const list = Object.values(empMap).map((e) => {
-      const totalHours = Number((e.total_minutes / 60).toFixed(2));
-      const achievementPct = Number(((totalHours / TARGET_HOURS_PER_MONTH) * 100).toFixed(1));
-      return {
-        ...e,
-        total: e.pickup + e.cuci_jemur + e.packing + e.pengantaran,
-        total_minutes: Math.round(e.total_minutes),
-        total_hours: totalHours,
+  const ensure = (name) => {
+    if (!empMap[name]) {
+      empMap[name] = {
+        name,
+        pickup: 0,
+        cuci_jemur: 0,
+        packing: 0,
+        pengantaran: 0,
+        total: 0,
+        pickup_minutes: 0,
+        cuci_jemur_minutes: 0,
+        packing_minutes: 0,
+        pengantaran_minutes: 0,
+        total_minutes: 0,
+        total_hours: 0,
         target_hours: TARGET_HOURS_PER_MONTH,
-        achievement_pct: achievementPct,
+        achievement_pct: 0,
       };
-    });
-    list.sort((a, b) => b.total_hours - a.total_hours || b.total - a.total);
-    list.forEach((e, i) => {
-      e.rank = i + 1;
-    });
+    }
+    return empMap[name];
+  };
 
-    const sumWorkingHours = list.reduce((sum, e) => sum + e.total_hours, 0);
+  for (const r of rows) {
+    const svc = resolveItemDuration(r.nama_item, serviceMap);
+    const cuciJemurMins = (svc.durasi_cuci_menit || 0) + (svc.durasi_jemur_menit || 0) || (svc.total_durasi_kerja_menit || 30);
+    const packingMins = svc.durasi_packing_menit || (svc.total_durasi_kerja_menit ? Math.round(svc.total_durasi_kerja_menit * 0.2) : 15);
+    const pickupMins = DURATION_PICKUP_MENIT;
+    const pengMins = DURATION_PENGANTARAN_MENIT;
 
-    // Overall stats
-    const overall = {
-      total_items: rows.length,
-      pickup_done: rows.filter((r) => parseJson(r.pickup_by).length > 0).length,
-      cuci_jemur_done: rows.filter((r) => parseJson(r.cuci_jemur_by).length > 0).length,
-      packing_done: rows.filter((r) => parseJson(r.packing_by).length > 0).length,
-      pengantaran_done: rows.filter((r) => parseJson(r.pengantaran_by).length > 0).length,
-      target_hours_per_worker: TARGET_HOURS_PER_MONTH,
-      total_working_hours: Number(sumWorkingHours.toFixed(2)),
-      avg_working_hours: list.length > 0 ? Number((sumWorkingHours / list.length).toFixed(2)) : 0,
-      avg_achievement_pct: list.length > 0 ? Number(((sumWorkingHours / list.length / TARGET_HOURS_PER_MONTH) * 100).toFixed(1)) : 0,
-    };
-
-    // 1) Daily stage
-    const dailyMap = new Map();
-    const ensureDaily = (dateKey) => {
-      if (!dailyMap.has(dateKey)) {
-        dailyMap.set(dateKey, {
-          date: dateKey,
-          pickup: 0,
-          cuci_jemur: 0,
-          packing: 0,
-          pengantaran: 0,
-          total: 0,
-        });
-      }
-      return dailyMap.get(dateKey);
-    };
-
-    for (const r of rows) {
-      const stageAtList = [
-        { key: "pickup", at: r.pickup_at },
-        { key: "cuci_jemur", at: r.cuci_jemur_at },
-        { key: "packing", at: r.packing_at },
-        { key: "pengantaran", at: r.pengantaran_at },
-      ];
-      for (const { key, at } of stageAtList) {
-        const dateKey = toLocalDateKey(at);
-        if (!dateKey) continue;
-        const d = ensureDaily(dateKey);
-        d[key] += 1;
-        d.total += 1;
+    const stages = [
+      { names: parseJson(r.pickup_by), key: "pickup", mins: pickupMins },
+      { names: parseJson(r.cuci_jemur_by), key: "cuci_jemur", mins: cuciJemurMins },
+      { names: parseJson(r.packing_by), key: "packing", mins: packingMins },
+      { names: parseJson(r.pengantaran_by), key: "pengantaran", mins: pengMins },
+    ];
+    for (const { names, key, mins } of stages) {
+      for (const name of names) {
+        if (!name || name === "Admin") continue;
+        const emp = ensure(name);
+        emp[key] += 1;
+        emp[`${key}_minutes`] += mins;
+        emp.total_minutes += mins;
       }
     }
+  }
 
-    const dailyStage = Array.from(dailyMap.values()).sort((a, b) =>
-      a.date.localeCompare(b.date)
-    );
+  const list = Object.values(empMap).map((e) => {
+    const totalHours = Number((e.total_minutes / 60).toFixed(2));
+    const achievementPct = Number(((totalHours / TARGET_HOURS_PER_MONTH) * 100).toFixed(1));
+    return {
+      ...e,
+      total: e.pickup + e.cuci_jemur + e.packing + e.pengantaran,
+      total_minutes: Math.round(e.total_minutes),
+      total_hours: totalHours,
+      target_hours: TARGET_HOURS_PER_MONTH,
+      achievement_pct: achievementPct,
+    };
+  });
+  list.sort((a, b) => b.total_hours - a.total_hours || b.total - a.total);
+  list.forEach((e, i) => {
+    e.rank = i + 1;
+  });
 
-    // 2) Aging processing time
-    const pickupToCuci = [];
-    const cuciToPacking = [];
-    const packingToDelivery = [];
-    const pickupToDelivery = [];
+  const sumWorkingHours = list.reduce((sum, e) => sum + e.total_hours, 0);
 
-    for (const r of rows) {
-      const h1 = diffHours(r.pickup_at, r.cuci_jemur_at);
-      const h2 = diffHours(r.cuci_jemur_at, r.packing_at);
-      const h3 = diffHours(r.packing_at, r.pengantaran_at);
-      const h4 = diffHours(r.pickup_at, r.pengantaran_at);
-      if (h1 !== null) pickupToCuci.push(h1);
-      if (h2 !== null) cuciToPacking.push(h2);
-      if (h3 !== null) packingToDelivery.push(h3);
-      if (h4 !== null) pickupToDelivery.push(h4);
+  // Overall stats
+  const overall = {
+    total_items: rows.length,
+    pickup_done: rows.filter((r) => parseJson(r.pickup_by).length > 0).length,
+    cuci_jemur_done: rows.filter((r) => parseJson(r.cuci_jemur_by).length > 0).length,
+    packing_done: rows.filter((r) => parseJson(r.packing_by).length > 0).length,
+    pengantaran_done: rows.filter((r) => parseJson(r.pengantaran_by).length > 0).length,
+    target_hours_per_worker: TARGET_HOURS_PER_MONTH,
+    total_working_hours: Number(sumWorkingHours.toFixed(2)),
+    avg_working_hours: list.length > 0 ? Number((sumWorkingHours / list.length).toFixed(2)) : 0,
+    avg_achievement_pct: list.length > 0 ? Number(((sumWorkingHours / list.length / TARGET_HOURS_PER_MONTH) * 100).toFixed(1)) : 0,
+  };
+
+  // 1) Daily stage
+  const dailyMap = new Map();
+  const ensureDaily = (dateKey) => {
+    if (!dailyMap.has(dateKey)) {
+      dailyMap.set(dateKey, {
+        date: dateKey,
+        pickup: 0,
+        cuci_jemur: 0,
+        packing: 0,
+        pengantaran: 0,
+        total: 0,
+      });
     }
+    return dailyMap.get(dateKey);
+  };
 
-    const agingProcessingHours = [
-      { stage: "pickup_to_cuci_jemur", ...summarizeHours(pickupToCuci) },
-      { stage: "cuci_jemur_to_packing", ...summarizeHours(cuciToPacking) },
-      { stage: "packing_to_delivery", ...summarizeHours(packingToDelivery) },
-      { stage: "pickup_to_delivery", ...summarizeHours(pickupToDelivery) },
-    ].filter(a => a.sample_count > 0);
+  for (const r of rows) {
+    const stageAtList = [
+      { key: "pickup", at: r.pickup_at },
+      { key: "cuci_jemur", at: r.cuci_jemur_at },
+      { key: "packing", at: r.packing_at },
+      { key: "pengantaran", at: r.pengantaran_at },
+    ];
+    for (const { key, at } of stageAtList) {
+      const dateKey = toLocalDateKey(at);
+      if (!dateKey) continue;
+      const d = ensureDaily(dateKey);
+      d[key] += 1;
+      d.total += 1;
+    }
+  }
 
-    // 3) Top services
-    const notaItemCount = {};
-    for (const r of rows) {
+  const dailyStage = Array.from(dailyMap.values()).sort((a, b) =>
+    a.date.localeCompare(b.date)
+  );
+
+  // 2) Aging processing time
+  const pickupToCuci = [];
+  const cuciToPacking = [];
+  const packingToDelivery = [];
+  const pickupToDelivery = [];
+
+  for (const r of rows) {
+    const h1 = diffHours(r.pickup_at, r.cuci_jemur_at);
+    const h2 = diffHours(r.cuci_jemur_at, r.packing_at);
+    const h3 = diffHours(r.packing_at, r.pengantaran_at);
+    const h4 = diffHours(r.pickup_at, r.pengantaran_at);
+    if (h1 !== null) pickupToCuci.push(h1);
+    if (h2 !== null) cuciToPacking.push(h2);
+    if (h3 !== null) packingToDelivery.push(h3);
+    if (h4 !== null) pickupToDelivery.push(h4);
+  }
+
+  const agingProcessingHours = [
+    { stage: "pickup_to_cuci_jemur", ...summarizeHours(pickupToCuci) },
+    { stage: "cuci_jemur_to_packing", ...summarizeHours(cuciToPacking) },
+    { stage: "packing_to_delivery", ...summarizeHours(packingToDelivery) },
+    { stage: "pickup_to_delivery", ...summarizeHours(pickupToDelivery) },
+  ].filter(a => a.sample_count > 0);
+
+  // 3) Top services
+  const notaItemCount = {};
+  for (const r of rows) {
+    const notaKey = String(r.no_nota || "").trim();
+    if (!notaKey) continue;
+    notaItemCount[notaKey] = (notaItemCount[notaKey] || 0) + 1;
+  }
+
+  const topServiceMap = new Map();
+  const ensureService = (serviceName) => {
+    if (!topServiceMap.has(serviceName)) {
+      topServiceMap.set(serviceName, {
+        service_name: serviceName,
+        volume: 0,
+        revenue: 0,
+        _cycle_sum: 0,
+        _cycle_count: 0,
+      });
+    }
+    return topServiceMap.get(serviceName);
+  };
+
+  for (const r of rows) {
+    const serviceName = normalizeServiceName(r.nama_item);
+    const svc = ensureService(serviceName);
+    svc.volume += 1;
+
+    const rowRevenue = Number(r.total_tagihan || 0);
+    if (Number.isFinite(rowRevenue)) {
       const notaKey = String(r.no_nota || "").trim();
-      if (!notaKey) continue;
-      notaItemCount[notaKey] = (notaItemCount[notaKey] || 0) + 1;
+      const divisor = notaKey ? (notaItemCount[notaKey] || 1) : 1;
+      svc.revenue += rowRevenue / Math.max(1, divisor);
     }
 
-    const topServiceMap = new Map();
-    const ensureService = (serviceName) => {
-      if (!topServiceMap.has(serviceName)) {
-        topServiceMap.set(serviceName, {
-          service_name: serviceName,
-          volume: 0,
-          revenue: 0,
-          _cycle_sum: 0,
-          _cycle_count: 0,
-        });
-      }
-      return topServiceMap.get(serviceName);
-    };
+    const cycle = diffHours(r.pickup_at, r.pengantaran_at);
+    if (cycle !== null) {
+      svc._cycle_sum += cycle;
+      svc._cycle_count += 1;
+    }
+  }
 
-    for (const r of rows) {
-      const serviceName = normalizeServiceName(r.nama_item);
-      const svc = ensureService(serviceName);
-      svc.volume += 1;
+  const topServices = Array.from(topServiceMap.values())
+    .map((s) => ({
+      service_name: s.service_name,
+      volume: s.volume,
+      revenue: Math.round(s.revenue),
+      avg_cycle_hours: s._cycle_count > 0
+        ? Number((s._cycle_sum / s._cycle_count).toFixed(2))
+        : null,
+      cycle_sample_count: s._cycle_count,
+    }))
+    .sort((a, b) => {
+      if (b.volume !== a.volume) return b.volume - a.volume;
+      return b.revenue - a.revenue;
+    })
+    .slice(0, 5);
 
-      const rowRevenue = Number(r.total_tagihan || 0);
-      if (Number.isFinite(rowRevenue)) {
-        const notaKey = String(r.no_nota || "").trim();
-        const divisor = notaKey ? (notaItemCount[notaKey] || 1) : 1;
-        svc.revenue += rowRevenue / Math.max(1, divisor);
-      }
+  // 4) SLA
+  const slaDayMap = new Map();
+  const ensureSlaDay = (dateKey) => {
+    if (!slaDayMap.has(dateKey)) {
+      slaDayMap.set(dateKey, { date: dateKey, early: 0, on_time: 0, late: 0, pending: 0 });
+    }
+    return slaDayMap.get(dateKey);
+  };
 
-      const cycle = diffHours(r.pickup_at, r.pengantaran_at);
-      if (cycle !== null) {
-        svc._cycle_sum += cycle;
-        svc._cycle_count += 1;
-      }
+  let slaEarly = 0,
+    slaOnTime = 0,
+    slaLate = 0,
+    slaPending = 0,
+    slaSkipped = 0;
+  const slaDeltas = [];
+
+  for (const r of rows) {
+    if (!r.tgl_selesai) {
+      slaSkipped++;
+      continue;
     }
 
-    const topServices = Array.from(topServiceMap.values())
-      .map((s) => ({
-        service_name: s.service_name,
-        volume: s.volume,
-        revenue: Math.round(s.revenue),
-        avg_cycle_hours: s._cycle_count > 0
-          ? Number((s._cycle_sum / s._cycle_count).toFixed(2))
-          : null,
-        cycle_sample_count: s._cycle_count,
-      }))
-      .sort((a, b) => {
-        if (b.volume !== a.volume) return b.volume - a.volume;
-        return b.revenue - a.revenue;
-      })
-      .slice(0, 5);
+    const deadlineDateKey = toLocalDateKey(r.tgl_selesai);
 
-    // 4) SLA
-    const slaDayMap = new Map();
-    const ensureSlaDay = (dateKey) => {
-      if (!slaDayMap.has(dateKey)) {
-        slaDayMap.set(dateKey, { date: dateKey, early: 0, on_time: 0, late: 0, pending: 0 });
-      }
-      return slaDayMap.get(dateKey);
-    };
-
-    let slaEarly = 0,
-      slaOnTime = 0,
-      slaLate = 0,
-      slaPending = 0,
-      slaSkipped = 0;
-    const slaDeltas = [];
-
-    for (const r of rows) {
-      if (!r.tgl_selesai) {
-        slaSkipped++;
-        continue;
-      }
-
-      const deadlineDateKey = toLocalDateKey(r.tgl_selesai);
-
-      if (!r.pengantaran_at) {
-        slaPending++;
-        if (deadlineDateKey) ensureSlaDay(deadlineDateKey).pending++;
-        continue;
-      }
-
-      const pengantaranDateKey = toLocalDateKey(r.pengantaran_at);
-      const dp = parseDate(r.pengantaran_at);
-      const dd = parseDate(r.tgl_selesai);
-      if (dp && dd) slaDeltas.push((dp.getTime() - dd.getTime()) / 36e5);
-
-      let cat;
-      if (pengantaranDateKey < deadlineDateKey) {
-        cat = "early";
-        slaEarly++;
-      } else if (pengantaranDateKey === deadlineDateKey) {
-        cat = "on_time";
-        slaOnTime++;
-      } else {
-        cat = "late";
-        slaLate++;
-      }
-
-      if (deadlineDateKey) ensureSlaDay(deadlineDateKey)[cat]++;
+    if (!r.pengantaran_at) {
+      slaPending++;
+      if (deadlineDateKey) ensureSlaDay(deadlineDateKey).pending++;
+      continue;
     }
 
-    const totalDeliveredSla = slaEarly + slaOnTime + slaLate;
-    const slaRate = totalDeliveredSla > 0
-      ? Number(((slaEarly + slaOnTime) / totalDeliveredSla * 100).toFixed(1))
-      : null;
-    const avgDeltaHours = slaDeltas.length > 0
-      ? Number((slaDeltas.reduce((s, v) => s + v, 0) / slaDeltas.length).toFixed(2))
-      : null;
+    const pengantaranDateKey = toLocalDateKey(r.pengantaran_at);
+    const dp = parseDate(r.pengantaran_at);
+    const dd = parseDate(r.tgl_selesai);
+    if (dp && dd) slaDeltas.push((dp.getTime() - dd.getTime()) / 36e5);
 
-    const slaInsights = {
-      total_with_deadline: totalDeliveredSla + slaPending,
-      total_delivered: totalDeliveredSla,
-      early: slaEarly,
-      on_time: slaOnTime,
-      late: slaLate,
-      pending: slaPending,
-      skipped: slaSkipped,
-      sla_rate: slaRate,
-      avg_delta_hours: avgDeltaHours,
-      distribution: Array.from(slaDayMap.values()).sort((a, b) =>
-        a.date.localeCompare(b.date)
-      ),
-    };
+    let cat;
+    if (pengantaranDateKey < deadlineDateKey) {
+      cat = "early";
+      slaEarly++;
+    } else if (pengantaranDateKey === deadlineDateKey) {
+      cat = "on_time";
+      slaOnTime++;
+    } else {
+      cat = "late";
+      slaLate++;
+    }
 
-    return res.json({
-      summary: list,
-      overall,
-      insights: {
-        daily_stage: dailyStage,
-        aging_processing_hours: agingProcessingHours,
-        top_services: topServices,
-        sla: slaInsights,
-      },
-    });
+    if (deadlineDateKey) ensureSlaDay(deadlineDateKey)[cat]++;
+  }
+
+  const totalDeliveredSla = slaEarly + slaOnTime + slaLate;
+  const slaRate = totalDeliveredSla > 0
+    ? Number(((slaEarly + slaOnTime) / totalDeliveredSla * 100).toFixed(1))
+    : null;
+  const avgDeltaHours = slaDeltas.length > 0
+    ? Number((slaDeltas.reduce((s, v) => s + v, 0) / slaDeltas.length).toFixed(2))
+    : null;
+
+  const slaInsights = {
+    total_with_deadline: totalDeliveredSla + slaPending,
+    total_delivered: totalDeliveredSla,
+    early: slaEarly,
+    on_time: slaOnTime,
+    late: slaLate,
+    pending: slaPending,
+    skipped: slaSkipped,
+    sla_rate: slaRate,
+    avg_delta_hours: avgDeltaHours,
+    distribution: Array.from(slaDayMap.values()).sort((a, b) =>
+      a.date.localeCompare(b.date)
+    ),
+  };
+
+  return {
+    summary: list,
+    overall,
+    insights: {
+      daily_stage: dailyStage,
+      aging_processing_hours: agingProcessingHours,
+      top_services: topServices,
+      sla: slaInsights,
+    },
+  };
+}
+
+export const getKpiSummary = async (req, res) => {
+  const { date_start, date_end, date_field = "tgl_terima", outlet } = req.query;
+
+  if (!date_start || !date_end) {
+    return res.status(400).json({ message: "date_start dan date_end wajib diisi" });
+  }
+
+  try {
+    return res.json(
+      await buildWaschenKpiSummary({ dateStart: date_start, dateEnd: date_end, dateField: date_field, outlet })
+    );
   } catch (err) {
     console.error("[kpiProduksi/getKpiSummary]", err.message);
     return res.status(500).json({ message: "Gagal mengambil data KPI", error: err.message });
@@ -1392,6 +1398,294 @@ export const getKpiOnlyAvailablePeriods = async (_req, res) => {
 };
 
 /* ── Cleanox Only — Summary ─────────────────────────────── */
+async function buildTakeHomeKpiSummary({ dateStart, dateEnd }) {
+  const modeFilter = onlyServiceModeSql("take_home");
+  const durationMap = await loadServiceDurationMap();
+
+  const [txRows] = await cleanoxPool.query(
+    `SELECT t.id, t.transaction_no, t.customer_name, t.service_date, t.service_mode,
+            t.status, t.final_amount
+     FROM tr_transactions t
+     WHERE DATE(t.service_date) BETWEEN DATE(?) AND DATE(?)
+       AND t.status <> 'Cancelled'
+       ${modeFilter.sql}`,
+    [dateStart, dateEnd, ...modeFilter.params]
+  );
+
+  const takehomeIds = txRows
+    .filter((t) => String(t.service_mode || "home_service") === "take_home")
+    .map((t) => Number(t.id));
+  const homeIds = txRows
+    .filter((t) => String(t.service_mode || "home_service") !== "take_home")
+    .map((t) => Number(t.id));
+
+  let progressRows = [];
+  if (takehomeIds.length > 0) {
+    const [rows] = await cleanoxPool.query(
+      `SELECT * FROM tr_takehome_progress WHERE transaction_id IN (?)`,
+      [takehomeIds]
+    );
+    progressRows = rows;
+  }
+
+  let assignmentRows = [];
+  if (homeIds.length > 0) {
+    const [rows] = await cleanoxPool.query(
+      `SELECT id, transaction_id, employee_name, assignment_status,
+              started_at, arrival_at, before_photo_at, after_photo_at, completed_at, updated_at
+       FROM tr_worker_assignments
+       WHERE transaction_id IN (?)
+         AND assignment_status NOT IN ('Rejected', 'Cancelled', 'Replaced')`,
+      [homeIds]
+    );
+    assignmentRows = rows;
+  }
+
+  const [itemRows] = await cleanoxPool.query(
+    `SELECT i.transaction_id, i.line_total, COALESCE(s.name, 'Tanpa Nama Item') AS service_name
+     FROM tr_transaction_items i
+     INNER JOIN tr_transactions t ON t.id = i.transaction_id
+     LEFT JOIN mst_services s ON s.id = i.service_id
+     WHERE DATE(t.service_date) BETWEEN DATE(?) AND DATE(?)
+       AND t.status <> 'Cancelled'
+       ${modeFilter.sql}`,
+    [dateStart, dateEnd, ...modeFilter.params]
+  );
+
+  const progressByTx = new Map();
+  for (const p of progressRows) {
+    progressByTx.set(Number(p.transaction_id), p);
+  }
+
+  const assignmentsByTx = new Map();
+  for (const a of assignmentRows) {
+    const tid = Number(a.transaction_id);
+    if (!assignmentsByTx.has(tid)) assignmentsByTx.set(tid, []);
+    assignmentsByTx.get(tid).push(a);
+  }
+
+  const empMap = {};
+  const overallDone = {
+    pickup: 0,
+    cuci_jemur: 0,
+    packing: 0,
+    pengantaran: 0,
+  };
+  const dailyMap = new Map();
+  const pickupToCuci = [];
+  const cuciToPacking = [];
+  const packingToDelivery = [];
+  const pickupToDelivery = [];
+  const txStageAt = new Map();
+
+  const ensureDaily = (dateKey) => {
+    if (!dailyMap.has(dateKey)) {
+      dailyMap.set(dateKey, {
+        date: dateKey,
+        pickup: 0,
+        cuci_jemur: 0,
+        packing: 0,
+        pengantaran: 0,
+        total: 0,
+      });
+    }
+    return dailyMap.get(dateKey);
+  };
+
+  for (const tx of txRows) {
+    const tid = Number(tx.id);
+    const isTakeHome = String(tx.service_mode || "home_service") === "take_home";
+    const stageFilled = {
+      pickup: false,
+      cuci_jemur: false,
+      packing: false,
+      pengantaran: false,
+    };
+    const stageAts = {
+      pickup: null,
+      cuci_jemur: null,
+      packing: null,
+      pengantaran: null,
+    };
+
+    if (isTakeHome) {
+      const bundle = getTakehomeStageBundle(progressByTx.get(tid) || null);
+      const txItems = itemRows.filter((it) => Number(it.transaction_id) === tid);
+      let cuciJemurMins = 0;
+      let packingMins = 0;
+      for (const item of txItems) {
+        const svc = resolveItemDuration(item.service_name, durationMap);
+        cuciJemurMins += (svc.durasi_cuci_menit || 0) + (svc.durasi_jemur_menit || 0) || (svc.total_durasi_kerja_menit || 30);
+        packingMins += svc.durasi_packing_menit || 15;
+      }
+      if (cuciJemurMins === 0) cuciJemurMins = 30;
+      if (packingMins === 0) packingMins = 15;
+
+      const stageMins = {
+        pickup: DURATION_PICKUP_MENIT,
+        cuci_jemur: cuciJemurMins,
+        packing: packingMins,
+        pengantaran: DURATION_PENGANTARAN_MENIT,
+      };
+
+      for (const key of ONLY_KPI_KEYS) {
+        if (bundle.at[key]) {
+          stageFilled[key] = true;
+          stageAts[key] = bundle.at[key];
+          const dateKey = toLocalDateKey(bundle.at[key]);
+          if (dateKey) {
+            const d = ensureDaily(dateKey);
+            d[key] += 1;
+            d.total += 1;
+          }
+        }
+        creditEmployeeStages(empMap, bundle.by[key], key, stageMins[key]);
+      }
+    } else {
+      const assignments = assignmentsByTx.get(tid) || [];
+      const pickupAts = [];
+      const cuciAts = [];
+      const packingAts = [];
+      const pengAts = [];
+
+      for (const a of assignments) {
+        const ts = getHomeServiceStageTimestamps(a);
+        const name = a.employee_name;
+        for (const key of ONLY_KPI_KEYS) {
+          if (!ts[key]) continue;
+          stageFilled[key] = true;
+          if (key === "pickup") pickupAts.push(ts[key]);
+          if (key === "cuci_jemur") cuciAts.push(ts[key]);
+          if (key === "packing") packingAts.push(ts[key]);
+          if (key === "pengantaran") pengAts.push(ts[key]);
+          creditEmployeeStages(empMap, [name], key, 30);
+          const dateKey = toLocalDateKey(ts[key]);
+          if (dateKey) {
+            const d = ensureDaily(dateKey);
+            d[key] += 1;
+            d.total += 1;
+          }
+        }
+      }
+
+      stageAts.pickup = earliestAt(pickupAts);
+      stageAts.cuci_jemur = earliestAt(cuciAts);
+      stageAts.packing = earliestAt(packingAts);
+      stageAts.pengantaran = latestAt(pengAts);
+    }
+
+    for (const key of ONLY_KPI_KEYS) {
+      if (stageFilled[key]) overallDone[key] += 1;
+    }
+
+    txStageAt.set(tid, stageAts);
+
+    const h1 = diffHours(stageAts.pickup, stageAts.cuci_jemur);
+    const h2 = diffHours(stageAts.cuci_jemur, stageAts.packing);
+    const h3 = diffHours(stageAts.packing, stageAts.pengantaran);
+    const h4 = diffHours(stageAts.pickup, stageAts.pengantaran);
+    if (h1 !== null) pickupToCuci.push(h1);
+    if (h2 !== null) cuciToPacking.push(h2);
+    if (h3 !== null) packingToDelivery.push(h3);
+    if (h4 !== null) pickupToDelivery.push(h4);
+  }
+
+  const list = Object.values(empMap).map((e) => {
+    const totalHours = Number((e.total_minutes / 60).toFixed(2));
+    const achievementPct = Number(((totalHours / TARGET_HOURS_PER_MONTH) * 100).toFixed(1));
+    return {
+      ...e,
+      total: e.pickup + e.cuci_jemur + e.packing + e.pengantaran,
+      total_minutes: Math.round(e.total_minutes),
+      total_hours: totalHours,
+      target_hours: TARGET_HOURS_PER_MONTH,
+      achievement_pct: achievementPct,
+    };
+  });
+  list.sort((a, b) => b.total_hours - a.total_hours || b.total - a.total);
+  list.forEach((e, i) => {
+    e.rank = i + 1;
+  });
+
+  const sumWorkingHours = list.reduce((sum, e) => sum + e.total_hours, 0);
+
+  const overall = {
+    total_items: txRows.length,
+    pickup_done: overallDone.pickup,
+    cuci_jemur_done: overallDone.cuci_jemur,
+    packing_done: overallDone.packing,
+    pengantaran_done: overallDone.pengantaran,
+    target_hours_per_worker: TARGET_HOURS_PER_MONTH,
+    total_hours: Number(sumWorkingHours.toFixed(2)),
+    total_minutes: Math.round(sumWorkingHours * 60),
+    total_working_hours: Number(sumWorkingHours.toFixed(2)),
+    avg_working_hours: list.length > 0 ? Number((sumWorkingHours / list.length).toFixed(2)) : 0,
+    avg_achievement_pct: list.length > 0 ? Number(((sumWorkingHours / list.length / TARGET_HOURS_PER_MONTH) * 100).toFixed(1)) : 0,
+  };
+
+  const dailyStage = Array.from(dailyMap.values()).sort((a, b) => a.date.localeCompare(b.date));
+
+  const agingProcessingHours = [
+    { stage: "pickup_to_cuci_jemur", ...summarizeHours(pickupToCuci) },
+    { stage: "cuci_jemur_to_packing", ...summarizeHours(cuciToPacking) },
+    { stage: "packing_to_delivery", ...summarizeHours(packingToDelivery) },
+    { stage: "pickup_to_delivery", ...summarizeHours(pickupToDelivery) },
+  ].filter((a) => a.sample_count > 0);
+
+  const topServicesMap = new Map();
+  for (const item of itemRows) {
+    const serviceName = normalizeServiceName(item.service_name);
+    if (!topServicesMap.has(serviceName)) {
+      topServicesMap.set(serviceName, {
+        service_name: serviceName,
+        volume: 0,
+        revenue: 0,
+        _cycle_sum: 0,
+        _cycle_count: 0,
+      });
+    }
+    const svc = topServicesMap.get(serviceName);
+    svc.volume += 1;
+    const rev = Number(item.line_total || 0);
+    if (Number.isFinite(rev)) svc.revenue += rev;
+
+    const stageAts = txStageAt.get(Number(item.transaction_id));
+    if (stageAts) {
+      const cycle = diffHours(stageAts.pickup, stageAts.pengantaran);
+      if (cycle !== null) {
+        svc._cycle_sum += cycle;
+        svc._cycle_count += 1;
+      }
+    }
+  }
+
+  const topServices = Array.from(topServicesMap.values())
+    .map((s) => ({
+      service_name: s.service_name,
+      volume: s.volume,
+      revenue: Math.round(s.revenue),
+      avg_cycle_hours:
+        s._cycle_count > 0 ? Number((s._cycle_sum / s._cycle_count).toFixed(2)) : null,
+      cycle_sample_count: s._cycle_count,
+    }))
+    .sort((a, b) => {
+      if (b.volume !== a.volume) return b.volume - a.volume;
+      return b.revenue - a.revenue;
+    })
+    .slice(0, 5);
+
+  return {
+    summary: list,
+    overall,
+    insights: {
+      daily_stage: dailyStage,
+      aging_processing_hours: agingProcessingHours,
+      top_services: topServices,
+      sla: null,
+    },
+  };
+}
+
 export const getKpiOnlySummary = async (req, res) => {
   const { date_start, date_end, service_mode: serviceModeRaw } = req.query;
 
@@ -1406,7 +1700,6 @@ export const getKpiOnlySummary = async (req, res) => {
     });
   }
 
-  const modeFilter = onlyServiceModeSql(serviceMode);
 
   try {
     if (serviceMode === "home_service") {
@@ -1415,290 +1708,7 @@ export const getKpiOnlySummary = async (req, res) => {
       return res.json(summary);
     }
 
-    const durationMap = await loadServiceDurationMap();
-
-    const [txRows] = await cleanoxPool.query(
-      `SELECT t.id, t.transaction_no, t.customer_name, t.service_date, t.service_mode,
-              t.status, t.final_amount
-       FROM tr_transactions t
-       WHERE DATE(t.service_date) BETWEEN DATE(?) AND DATE(?)
-         AND t.status <> 'Cancelled'
-         ${modeFilter.sql}`,
-      [date_start, date_end, ...modeFilter.params]
-    );
-
-    const takehomeIds = txRows
-      .filter((t) => String(t.service_mode || "home_service") === "take_home")
-      .map((t) => Number(t.id));
-    const homeIds = txRows
-      .filter((t) => String(t.service_mode || "home_service") !== "take_home")
-      .map((t) => Number(t.id));
-
-    let progressRows = [];
-    if (takehomeIds.length > 0) {
-      const [rows] = await cleanoxPool.query(
-        `SELECT * FROM tr_takehome_progress WHERE transaction_id IN (?)`,
-        [takehomeIds]
-      );
-      progressRows = rows;
-    }
-
-    let assignmentRows = [];
-    if (homeIds.length > 0) {
-      const [rows] = await cleanoxPool.query(
-        `SELECT id, transaction_id, employee_name, assignment_status,
-                started_at, arrival_at, before_photo_at, after_photo_at, completed_at, updated_at
-         FROM tr_worker_assignments
-         WHERE transaction_id IN (?)
-           AND assignment_status NOT IN ('Rejected', 'Cancelled', 'Replaced')`,
-        [homeIds]
-      );
-      assignmentRows = rows;
-    }
-
-    const [itemRows] = await cleanoxPool.query(
-      `SELECT i.transaction_id, i.line_total, COALESCE(s.name, 'Tanpa Nama Item') AS service_name
-       FROM tr_transaction_items i
-       INNER JOIN tr_transactions t ON t.id = i.transaction_id
-       LEFT JOIN mst_services s ON s.id = i.service_id
-       WHERE DATE(t.service_date) BETWEEN DATE(?) AND DATE(?)
-         AND t.status <> 'Cancelled'
-         ${modeFilter.sql}`,
-      [date_start, date_end, ...modeFilter.params]
-    );
-
-    const progressByTx = new Map();
-    for (const p of progressRows) {
-      progressByTx.set(Number(p.transaction_id), p);
-    }
-
-    const assignmentsByTx = new Map();
-    for (const a of assignmentRows) {
-      const tid = Number(a.transaction_id);
-      if (!assignmentsByTx.has(tid)) assignmentsByTx.set(tid, []);
-      assignmentsByTx.get(tid).push(a);
-    }
-
-    const empMap = {};
-    const overallDone = {
-      pickup: 0,
-      cuci_jemur: 0,
-      packing: 0,
-      pengantaran: 0,
-    };
-    const dailyMap = new Map();
-    const pickupToCuci = [];
-    const cuciToPacking = [];
-    const packingToDelivery = [];
-    const pickupToDelivery = [];
-    const txStageAt = new Map();
-
-    const ensureDaily = (dateKey) => {
-      if (!dailyMap.has(dateKey)) {
-        dailyMap.set(dateKey, {
-          date: dateKey,
-          pickup: 0,
-          cuci_jemur: 0,
-          packing: 0,
-          pengantaran: 0,
-          total: 0,
-        });
-      }
-      return dailyMap.get(dateKey);
-    };
-
-    for (const tx of txRows) {
-      const tid = Number(tx.id);
-      const isTakeHome = String(tx.service_mode || "home_service") === "take_home";
-      const stageFilled = {
-        pickup: false,
-        cuci_jemur: false,
-        packing: false,
-        pengantaran: false,
-      };
-      const stageAts = {
-        pickup: null,
-        cuci_jemur: null,
-        packing: null,
-        pengantaran: null,
-      };
-
-      if (isTakeHome) {
-        const bundle = getTakehomeStageBundle(progressByTx.get(tid) || null);
-        const txItems = itemRows.filter((it) => Number(it.transaction_id) === tid);
-        let cuciJemurMins = 0;
-        let packingMins = 0;
-        for (const item of txItems) {
-          const svc = resolveItemDuration(item.service_name, durationMap);
-          cuciJemurMins += (svc.durasi_cuci_menit || 0) + (svc.durasi_jemur_menit || 0) || (svc.total_durasi_kerja_menit || 30);
-          packingMins += svc.durasi_packing_menit || 15;
-        }
-        if (cuciJemurMins === 0) cuciJemurMins = 30;
-        if (packingMins === 0) packingMins = 15;
-
-        const stageMins = {
-          pickup: DURATION_PICKUP_MENIT,
-          cuci_jemur: cuciJemurMins,
-          packing: packingMins,
-          pengantaran: DURATION_PENGANTARAN_MENIT,
-        };
-
-        for (const key of ONLY_KPI_KEYS) {
-          if (bundle.at[key]) {
-            stageFilled[key] = true;
-            stageAts[key] = bundle.at[key];
-            const dateKey = toLocalDateKey(bundle.at[key]);
-            if (dateKey) {
-              const d = ensureDaily(dateKey);
-              d[key] += 1;
-              d.total += 1;
-            }
-          }
-          creditEmployeeStages(empMap, bundle.by[key], key, stageMins[key]);
-        }
-      } else {
-        const assignments = assignmentsByTx.get(tid) || [];
-        const pickupAts = [];
-        const cuciAts = [];
-        const packingAts = [];
-        const pengAts = [];
-
-        for (const a of assignments) {
-          const ts = getHomeServiceStageTimestamps(a);
-          const name = a.employee_name;
-          for (const key of ONLY_KPI_KEYS) {
-            if (!ts[key]) continue;
-            stageFilled[key] = true;
-            if (key === "pickup") pickupAts.push(ts[key]);
-            if (key === "cuci_jemur") cuciAts.push(ts[key]);
-            if (key === "packing") packingAts.push(ts[key]);
-            if (key === "pengantaran") pengAts.push(ts[key]);
-            creditEmployeeStages(empMap, [name], key, 30);
-            const dateKey = toLocalDateKey(ts[key]);
-            if (dateKey) {
-              const d = ensureDaily(dateKey);
-              d[key] += 1;
-              d.total += 1;
-            }
-          }
-        }
-
-        stageAts.pickup = earliestAt(pickupAts);
-        stageAts.cuci_jemur = earliestAt(cuciAts);
-        stageAts.packing = earliestAt(packingAts);
-        stageAts.pengantaran = latestAt(pengAts);
-      }
-
-      for (const key of ONLY_KPI_KEYS) {
-        if (stageFilled[key]) overallDone[key] += 1;
-      }
-
-      txStageAt.set(tid, stageAts);
-
-      const h1 = diffHours(stageAts.pickup, stageAts.cuci_jemur);
-      const h2 = diffHours(stageAts.cuci_jemur, stageAts.packing);
-      const h3 = diffHours(stageAts.packing, stageAts.pengantaran);
-      const h4 = diffHours(stageAts.pickup, stageAts.pengantaran);
-      if (h1 !== null) pickupToCuci.push(h1);
-      if (h2 !== null) cuciToPacking.push(h2);
-      if (h3 !== null) packingToDelivery.push(h3);
-      if (h4 !== null) pickupToDelivery.push(h4);
-    }
-
-    const list = Object.values(empMap).map((e) => {
-      const totalHours = Number((e.total_minutes / 60).toFixed(2));
-      const achievementPct = Number(((totalHours / TARGET_HOURS_PER_MONTH) * 100).toFixed(1));
-      return {
-        ...e,
-        total: e.pickup + e.cuci_jemur + e.packing + e.pengantaran,
-        total_minutes: Math.round(e.total_minutes),
-        total_hours: totalHours,
-        target_hours: TARGET_HOURS_PER_MONTH,
-        achievement_pct: achievementPct,
-      };
-    });
-    list.sort((a, b) => b.total_hours - a.total_hours || b.total - a.total);
-    list.forEach((e, i) => {
-      e.rank = i + 1;
-    });
-
-    const sumWorkingHours = list.reduce((sum, e) => sum + e.total_hours, 0);
-
-    const overall = {
-      total_items: txRows.length,
-      pickup_done: overallDone.pickup,
-      cuci_jemur_done: overallDone.cuci_jemur,
-      packing_done: overallDone.packing,
-      pengantaran_done: overallDone.pengantaran,
-      target_hours_per_worker: TARGET_HOURS_PER_MONTH,
-      total_hours: Number(sumWorkingHours.toFixed(2)),
-      total_minutes: Math.round(sumWorkingHours * 60),
-      total_working_hours: Number(sumWorkingHours.toFixed(2)),
-      avg_working_hours: list.length > 0 ? Number((sumWorkingHours / list.length).toFixed(2)) : 0,
-      avg_achievement_pct: list.length > 0 ? Number(((sumWorkingHours / list.length / TARGET_HOURS_PER_MONTH) * 100).toFixed(1)) : 0,
-    };
-
-    const dailyStage = Array.from(dailyMap.values()).sort((a, b) => a.date.localeCompare(b.date));
-
-    const agingProcessingHours = [
-      { stage: "pickup_to_cuci_jemur", ...summarizeHours(pickupToCuci) },
-      { stage: "cuci_jemur_to_packing", ...summarizeHours(cuciToPacking) },
-      { stage: "packing_to_delivery", ...summarizeHours(packingToDelivery) },
-      { stage: "pickup_to_delivery", ...summarizeHours(pickupToDelivery) },
-    ].filter((a) => a.sample_count > 0);
-
-    const topServicesMap = new Map();
-    for (const item of itemRows) {
-      const serviceName = normalizeServiceName(item.service_name);
-      if (!topServicesMap.has(serviceName)) {
-        topServicesMap.set(serviceName, {
-          service_name: serviceName,
-          volume: 0,
-          revenue: 0,
-          _cycle_sum: 0,
-          _cycle_count: 0,
-        });
-      }
-      const svc = topServicesMap.get(serviceName);
-      svc.volume += 1;
-      const rev = Number(item.line_total || 0);
-      if (Number.isFinite(rev)) svc.revenue += rev;
-
-      const stageAts = txStageAt.get(Number(item.transaction_id));
-      if (stageAts) {
-        const cycle = diffHours(stageAts.pickup, stageAts.pengantaran);
-        if (cycle !== null) {
-          svc._cycle_sum += cycle;
-          svc._cycle_count += 1;
-        }
-      }
-    }
-
-    const topServices = Array.from(topServicesMap.values())
-      .map((s) => ({
-        service_name: s.service_name,
-        volume: s.volume,
-        revenue: Math.round(s.revenue),
-        avg_cycle_hours:
-          s._cycle_count > 0 ? Number((s._cycle_sum / s._cycle_count).toFixed(2)) : null,
-        cycle_sample_count: s._cycle_count,
-      }))
-      .sort((a, b) => {
-        if (b.volume !== a.volume) return b.volume - a.volume;
-        return b.revenue - a.revenue;
-      })
-      .slice(0, 5);
-
-    return res.json({
-      summary: list,
-      overall,
-      insights: {
-        daily_stage: dailyStage,
-        aging_processing_hours: agingProcessingHours,
-        top_services: topServices,
-        sla: null,
-      },
-    });
+    return res.json(await buildTakeHomeKpiSummary({ dateStart: date_start, dateEnd: date_end }));
   } catch (err) {
     console.error("[kpiProduksi/getKpiOnlySummary]", err.message);
     return res.status(500).json({ message: "Gagal mengambil data KPI Cleanox Only", error: err.message });
@@ -2518,3 +2528,245 @@ export const exportKpiExcel = async (req, res) => {
   }
 };
 
+
+/* ── KPI Keseluruhan — gabungan By Waschen + Home Service + Take Home ── */
+async function loadKpiOverall({ dateStart, dateEnd }) {
+  const [waschen, homeService, takeHome] = await Promise.all([
+    buildWaschenKpiSummary({ dateStart, dateEnd }),
+    loadHomeServiceDoneData(dateStart, dateEnd).then(buildHomeServiceLayananSummary),
+    buildTakeHomeKpiSummary({ dateStart, dateEnd }),
+  ]);
+  const { workers, average } = combineWorkerKpi({
+    waschen: waschen.summary,
+    homeService: homeService.summary,
+    takeHome: takeHome.summary,
+  });
+  return { waschen, homeService, takeHome, workers, average };
+}
+
+export const getKpiAllSummary = async (req, res) => {
+  const { date_start, date_end } = req.query;
+
+  if (!date_start || !date_end) {
+    return res.status(400).json({ message: "date_start dan date_end wajib diisi" });
+  }
+
+  try {
+    const { workers, average } = await loadKpiOverall({ dateStart: date_start, dateEnd: date_end });
+    return res.json({
+      target_hours: KPI_TARGET_HOURS,
+      period: { date_start, date_end },
+      workers,
+      average,
+    });
+  } catch (err) {
+    console.error("[kpiProduksi/getKpiAllSummary]", err.message);
+    return res.status(500).json({ message: "Gagal mengambil data KPI Keseluruhan", error: err.message });
+  }
+};
+
+const KPI_ALL_COLUMN_FORMATS = { text: undefined, integer: "#,##0", decimal: "#,##0.00" };
+
+function addKpiAllSheet(workbook, { sheetName, title, periodLabel, columns, rows, footerRow }) {
+  const headerRowNumber = 4;
+  const worksheet = workbook.addWorksheet(sheetName, {
+    views: [{ state: "frozen", ySplit: headerRowNumber }],
+  });
+  const lastColumnLetter = worksheet.getColumn(columns.length).letter;
+
+  worksheet.mergeCells(`A1:${lastColumnLetter}1`);
+  const titleCell = worksheet.getCell("A1");
+  titleCell.value = title;
+  titleCell.font = { bold: true, size: 14, color: { argb: "FF1F3D6B" } };
+  titleCell.alignment = { horizontal: "center", vertical: "middle" };
+  worksheet.getRow(1).height = 28;
+
+  worksheet.mergeCells(`A2:${lastColumnLetter}2`);
+  const periodCell = worksheet.getCell("A2");
+  periodCell.value = periodLabel;
+  periodCell.font = { size: 10, color: { argb: "FF555555" } };
+  periodCell.alignment = { horizontal: "center", vertical: "middle" };
+
+  worksheet.mergeCells(`A3:${lastColumnLetter}3`);
+  const targetCell = worksheet.getCell("A3");
+  targetCell.value = `Target kerja: ${KPI_TARGET_HOURS} jam per worker`;
+  targetCell.font = { size: 10, color: { argb: "FF555555" } };
+  targetCell.alignment = { horizontal: "center", vertical: "middle" };
+
+  columns.forEach((column, index) => {
+    worksheet.getColumn(index + 1).width = column.width;
+  });
+
+  const headerRow = worksheet.getRow(headerRowNumber);
+  headerRow.values = columns.map((column) => column.header);
+  headerRow.height = 22;
+  headerRow.eachCell((cell) => {
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F3D6B" } };
+    cell.font = { bold: true, color: { argb: "FFFFFFFF" }, size: 10 };
+    cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+  });
+
+  const styleDataRow = (row, { isAlternate = false, isFooter = false } = {}) => {
+    row.eachCell({ includeEmpty: true }, (cell, columnNumber) => {
+      const column = columns[columnNumber - 1];
+      cell.font = { size: 9, bold: isFooter };
+      cell.alignment = {
+        horizontal: columnNumber === 2 ? "left" : "center",
+        vertical: "middle",
+      };
+      const numberFormat = KPI_ALL_COLUMN_FORMATS[column.format];
+      if (numberFormat) cell.numFmt = numberFormat;
+      if (isFooter) {
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF3F4F6" } };
+      } else if (isAlternate) {
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF9FAFB" } };
+      }
+    });
+  };
+
+  rows.forEach((values, index) => {
+    styleDataRow(worksheet.addRow(values), { isAlternate: index % 2 === 1 });
+  });
+  if (footerRow) styleDataRow(worksheet.addRow(footerRow), { isFooter: true });
+}
+
+const stageColumns = [
+  { header: "No", width: 5, format: "integer" },
+  { header: "Nama Worker", width: 26, format: "text" },
+  { header: "Pickup (Tugas)", width: 14, format: "integer" },
+  { header: "Cuci & Jemur (Tugas)", width: 18, format: "integer" },
+  { header: "Packing (Tugas)", width: 15, format: "integer" },
+  { header: "Pengantaran (Tugas)", width: 18, format: "integer" },
+  { header: "Total Menit", width: 13, format: "integer" },
+  { header: "Total Jam", width: 12, format: "decimal" },
+  { header: "Capaian (%)", width: 13, format: "decimal" },
+];
+
+const stageRow = (worker, index) => [
+  index + 1,
+  worker.name,
+  worker.pickup,
+  worker.cuci_jemur,
+  worker.packing,
+  worker.pengantaran,
+  worker.total_minutes,
+  worker.total_hours,
+  worker.achievement_pct,
+];
+
+export const exportKpiAllExcel = async (req, res) => {
+  const { date_start, date_end } = req.query;
+
+  if (!date_start || !date_end) {
+    return res.status(400).json({ message: "date_start dan date_end wajib diisi" });
+  }
+
+  try {
+    const { waschen, homeService, takeHome, workers, average } = await loadKpiOverall({
+      dateStart: date_start,
+      dateEnd: date_end,
+    });
+
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = "Cleanox App";
+    workbook.created = new Date();
+    const periodLabel = `Periode: ${date_start} s/d ${date_end}`;
+
+    addKpiAllSheet(workbook, {
+      sheetName: "Ringkasan KPI Keseluruhan",
+      title: "KPI Cleanox Keseluruhan — By Waschen + Home Service + Take Home",
+      periodLabel,
+      columns: [
+        { header: "No", width: 5, format: "integer" },
+        { header: "Nama Worker", width: 26, format: "text" },
+        { header: "Waschen (Jam)", width: 14, format: "decimal" },
+        { header: "Waschen (%)", width: 13, format: "decimal" },
+        { header: "Home Service (Jam)", width: 17, format: "decimal" },
+        { header: "Home Service (%)", width: 16, format: "decimal" },
+        { header: "Take Home (Jam)", width: 15, format: "decimal" },
+        { header: "Take Home (%)", width: 14, format: "decimal" },
+        { header: "Total Jam Kerja", width: 15, format: "decimal" },
+        { header: "Target Jam", width: 12, format: "integer" },
+        { header: "Total Capaian (%)", width: 17, format: "decimal" },
+        { header: "Status Evaluasi", width: 18, format: "text" },
+      ],
+      rows: workers.map((worker, index) => [
+        index + 1,
+        worker.name,
+        worker.waschen_hours,
+        worker.waschen_pct,
+        worker.home_service_hours,
+        worker.home_service_pct,
+        worker.take_home_hours,
+        worker.take_home_pct,
+        worker.total_hours,
+        worker.target_hours,
+        worker.total_pct,
+        worker.status,
+      ]),
+      footerRow: [
+        "",
+        `RATA-RATA TIM (${average.worker_count} WORKER)`,
+        average.waschen_hours,
+        average.waschen_pct,
+        average.home_service_hours,
+        average.home_service_pct,
+        average.take_home_hours,
+        average.take_home_pct,
+        average.total_hours,
+        average.target_hours,
+        average.total_pct,
+        average.status,
+      ],
+    });
+
+    addKpiAllSheet(workbook, {
+      sheetName: "By Waschen",
+      title: "KPI Cleanox by Waschen — Per Worker",
+      periodLabel,
+      columns: stageColumns,
+      rows: waschen.summary.map(stageRow),
+    });
+
+    addKpiAllSheet(workbook, {
+      sheetName: "Home Service",
+      title: "KPI Cleanox Only (Home Service) — Per Worker",
+      periodLabel,
+      columns: [
+        { header: "No", width: 5, format: "integer" },
+        { header: "Nama Worker", width: 26, format: "text" },
+        { header: "Total Nota", width: 12, format: "integer" },
+        { header: "Total Layanan", width: 14, format: "integer" },
+        { header: "Total Menit", width: 13, format: "integer" },
+        { header: "Total Jam", width: 12, format: "decimal" },
+        { header: "Capaian (%)", width: 13, format: "decimal" },
+      ],
+      rows: homeService.summary.map((worker, index) => [
+        index + 1,
+        worker.name,
+        worker.total_nota,
+        worker.total_layanan,
+        worker.total_minutes,
+        worker.total_hours,
+        worker.achievement_pct,
+      ]),
+    });
+
+    addKpiAllSheet(workbook, {
+      sheetName: "Take Home",
+      title: "KPI Cleanox Only (Take Home) — Per Worker",
+      periodLabel,
+      columns: stageColumns,
+      rows: takeHome.summary.map(stageRow),
+    });
+
+    const safePeriod = `${date_start}_${date_end}`.replace(/[^0-9A-Za-z_-]/g, "");
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="KPI_Keseluruhan_Cleanox_${safePeriod}.xlsx"`);
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error("[kpiProduksi/exportKpiAllExcel]", err.message);
+    return res.status(500).json({ message: "Gagal membuat ekspor KPI Keseluruhan", error: err.message });
+  }
+};

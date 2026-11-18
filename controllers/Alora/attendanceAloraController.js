@@ -286,19 +286,32 @@ async function fetchLemburHoursByDay(employeeIds, startDate, endDate) {
 	if (ids.length === 0) return map;
 	const placeholders = ids.map(() => "?").join(",");
 	const [rows] = await safeAloraMobileQuery(
-		`SELECT employee_id, work_date, SUM(duration_hours) AS lembur_hours
+		`SELECT employee_id, work_date, duration_hours, description, todo_items
 		 FROM tr_worker_lembur_ro
 		 WHERE request_type = 'lembur' AND status = 'disetujui'
 		   AND work_date >= ? AND work_date <= ?
 		   AND employee_id IN (${placeholders})
-		 GROUP BY employee_id, work_date`,
+		 ORDER BY work_date ASC, id ASC`,
 		[startDate, endDate, ...ids]
 	);
 	for (const row of rows || []) {
 		const empId = Number(row.employee_id);
 		const workDate = toDateOnly(row.work_date);
 		if (!empId || !workDate) continue;
-		map.set(`${empId}|${workDate}`, Number(row.lembur_hours) || 0);
+		const key = `${empId}|${workDate}`;
+		const prev = map.get(key) || { hours: 0, notes: [] };
+		const h = Number(row.duration_hours) || 0;
+		let todoText = "";
+		if (row.todo_items) {
+			try {
+				const items = typeof row.todo_items === "string" ? JSON.parse(row.todo_items) : row.todo_items;
+				if (Array.isArray(items)) todoText = items.filter(Boolean).join("; ");
+			} catch (_) {}
+		}
+		const note = [row.description?.trim(), todoText].filter(Boolean).join(" - ");
+		if (note) prev.notes.push(note);
+		prev.hours += h;
+		map.set(key, prev);
 	}
 	return map;
 }
@@ -514,12 +527,13 @@ async function fetchIzinFundingTotalsByEmployee(employeeIds, startDate, endDate)
 	return map;
 }
 
-function buildLemburSummaryRow({ empId, profile, lemburTot, roEarned, izinFunding, roBalance, overtimeBalance }) {
+function buildLemburSummaryRow({ empId, profile, lemburTot, roEarned, izinFunding, roBalance }) {
 	return {
 		employee_id: empId,
 		employee_code: profile.employee_code || null,
 		employee_name: profile.employee_name || `ID ${empId}`,
 		jabatan: profile.jabatan || "-",
+		department_name: profile.department_name || "-",
 		total_lembur_hours: Number(lemburTot?.total_lembur_hours) || 0,
 		lembur_count: Number(lemburTot?.lembur_count) || 0,
 		total_ro_earned_hours: Number(roEarned) || 0,
@@ -527,7 +541,6 @@ function buildLemburSummaryRow({ empId, profile, lemburTot, roEarned, izinFundin
 		izin_overtime_hours: Number(izinFunding?.izin_overtime_hours) || 0,
 		izin_unpaid_hours: Number(izinFunding?.izin_unpaid_hours) || 0,
 		replace_off_hours: Number(roBalance) || 0,
-		overtime_balance_hours: Number(overtimeBalance) || 0,
 	};
 }
 
@@ -866,7 +879,6 @@ export const getAttendanceReport = async (req, res) => {
 		];
 		const lemburTotalsMap = await fetchLemburTotalsByEmployee(summaryEmployeeIds, startDate, endDate);
 		const roBalanceMap = await fetchReplaceOffBalances(summaryEmployeeIds);
-		const overtimeBalanceMap = await fetchOvertimeBalances(summaryEmployeeIds);
 		const roEarnedMap = await fetchRoEarnedByEmployee(summaryEmployeeIds, startDate, endDate);
 		const izinFundingMap = await fetchIzinFundingTotalsByEmployee(summaryEmployeeIds, startDate, endDate);
 
@@ -887,13 +899,16 @@ export const getAttendanceReport = async (req, res) => {
 			let modeLabel = "Harian";
 			if (mode === "wfa") modeLabel = "WFA";
 			else if (mode === "wod") modeLabel = ctxIn === "office" ? "WOD Office" : "WOD Remote";
-			const lemburHours = lemburByDay.get(`${empId}|${workDate}`) || 0;
+			const lemburInfo = lemburByDay.get(`${empId}|${workDate}`) || { hours: 0, notes: [] };
+			const lemburHours = lemburInfo.hours || 0;
+			const lemburDescription = lemburInfo.notes?.length > 0 ? lemburInfo.notes.join(" | ") : null;
 			return {
 				attendance_id: Number(row.id),
 				employee_id: empId,
 				employee_code: profile.employee_code || null,
 				employee_name: profile.employee_name || `ID ${row.employee_id}`,
 				jabatan: profile.jabatan || "-",
+				department_name: profile.department_name || "-",
 				work_date: workDate,
 				check_in_time: row.clock_in || null,
 				check_out_time: row.clock_out || null,
@@ -938,6 +953,7 @@ export const getAttendanceReport = async (req, res) => {
 				location_context: ctxIn === "office" ? "Office" : "Remote",
 				duration_hours: row.duration_hours != null ? Number(row.duration_hours) : null,
 				lembur_hours: lemburHours,
+				lembur_description: lemburDescription,
 				approval_status: row.approval_status || null,
 				mode_reason: row.mode_reason || null,
 				clock_in_inside_radius: row.clock_in_inside_radius != null ? Boolean(row.clock_in_inside_radius) : null,
@@ -969,7 +985,6 @@ export const getAttendanceReport = async (req, res) => {
 				izin_overtime_hours: izinFunding.izin_overtime_hours,
 				izin_unpaid_hours: izinFunding.izin_unpaid_hours,
 				replace_off_hours: roBalanceMap.has(empId) ? roBalanceMap.get(empId) : 0,
-				overtime_balance_hours: overtimeBalanceMap.has(empId) ? overtimeBalanceMap.get(empId) : 0,
 			};
 		});
 
@@ -1057,7 +1072,6 @@ export const getAttendanceReport = async (req, res) => {
 				]),
 			]);
 			const exportRoMap = await fetchReplaceOffBalances(filteredUnionEmpIds);
-			const exportOtMap = await fetchOvertimeBalances(filteredUnionEmpIds);
 
 			lemburSummary = filteredUnionEmpIds
 				.map((empId) => {
@@ -1069,7 +1083,6 @@ export const getAttendanceReport = async (req, res) => {
 						roEarned: exportRoEarnedMap.get(empId) || 0,
 						izinFunding: exportIzinFundingMap.get(empId),
 						roBalance: exportRoMap.has(empId) ? exportRoMap.get(empId) : 0,
-						overtimeBalance: exportOtMap.has(empId) ? exportOtMap.get(empId) : 0,
 					});
 				})
 				.sort((a, b) => {

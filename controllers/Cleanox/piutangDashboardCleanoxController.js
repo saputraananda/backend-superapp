@@ -127,7 +127,8 @@ export async function getPiutangDashboardCleanox(req, res) {
         t.transaction_no AS no_nota,
         DATE_FORMAT(DATE(t.service_date), '%Y-%m-%d') AS tgl_terima,
         DATE_FORMAT(DATE(t.service_date), '%Y-%m-%d') AS tgl_selesai,
-        COALESCE(t.final_amount, 0) AS piutang,
+        GREATEST(COALESCE(t.final_amount, 0) - COALESCE(t.paid_amount, 0), 0) AS piutang,
+        COALESCE(t.paid_amount, 0) AS paid_amount,
         CASE
           WHEN DATE(t.service_date) < CURDATE() THEN 'Terlambat'
           WHEN DATE(t.service_date) = CURDATE() THEN 'Jatuh Tempo'
@@ -155,7 +156,7 @@ export async function getPiutangDashboardCleanox(req, res) {
       WHERE DATE(t.service_date) >= ?
         AND DATE(t.service_date) <= ?
         AND t.status <> 'Cancelled'
-        AND (t.payment_status = 'belum_lunas' OR t.payment_status IS NULL OR t.payment_status = '')
+        AND (t.payment_status IN ('belum_lunas', 'dp') OR t.payment_status IS NULL OR t.payment_status = '')
         ${modeClause.sql}
       ORDER BY DATE(t.service_date) ASC, t.customer_name ASC, t.transaction_no ASC
     `;
@@ -170,6 +171,7 @@ export async function getPiutangDashboardCleanox(req, res) {
 			tgl_terima: String(r.tgl_terima || "").slice(0, 10),
 			tgl_selesai: String(r.tgl_selesai || "").slice(0, 10),
 			piutang: toNum(r.piutang),
+			paid_amount: toNum(r.paid_amount),
 			status: r.status,
 			aging: toNum(r.aging),
 			is_reminded: Boolean(r.last_reminded_at),

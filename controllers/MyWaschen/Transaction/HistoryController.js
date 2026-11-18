@@ -1,6 +1,9 @@
 import { safeMyWaschenQuery, safeQuery, myWaschenPool } from "../../../db/pool.js";
 import { buildProduksiPhotoUrl } from "../HRIS/hrisAssetHelpers.js";
-import { posFileUrl, uploadDeleteRequestAttachment, uploadRefundApprovalProof } from "../../../utils/waschenPosUpload.js";
+import { attachQueueNo } from "../utils/queueNo.js";
+import { loadItemPhotos } from "../utils/itemPhotos.js";
+import { fetchSmartlinkWorkLog, groupSmartlinkWork, isSmartlinkTransaction, smartlinkEmployeeIds } from "../utils/smartlinkWorkLog.js";
+import { posFileUrl, uploadDeleteRequestAttachment, uploadRefundApprovalProof } from "../utils/waschenPosUpload.js";
 
 function resolvePaymentStatus(paidAmount, grandTotal) {
   const paid = Number(paidAmount) || 0;
@@ -98,13 +101,24 @@ function mapTransactionRow(row) {
     paidAmount: num(row.paid_amount),
     changeAmount: num(row.change_amount),
     discountAmount: num(row.discount_amount),
+    // Rincian harga: subtotal item, biaya express, nama promo (discount_notes)
+    subtotal: num(row.subtotal),
+    speedSurcharge: num(row.speed_surcharge),
+    promoName: row.discount_notes || null,
+    speedId: row.speed_id != null ? Number(row.speed_id) : null,
+    // speed_id 2 = Express (mst_service_speed); speed_surcharge lama sering tersimpan 0
+    isExpress:
+      Number(row.speed_id) === 2 ||
+      num(row.speed_surcharge) > 0 ||
+      /express|kilat/i.test(String(row.speed_name || "")),
     paymentStatus: row.payment_status || "Outstanding",
     paymentMethod: row.payment_method,
     paymentProofUrl: row.payment_proof_url,
     paidAt: row.paid_at,
     workStatus: num(row.work_status, 10),
     isDelivery: Boolean(row.is_delivery),
-    isEvent: Number(row.is_event) === 1,
+    // Nota di outlet drop point (dari mst_outlet.is_drop_point; tr_transaction tidak menyimpan flag sendiri)
+    isDropPoint: Number(row.outlet_is_drop_point) === 1,
     deliveryAddress: row.delivery_address || null,
     deliveryNotes: row.delivery_notes || null,
     orderDate: row.order_date,
@@ -114,6 +128,7 @@ function mapTransactionRow(row) {
     totalWeightKg: num(row.total_weight_kg),
     totalPcs: num(row.total_pcs),
     outletAddress: row.outlet_address || null,
+    queueNo: num(row.queue_no) || null,
     speedName: row.speed_name,
     parfumeName: row.parfume_name,
     specialNotes: row.special_notes,
@@ -201,7 +216,7 @@ const TXN_SELECT = `
          COALESCE(NULLIF(TRIM(c.full_address), ''), NULLIF(TRIM(c.address), '')) AS customer_address,
          COALESCE(c.deposit_balance, 0) AS deposit_balance,
          o.outlet_code, o.name AS outlet_name, o.full_name AS outlet_full_name,
-         o.address AS outlet_address,
+         o.address AS outlet_address, o.is_drop_point AS outlet_is_drop_point,
          ss.name AS speed_name,
          pf.name AS parfume_name,
          (SELECT COUNT(*) FROM tr_transaction_detail td WHERE td.transaction_id = t.id) AS item_count,
@@ -248,13 +263,9 @@ export const getTransactions = async (req, res) => {
     const workMax = req.query.workMax !== undefined && req.query.workMax !== "" ? Number(req.query.workMax) : null;
     const includeDeleted = String(req.query.includeDeleted || "") === "1";
     const listType = String(req.query.listType || "active").trim(); // active | delete (refund → GET /refunds)
-    // Menu Event B2B: hanya nota outlet event (tr_transaction.is_event = 1)
-    const eventOnly = String(req.query.eventOnly || "") === "1";
 
     const where = [];
     const params = [];
-
-    if (eventOnly) where.push("t.is_event = 1");
 
     if (listType === "delete") {
       where.push("t.is_delete_requested = 1");
@@ -344,6 +355,8 @@ export const getTransactions = async (req, res) => {
       );
     }
 
+    await attachQueueNo(safeMyWaschenQuery, rows);
+
     // cashier / settler names from main DB (best-effort)
     const cashierIds = [
       ...new Set(
@@ -391,6 +404,7 @@ export const getTransactionById = async (req, res) => {
     if (!rows.length) {
       return res.status(404).json({ success: false, message: "Nota tidak ditemukan" });
     }
+    await attachQueueNo(safeMyWaschenQuery, rows);
     const row = rows[0];
 
     const [[details], [logs], [statusLogs], [progressRows], [bagRows], [kgRows]] = await Promise.all([
@@ -443,6 +457,11 @@ export const getTransactionById = async (req, res) => {
       ),
     ]);
 
+    // Nota Smartlink: riwayat pengerjaan lama dari tr_smartlink_work_log
+    const smartlinkRows = isSmartlinkTransaction(row)
+      ? await fetchSmartlinkWorkLog((sql, params) => myWaschenPool.query(sql, params), row.id)
+      : [];
+
     // Per item: tahap terakhir per stage (QC ulang menimpa tampilan), lalu rincian jenis per plastik
     const bagsByDetail = {};
     for (const b of bagRows) {
@@ -470,6 +489,7 @@ export const getTransactionById = async (req, res) => {
       ...progressRows.map((p) => p.employee_id),
       ...progressRows.map((p) => p.hold_resolved_by),
       ...logs.map((l) => l.cashier_employee_id),
+      ...smartlinkEmployeeIds(smartlinkRows),
       row.cashier_employee_id,
       row.settled_by_employee_id,
     ]);
@@ -528,9 +548,13 @@ export const getTransactionById = async (req, res) => {
       };
     });
 
+    const smartlinkByDetail = groupSmartlinkWork(details, smartlinkRows, (eid) => empMap[eid] || null);
+    const byTime = (a, b) => new Date(a.completed_at || 0) - new Date(b.completed_at || 0);
+    const photosByDetail = await loadItemPhotos((sql, params) => myWaschenPool.query(sql, params), details);
     const items = details.map((d) => ({
       ...d,
-      workers: progressByDetail[d.id] || [],
+      photos: photosByDetail[d.id] || [],
+      workers: [...(smartlinkByDetail[d.id] || []), ...(progressByDetail[d.id] || [])].sort(byTime),
       bag_history: Object.values(bagsByDetail[d.id] || {}),
       kg_items: kgByDetail[d.id] || [],
     }));
@@ -554,6 +578,8 @@ export const getTransactionById = async (req, res) => {
       cashier_name: cashierName,
       settled_by_name: settledByName,
     });
+    // PIN nota digital pelanggan (4 digit) — hanya di detail, tidak di list
+    order.accessCode = row.access_code ? String(row.access_code) : null;
     res.json({
       success: true,
       data: {

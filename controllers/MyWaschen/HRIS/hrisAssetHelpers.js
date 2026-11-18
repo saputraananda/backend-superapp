@@ -52,6 +52,10 @@ export function getWaschenMobileKasbonDir() {
   return getWaschenMobileAssetDir("kasbon");
 }
 
+export function getWaschenMobileOjtDir() {
+  return getWaschenMobileAssetDir("academy/ojt");
+}
+
 export function getWaschenMobileQcDir(stage) {
   return getWaschenMobileAssetDir(`produksi/${stage}`);
 }

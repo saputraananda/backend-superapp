@@ -2,6 +2,7 @@ import { safeCleanoxQuery } from "../../db/pool.js";
 import {
 	buildOmzetDateExpr,
 	buildUnifiedOmzetWhere,
+	omzetAmountExpr,
 } from "./cleanoxOmzetUnified.js";
 
 function fmtLocalDate(dt) {
@@ -101,6 +102,9 @@ export async function getPendapatanCleanox(req, res) {
 		}
 
 		const omzetExpr = buildOmzetDateExpr("v");
+		const omzetAmount = omzetAmountExpr("v", "tx");
+		const posPaymentJoin = `LEFT JOIN tr_transactions tx
+        ON v.source_system = 'pos' AND tx.id = v.pos_transaction_id`;
 		const whereOmzet = buildUnifiedOmzetWhere({
 			serviceMode,
 			dateStart,
@@ -109,8 +113,9 @@ export async function getPendapatanCleanox(req, res) {
 		});
 
 		const [actualRows] = await safeCleanoxQuery(
-			`SELECT COALESCE(SUM(v.final_amount), 0) AS actual_sales
+			`SELECT COALESCE(SUM(${omzetAmount}), 0) AS actual_sales
        FROM v_transactions_unified v
+       ${posPaymentJoin}
        WHERE ${whereOmzet.sql}`,
 			whereOmzet.params,
 		);
@@ -118,8 +123,9 @@ export async function getPendapatanCleanox(req, res) {
 
 		const [trendRows] = await safeCleanoxQuery(
 			`SELECT DATE_FORMAT((${omzetExpr}), '%Y-%m-%d') AS date,
-              COALESCE(SUM(v.final_amount), 0) AS sales
+              COALESCE(SUM(${omzetAmount}), 0) AS sales
        FROM v_transactions_unified v
+       ${posPaymentJoin}
        WHERE ${whereOmzet.sql}
        GROUP BY DATE_FORMAT((${omzetExpr}), '%Y-%m-%d')
        ORDER BY date ASC`,

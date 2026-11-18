@@ -154,7 +154,14 @@ async function listPosRiwayat({
         t.created_at,
         t.is_history_entry,
         pm.\`group\` AS payment_method_group,
-        pm.label AS payment_method_label
+        pm.label AS payment_method_label,
+        t.paid_amount,
+        t.compensation_reason,
+        t.compensation_chronology,
+        t.compensation_complaint_id,
+        t.compensation_complaint_nota,
+        t.compensation_complaint_name,
+        t.compensation_complaint_outlet
       FROM tr_transactions t
       LEFT JOIN mst_payment_method pm ON pm.id = t.payment_method_id
       WHERE ${dateFilterSql}`;
@@ -167,11 +174,13 @@ async function listPosRiwayat({
 		sql += ` AND t.status <> 'Cancelled'`;
 	}
 
-	if (paymentStatus === "lunas") {
+	if (paymentStatus === "terbayar") {
+		sql += ` AND t.payment_status IN ('lunas', 'dp')`;
+	} else if (paymentStatus === "lunas") {
 		sql += ` AND t.payment_status = ?`;
 		params.push("lunas");
 	} else if (paymentStatus === "belum_lunas") {
-		sql += ` AND (t.payment_status = 'belum_lunas' OR t.payment_status IS NULL OR t.payment_status = '')`;
+		sql += ` AND (t.payment_status IN ('belum_lunas', 'dp') OR t.payment_status IS NULL OR t.payment_status = '')`;
 	}
 
 	if (serviceMode === "take_home") {
@@ -247,14 +256,17 @@ async function listUnifiedRiwayat({
         v.is_history_entry,
         v.payment_method_label,
         pm.\`group\` AS payment_method_group,
-        tx.epayment_amount,
-        pm2.\`group\` AS secondary_payment_method_group,
-        pm2.label AS secondary_payment_method_label
+        tx.paid_amount,
+        tx.compensation_reason,
+        tx.compensation_chronology,
+        tx.compensation_complaint_id,
+        tx.compensation_complaint_nota,
+        tx.compensation_complaint_name,
+        tx.compensation_complaint_outlet
       FROM v_transactions_unified v
       LEFT JOIN mst_payment_method pm ON pm.id = v.payment_method_id
       LEFT JOIN tr_transactions tx
         ON v.source_system = 'pos' AND tx.id = v.pos_transaction_id
-      LEFT JOIN mst_payment_method pm2 ON pm2.id = tx.secondary_payment_method_id
       WHERE ${dateFilterSql}`;
 	const params = [startDate, endDate];
 
@@ -265,11 +277,13 @@ async function listUnifiedRiwayat({
 		sql += ` AND (v.source_system = 'smartlink' OR v.status <> 'Cancelled')`;
 	}
 
-	if (paymentStatus === "lunas") {
+	if (paymentStatus === "terbayar") {
+		sql += ` AND v.payment_status IN ('lunas', 'dp')`;
+	} else if (paymentStatus === "lunas") {
 		sql += ` AND v.payment_status = ?`;
 		params.push("lunas");
 	} else if (paymentStatus === "belum_lunas") {
-		sql += ` AND (v.payment_status = 'belum_lunas' OR v.payment_status IS NULL OR v.payment_status = '')`;
+		sql += ` AND (v.payment_status IN ('belum_lunas', 'dp') OR v.payment_status IS NULL OR v.payment_status = '')`;
 	}
 
 	if (serviceMode === "take_home") {
@@ -299,9 +313,17 @@ async function listUnifiedRiwayat({
 		.filter((id) => Number.isInteger(id) && id > 0);
 
 	const proofsByTx = await loadProofsByTransactionIds(posIds);
+	const paymentGroupsByTx = splitPayment
+		? await loadPaymentGroupsByTransactionIds(posIds)
+		: new Map();
 
 	return res.json(
-		buildListResponse(rows || [], proofsByTx, { defaultSource: null, splitPayment }),
+		buildListResponse(rows || [], proofsByTx, {
+			defaultSource: null,
+			splitPayment,
+			terbayarMode: paymentStatus === "terbayar",
+			paymentGroupsByTx,
+		}),
 	);
 }
 
@@ -333,21 +355,73 @@ async function loadProofsByTransactionIds(ids) {
 	return proofsByTx;
 }
 
-/** @returns {{ epayment: number, remainder: number, secondaryKategori: string } | null} */
-function resolveEpaymentSplit(row, amount, kategori, sourceSystem) {
-	if (sourceSystem !== "pos") return null;
-	if (kategori !== "E-PAYMENT") return null;
-	if (!row.secondary_payment_method_group) return null;
-	const epayment = Number(row.epayment_amount);
-	if (!Number.isFinite(epayment) || epayment <= 0 || epayment >= amount) return null;
-	return {
-		epayment,
-		remainder: amount - epayment,
-		secondaryKategori: mapKategori(row.secondary_payment_method_group),
-	};
+function roundMoney(value) {
+	return Number(Number(value || 0).toFixed(2));
 }
 
-function buildListResponse(rows, proofsByTx, { defaultSource, splitPayment = false }) {
+/**
+ * Pembayaran aktif POS per nota, urut tanggal bayar lalu id.
+ * @returns {Map<number, Array<{ kategori: string, group: string, label: string|null, amount: number }>>}
+ */
+async function loadPaymentGroupsByTransactionIds(ids) {
+	const groupsByTx = new Map();
+	const uniqueIds = [...new Set(ids)];
+	if (uniqueIds.length === 0) return groupsByTx;
+
+	const placeholders = uniqueIds.map(() => "?").join(",");
+	const [rows] = await safeCleanoxQuery(
+		`
+			SELECT p.transaction_id, p.amount, pm.\`group\` AS method_group, pm.label AS method_label
+			FROM tr_transaction_payments p
+			INNER JOIN mst_payment_method pm ON pm.id = p.payment_method_id
+			WHERE p.transaction_id IN (${placeholders}) AND p.voided_at IS NULL
+			ORDER BY p.paid_date ASC, p.id ASC
+		`,
+		uniqueIds,
+	);
+	for (const row of rows || []) {
+		const txId = Number(row.transaction_id);
+		if (!groupsByTx.has(txId)) groupsByTx.set(txId, []);
+		groupsByTx.get(txId).push({
+			kategori: mapKategori(row.method_group),
+			group: row.method_group,
+			label: row.method_label || null,
+			amount: Number(row.amount),
+		});
+	}
+	return groupsByTx;
+}
+
+/**
+ * Bagi nominal satu nota (maksimum `cap`) per kelompok metode pembayaran, berurutan sesuai
+ * pembayaran. Mengembalikan null bila hanya ada satu kelompok (baris tidak perlu dipecah).
+ */
+function splitAmountByPaymentGroup(payments, cap) {
+	if (!payments || payments.length === 0) return null;
+	const byKategori = new Map();
+	let capLeft = cap;
+	for (const payment of payments) {
+		const take = Math.min(payment.amount, capLeft);
+		if (take <= 0) continue;
+		capLeft -= take;
+		const existing = byKategori.get(payment.kategori);
+		if (existing) existing.amount += take;
+		else byKategori.set(payment.kategori, { ...payment, amount: take });
+	}
+	return byKategori.size > 1
+		? [...byKategori.values()].map((split) => ({ ...split, amount: roundMoney(split.amount) }))
+		: null;
+}
+
+/**
+ * terbayarMode (payment_status=terbayar, dipakai Pendapatan): `final_amount` = nominal yang sudah terbayar
+ * (maksimum sebesar tagihan); `tagihan_amount` selalu berisi tagihan penuh.
+ */
+function buildListResponse(
+	rows,
+	proofsByTx,
+	{ defaultSource, splitPayment = false, terbayarMode = false, paymentGroupsByTx = new Map() },
+) {
 	let totalAmount = 0;
 	let lunasCount = 0;
 	let belumLunasCount = 0;
@@ -363,8 +437,11 @@ function buildListResponse(rows, proofsByTx, { defaultSource, splitPayment = fal
 
 	const data = [];
 	for (const row of rows || []) {
-		const amount = Number(row.final_amount || 0);
+		const tagihanAmount = Number(row.final_amount || 0);
 		const sourceSystem = row.source_system || defaultSource || "pos";
+		const isPos = sourceSystem === "pos";
+		const paidAmount = isPos ? Number(row.paid_amount || 0) : tagihanAmount;
+		const amount = terbayarMode ? Math.min(paidAmount, tagihanAmount) : tagihanAmount;
 		const kategori = mapKategoriUnified(row.payment_method_group, sourceSystem);
 		const payStatus = row.payment_status || "belum_lunas";
 		const txId = Number(row.pos_transaction_id || row.id) || null;
@@ -374,8 +451,7 @@ function buildListResponse(rows, proofsByTx, { defaultSource, splitPayment = fal
 		if (payStatus === "lunas") lunasCount += 1;
 		else belumLunasCount += 1;
 
-		const proofs =
-			sourceSystem === "pos" && txId ? proofsByTx.get(txId) || [] : [];
+		const proofs = isPos && txId ? proofsByTx.get(txId) || [] : [];
 
 		const base = {
 			id: txId,
@@ -386,6 +462,9 @@ function buildListResponse(rows, proofsByTx, { defaultSource, splitPayment = fal
 			service_date_key: toDateOnly(row.service_date),
 			omzet_date: row.omzet_date || null,
 			final_amount: amount,
+			tagihan_amount: tagihanAmount,
+			paid_amount: paidAmount,
+			remaining_amount: Math.max(0, tagihanAmount - paidAmount),
 			pricing_pending: false,
 			status: row.status,
 			payment_status: payStatus,
@@ -394,6 +473,12 @@ function buildListResponse(rows, proofsByTx, { defaultSource, splitPayment = fal
 			created_at: row.created_at,
 			payment_method_group: row.payment_method_group || null,
 			payment_method_label: row.payment_method_label || null,
+			compensation_reason: row.compensation_reason || null,
+			compensation_chronology: row.compensation_chronology || null,
+			compensation_complaint_id: row.compensation_complaint_id ?? null,
+			compensation_complaint_nota: row.compensation_complaint_nota || null,
+			compensation_complaint_name: row.compensation_complaint_name || null,
+			compensation_complaint_outlet: row.compensation_complaint_outlet || null,
 			source_system: sourceSystem,
 			is_history_entry: isHistory,
 			kategori,
@@ -402,30 +487,25 @@ function buildListResponse(rows, proofsByTx, { defaultSource, splitPayment = fal
 			split_total: null,
 		};
 
-		const split = splitPayment
-			? resolveEpaymentSplit(row, amount, kategori, sourceSystem)
-			: null;
+		const splits =
+			splitPayment && isPos
+				? splitAmountByPaymentGroup(paymentGroupsByTx.get(txId), amount)
+				: null;
 
-		if (split) {
-			data.push({
-				...base,
-				final_amount: split.epayment,
-				kategori: "E-PAYMENT",
-				split_index: 1,
-				split_total: 2,
+		if (splits) {
+			splits.forEach((split, index) => {
+				data.push({
+					...base,
+					final_amount: split.amount,
+					kategori: split.kategori,
+					payment_method_group: split.group,
+					payment_method_label: split.label,
+					payment_proofs: index === 0 ? proofs : [],
+					split_index: index + 1,
+					split_total: splits.length,
+				});
+				addCategoryAmount(split.kategori, split.amount);
 			});
-			data.push({
-				...base,
-				final_amount: split.remainder,
-				kategori: split.secondaryKategori,
-				payment_method_group: row.secondary_payment_method_group,
-				payment_method_label: row.secondary_payment_method_label || null,
-				payment_proofs: [],
-				split_index: 2,
-				split_total: 2,
-			});
-			addCategoryAmount("E-PAYMENT", split.epayment);
-			addCategoryAmount(split.secondaryKategori, split.remainder);
 		} else {
 			data.push(base);
 			addCategoryAmount(kategori, amount);
