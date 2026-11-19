@@ -559,25 +559,34 @@ const getOutletQtyMap = async (prIds) => {
     const map = new Map();
     const ids = [...new Set((prIds || []).map(Number).filter(Boolean))];
     if (!ids.length) return map;
-    let rows;
-    try {
-        rows = await safeQuery(
-            `SELECT a.pr_id, COALESCE(o.full_name, mc.company_name) AS outlet_name, SUM(a.qty) AS qty
+    const build = (qtyExpr) => `SELECT a.pr_id, COALESCE(o.full_name, mc.company_name) AS outlet_name, mc.company_name AS company_name,
+                    ${qtyExpr} AS qty, SUM(a.nominal) AS nominal
              FROM tr_purchase_request_allocation a
              LEFT JOIN mst_company mc ON mc.company_id = a.company_id
              LEFT JOIN ${mstOutlet()} o ON o.id = a.outlet_id
-             WHERE a.pr_id IN (?) AND a.qty IS NOT NULL
+             WHERE a.pr_id IN (?)
              GROUP BY a.pr_id, a.company_id, a.outlet_id, outlet_name
-             ORDER BY a.pr_id, outlet_name`,
-            [ids]
-        );
+             ORDER BY a.pr_id, outlet_name`;
+    let rows;
+    try {
+        try {
+            rows = await safeQuery(build("SUM(a.qty)"), [ids]);
+        } catch (err) {
+            if (!isMissingColumn(err)) throw err;
+            rows = await safeQuery(build("NULL"), [ids]); // kolom qty belum ada → nominal tetap tampil
+        }
     } catch (err) {
-        if (err.code === "ER_NO_SUCH_TABLE" || err.errno === 1146 || isMissingColumn(err)) return map;
+        if (err.code === "ER_NO_SUCH_TABLE" || err.errno === 1146) return map;
         throw err;
     }
     for (const r of rows) {
         if (!map.has(r.pr_id)) map.set(r.pr_id, []);
-        map.get(r.pr_id).push({ outlet_name: r.outlet_name, qty: Number(r.qty) });
+        map.get(r.pr_id).push({
+            outlet_name: r.outlet_name,
+            company_name: r.company_name,
+            qty: r.qty == null ? null : Number(r.qty),
+            nominal: Number(r.nominal) || 0,
+        });
     }
     return map;
 };
