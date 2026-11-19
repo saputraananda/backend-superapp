@@ -509,34 +509,132 @@ const splitsFromAllocations = (classIds, rows) => {
     return out;
 };
 
+const isMissingColumn = (err) => err?.code === "ER_BAD_FIELD_ERROR" || err?.errno === 1054;
+
+// Kolom qty (tr_purchase_request_allocation.qty) ditambahkan manual lewat
+// sql/2026-11-18_add_qty_to_pr_allocation.sql. Selama belum ada, qty tidak disimpan
+// tetapi pembayaran tetap berjalan.
 const syncAllocations = async (prId, rows) => {
     await safeQuery(`DELETE FROM tr_purchase_request_allocation WHERE pr_id = ?`, [prId]);
     if (!rows.length) return;
-    await safeQuery(
-        `INSERT INTO tr_purchase_request_allocation
-            (pr_id, classification_id, company_id, outlet_id, nominal)
-         VALUES ${rows.map(() => "(?, ?, ?, ?, ?)").join(", ")}`,
-        rows.flatMap(r => [prId, r.classification_id, r.company_id, r.outlet_id, r.nominal])
-    );
+    try {
+        await safeQuery(
+            `INSERT INTO tr_purchase_request_allocation
+                (pr_id, classification_id, company_id, outlet_id, nominal, qty)
+             VALUES ${rows.map(() => "(?, ?, ?, ?, ?, ?)").join(", ")}`,
+            rows.flatMap(r => [prId, r.classification_id, r.company_id, r.outlet_id, r.nominal, r.qty ?? null])
+        );
+    } catch (err) {
+        if (!isMissingColumn(err)) throw err;
+        await safeQuery(
+            `INSERT INTO tr_purchase_request_allocation
+                (pr_id, classification_id, company_id, outlet_id, nominal)
+             VALUES ${rows.map(() => "(?, ?, ?, ?, ?)").join(", ")}`,
+            rows.flatMap(r => [prId, r.classification_id, r.company_id, r.outlet_id, r.nominal])
+        );
+    }
 };
 
 const getAllocationsOfPr = async (prId) => {
-    try {
-        return await safeQuery(
-            `SELECT a.classification_id, c.classification_name, a.company_id, mc.company_name,
-                    a.outlet_id, o.full_name AS outlet_name, a.nominal
+    const build = (qtySelect) => `SELECT a.classification_id, c.classification_name, a.company_id, mc.company_name,
+                    a.outlet_id, o.full_name AS outlet_name, a.nominal${qtySelect}
              FROM tr_purchase_request_allocation a
              JOIN mst_purchase_classification c ON c.id = a.classification_id
              LEFT JOIN mst_company mc ON mc.company_id = a.company_id
              LEFT JOIN ${mstOutlet()} o ON o.id = a.outlet_id
              WHERE a.pr_id = ?
-             ORDER BY c.classification_name, mc.company_name, o.full_name`,
-            [prId]
-        );
+             ORDER BY c.classification_name, mc.company_name, o.full_name`;
+    try {
+        return await safeQuery(build(", a.qty"), [prId]);
     } catch (err) {
         if (err.code === "ER_NO_SUCH_TABLE" || err.errno === 1146) return [];
+        if (isMissingColumn(err)) return await safeQuery(build(", NULL AS qty"), [prId]);
         throw err;
     }
+};
+
+// Qty per outlet untuk banyak PR sekaligus (export Excel).
+// Hasil: Map<pr_id, [{ outlet_name, qty }]> — hanya PR dengan >1 outlet yang punya qty.
+const getOutletQtyMap = async (prIds) => {
+    const map = new Map();
+    const ids = [...new Set((prIds || []).map(Number).filter(Boolean))];
+    if (!ids.length) return map;
+    let rows;
+    try {
+        rows = await safeQuery(
+            `SELECT a.pr_id, COALESCE(o.full_name, mc.company_name) AS outlet_name, SUM(a.qty) AS qty
+             FROM tr_purchase_request_allocation a
+             LEFT JOIN mst_company mc ON mc.company_id = a.company_id
+             LEFT JOIN ${mstOutlet()} o ON o.id = a.outlet_id
+             WHERE a.pr_id IN (?) AND a.qty IS NOT NULL
+             GROUP BY a.pr_id, a.company_id, a.outlet_id, outlet_name
+             ORDER BY a.pr_id, outlet_name`,
+            [ids]
+        );
+    } catch (err) {
+        if (err.code === "ER_NO_SUCH_TABLE" || err.errno === 1146 || isMissingColumn(err)) return map;
+        throw err;
+    }
+    for (const r of rows) {
+        if (!map.has(r.pr_id)) map.set(r.pr_id, []);
+        map.get(r.pr_id).push({ outlet_name: r.outlet_name, qty: Number(r.qty) });
+    }
+    return map;
+};
+
+const attachOutletQty = async (rows) => {
+    const map = await getOutletQtyMap(rows.map(r => r.pr_id));
+    for (const r of rows) r.outlet_qty = map.get(r.pr_id) || [];
+    return rows;
+};
+
+// GET /pengajuan/outlet-qty?ids=1,2,3  → { data: { [pr_id]: [{ outlet_name, qty }] } }
+export const getOutletQty = async (req, res) => {
+    try {
+        const ids = String(req.query.ids || "").split(",").map(Number).filter(Boolean).slice(0, 2000);
+        const map = await getOutletQtyMap(ids);
+        res.json({ data: Object.fromEntries(map) });
+    } catch (err) {
+        console.error("[getOutletQty]", err);
+        res.status(500).json({ message: "Gagal memuat qty outlet" });
+    }
+};
+
+// Qty per outlet harus dijumlahkan = qty pengajuan (ga_qty jika ada, kalau tidak qty awal).
+// Hanya berlaku bila >1 outlet dan qty pengajuan > 1. Qty disimpan di baris klasifikasi
+// pertama tiap outlet agar tidak terhitung dobel.
+const applyOutletQty = async (prId, targets, rows, rawQty) => {
+    if (targets.length <= 1 || !rows.length) return { rows, error: null };
+    const [pr] = await safeQuery(`SELECT qty, ga_qty FROM tr_purchase_request WHERE pr_id = ?`, [prId]);
+    const prQty = Number(pr?.ga_qty) || Number(pr?.qty) || 0;
+    if (!(prQty > 1)) return { rows, error: null };
+
+    let list = rawQty;
+    if (typeof rawQty === "string" && rawQty.trim()) {
+        try { list = JSON.parse(rawQty); } catch { list = null; }
+    }
+    if (!Array.isArray(list)) list = [];
+
+    const r2 = (n) => Math.round(n * 100) / 100;
+    const qtyOf = (t) => {
+        const hit = list.find(x => Number(x.company_id) === Number(t.company_id)
+            && Number(x.outlet_id || 0) === Number(t.outlet_id || 0));
+        const n = Number(hit?.qty);
+        return Number.isFinite(n) && n > 0 ? r2(n) : 0;
+    };
+    const total = r2(targets.reduce((s, t) => s + qtyOf(t), 0));
+    if (total !== r2(prQty)) {
+        return { rows: [], error: `Total qty outlet harus sama dengan jumlah pengajuan (${prQty})` };
+    }
+
+    const seen = new Set();
+    const out = rows.map(r => {
+        const key = `${r.company_id}:${r.outlet_id || 0}`;
+        if (seen.has(key)) return { ...r, qty: null };
+        seen.add(key);
+        return { ...r, qty: qtyOf(r) };
+    });
+    return { rows: out, error: null };
 };
 
 const resolvePaymentAllocations = async (prId, classIds, classRows, nominalBayar, body) => {
@@ -546,6 +644,9 @@ const resolvePaymentAllocations = async (prId, classIds, classRows, nominalBayar
         body.allocations, classIds, targets, nominalBayar, body.classification_splits
     );
     if (parsed.error) return parsed;
+    const withQty = await applyOutletQty(prId, targets, parsed.rows, body.allocation_qty);
+    if (withQty.error) return withQty;
+    parsed.rows = withQty.rows;
     const classificationSplits = parsed.rows.length
         ? splitsFromAllocations(classIds, parsed.rows)
         : parseClassificationSplits(body.classification_splits, classIds, nominalBayar);
@@ -1248,6 +1349,8 @@ export const exportByClassification = async (req, res) => {
              LIMIT ?`,
             [...params, EXPORT_MAX_ROWS]
         );
+
+        await attachOutletQty(data);
 
         res.json({ data, truncated: data.length >= EXPORT_MAX_ROWS });
     } catch (err) {
