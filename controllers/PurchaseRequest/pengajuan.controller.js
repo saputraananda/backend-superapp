@@ -2500,6 +2500,10 @@ export const approvePR = async (req, res) => {
 
             const spvNote = req.body.spv_note ? sanitize(req.body.spv_note) : null;
 
+            // SPV departemen menentukan skip GA (hanya pengajuan biasa yang belum diset skip GA oleh Finance)
+            const spvSkipGa = pr.type === "pengajuan" && !pr.is_routine && Number(pr.requires_ga) !== 0
+                && (req.body.requires_ga === 0 || req.body.requires_ga === "0");
+
             // ── Finance skip GA: SPV Finance approve → langsung status 5 (antrian bayar) ──
             // SPV dept = SPV Finance, jadi tidak perlu approve Finance kedua kali
             if (Number(pr.requires_ga) === 0) {
@@ -2527,6 +2531,22 @@ export const approvePR = async (req, res) => {
                 await writeLog(id, "approved_bod", 2, dirName,
                     "Disetujui Direktur (otomatis — Finance skip GA)");
                 return res.json({ message: "Pengajuan disetujui — langsung masuk antrian pembayaran" });
+            }
+
+            // ── SPV memilih skip GA: lewati review GA → status 4 (tinggal approve SPV Finance) ──
+            if (spvSkipGa) {
+                await safeQuery(
+                    `UPDATE tr_purchase_request SET status = 4, requires_ga = 0, approved_spv_by = ?, approved_spv_at = NOW(),
+                        spv_note = ?, updated_at = NOW()
+                     WHERE pr_id = ?`,
+                    [employeeId, spvNote, id]
+                );
+                const logNote = spvNote
+                    ? `Disetujui SPV Departemen | Catatan: ${spvNote} — skip GA`
+                    : "Disetujui SPV Departemen — skip GA";
+                await writeLog(id, "approved_spv", employeeId, me.full_name, logNote);
+                await writeLog(id, "skip_ga", employeeId, me.full_name, "Skip approval GA — dipilih SPV saat approve");
+                return res.json({ message: "Pengajuan disetujui — skip GA, lanjut ke approval SPV Finance" });
             }
 
             // ── GA Tidak Rutin: SPV Dept approve → langsung status 4 (PR Ready) ──
