@@ -22,8 +22,8 @@ export function mstOutlet() {
  */
 export async function verifyOutletSource(safeQuery) {
   try {
-    const [rows] = await safeQuery(`SELECT COUNT(*) AS n FROM ${mstOutlet()}`);
-    console.log(`[outlet] Sumber master outlet: ${mstOutlet()} (${rows[0]?.n ?? 0} outlet)`);
+    // Diam kalau berhasil; hanya log saat gagal
+    await safeQuery(`SELECT 1 FROM ${mstOutlet()} LIMIT 1`);
   } catch (err) {
     console.error(
       `[outlet] GAGAL membaca ${mstOutlet()} dari koneksi DB utama: ${err.message}. ` +

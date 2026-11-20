@@ -229,8 +229,10 @@ export const getLinenTransactionById = async (req, res) => {
     let detailSql = `
       SELECT d.id, d.transaction_id, d.hospital_linen_id, d.room_id, d.qty_kotor, d.qty_bersih, d.notes,
              hl.hospital_linen_name, hl.ownership_type,
-             l.linen_name AS master_linen_name, sz.size_name, cl.color_name, mt.material_name
+             l.linen_name AS master_linen_name, sz.size_name, cl.color_name, mt.material_name,
+             rr.room_name, COALESCE(rr.is_gudang_linen, 0) AS is_gudang_linen
       FROM tr_linen_transaction_detail d
+      LEFT JOIN mst_rooms_rs rr ON rr.id = d.room_id
       LEFT JOIN mst_hospital_linen hl ON hl.id = d.hospital_linen_id
       LEFT JOIN mst_linen l ON l.id = hl.linen_id
       LEFT JOIN mst_size sz ON l.size_id = sz.id
@@ -390,7 +392,7 @@ export const getLinenTransactionById = async (req, res) => {
       const [[flag]] = await safeIKMQuery(
         `SELECT unit_sign_required FROM tr_linen_transaction WHERE id = ?`, [id]);
       const [signRows] = await safeIKMQuery(
-        `SELECT rs.room_id, r.room_name,
+        `SELECT rs.room_id, r.room_name, COALESCE(r.is_gudang_linen, 0) AS is_gudang_linen,
                 rs.nurse_name_pickup, rs.signature_nurse_pickup, rs.signature_valet_pickup, rs.signed_pickup_at,
                 rs.nurse_name_delivery, rs.signature_nurse_delivery, rs.signature_valet_delivery, rs.signed_delivery_at
            FROM tr_linen_transaction_room_sign rs
