@@ -262,30 +262,41 @@ export const update = async (req, res) => {
       ]
     );
 
-    // Update room stocks
-    await safeIKMQuery(`DELETE FROM mst_hospital_linen_rooms WHERE hospital_linen_id = ?`, [id]);
-    if (Array.isArray(room_stocks) && room_stocks.length > 0) {
-      for (const r of room_stocks) {
-        if (r.room_id) {
-          await safeIKMQuery(
-            `INSERT INTO mst_hospital_linen_rooms (hospital_linen_id, room_id, stock_in_rs) VALUES (?, ?, ?)`,
-            [id, r.room_id, Number(r.stock_in_rs) || 0]
-          );
-        }
-      }
+    // Update room stocks: upsert per ruangan supaya Terpakai, DU, dan hasil SO yang dicatat perawat
+    // tidak ikut ter-reset ke 0. Hanya ruangan yang dihapus dari daftar yang dibuang.
+    const rsRooms = (Array.isArray(room_stocks) ? room_stocks : []).filter(r => r.room_id);
+    for (const r of rsRooms) {
+      await safeIKMQuery(
+        `INSERT INTO mst_hospital_linen_rooms (hospital_linen_id, room_id, stock_in_rs) VALUES (?, ?, ?)
+         ON DUPLICATE KEY UPDATE stock_in_rs = VALUES(stock_in_rs)`,
+        [id, r.room_id, Number(r.stock_in_rs) || 0]
+      );
+    }
+    if (rsRooms.length > 0) {
+      await safeIKMQuery(
+        `DELETE FROM mst_hospital_linen_rooms WHERE hospital_linen_id = ? AND room_id NOT IN (?)`,
+        [id, rsRooms.map(r => r.room_id)]
+      );
+    } else {
+      await safeIKMQuery(`DELETE FROM mst_hospital_linen_rooms WHERE hospital_linen_id = ?`, [id]);
     }
 
-    // Update IKM room stocks
-    await safeIKMQuery(`DELETE FROM mst_ikm_linen_rooms WHERE hospital_linen_id = ?`, [id]);
-    if (Array.isArray(ikm_room_stocks) && ikm_room_stocks.length > 0) {
-      for (const r of ikm_room_stocks) {
-        if (r.room_ikm_id) {
-          await safeIKMQuery(
-            `INSERT INTO mst_ikm_linen_rooms (hospital_linen_id, room_ikm_id, stock_in_ikm) VALUES (?, ?, ?)`,
-            [id, r.room_ikm_id, Number(r.stock_in_ikm) || 0]
-          );
-        }
-      }
+    // Update IKM room stocks (upsert, sama seperti ruangan RS)
+    const ikmRooms = (Array.isArray(ikm_room_stocks) ? ikm_room_stocks : []).filter(r => r.room_ikm_id);
+    for (const r of ikmRooms) {
+      await safeIKMQuery(
+        `INSERT INTO mst_ikm_linen_rooms (hospital_linen_id, room_ikm_id, stock_in_ikm) VALUES (?, ?, ?)
+         ON DUPLICATE KEY UPDATE stock_in_ikm = VALUES(stock_in_ikm)`,
+        [id, r.room_ikm_id, Number(r.stock_in_ikm) || 0]
+      );
+    }
+    if (ikmRooms.length > 0) {
+      await safeIKMQuery(
+        `DELETE FROM mst_ikm_linen_rooms WHERE hospital_linen_id = ? AND room_ikm_id NOT IN (?)`,
+        [id, ikmRooms.map(r => r.room_ikm_id)]
+      );
+    } else {
+      await safeIKMQuery(`DELETE FROM mst_ikm_linen_rooms WHERE hospital_linen_id = ?`, [id]);
     }
 
     res.json({ message: "Linen RS berhasil diperbarui" });
