@@ -1,4 +1,5 @@
 import { safeCleanoxQuery } from "../../db/pool.js";
+import { currentCutoffPeriod, cutoffRange } from "../MyWaschen/cutoffHelpers.js";
 
 // Mapping label ruko/outlet ke outlet_code standar POS
 export const OUTLET_MAPPING = {
@@ -129,9 +130,9 @@ export const toggleStaffStatus = async (req, res) => {
 
 export const getTargetConfig = async (req, res) => {
   try {
-    const now = new Date();
-    const year = Number(req.query.year || now.getFullYear());
-    const month = Number(req.query.month || now.getMonth() + 1);
+    const currentPeriod = currentCutoffPeriod(new Date());
+    const year = Number(req.query.year || currentPeriod.year);
+    const month = Number(req.query.month || currentPeriod.month);
 
     const [rows] = await safeCleanoxQuery(
       "SELECT target_per_staff FROM cfg_waschen_cross_sell_target WHERE year = ? AND month = ? LIMIT 1",
@@ -190,8 +191,9 @@ export const getRecommendations = async (req, res) => {
     const params = [];
 
     if (year && month) {
-      sql += " AND YEAR(r.chat_date) = ? AND MONTH(r.chat_date) = ?";
-      params.push(Number(year), Number(month));
+      const { dateFrom, dateTo } = cutoffRange(year, month);
+      sql += " AND r.chat_date BETWEEN ? AND ?";
+      params.push(dateFrom, dateTo);
     } else if (year) {
       sql += " AND YEAR(r.chat_date) = ?";
       params.push(Number(year));
@@ -520,8 +522,10 @@ export const exportCustomerToPos = async (req, res) => {
 export const getKpiSummary = async (req, res) => {
   try {
     const now = new Date();
-    const year = Number(req.query.year || now.getFullYear());
-    const month = Number(req.query.month || now.getMonth() + 1);
+    const currentPeriod = currentCutoffPeriod(now);
+    const year = Number(req.query.year || currentPeriod.year);
+    const month = Number(req.query.month || currentPeriod.month);
+    const { dateFrom, dateTo } = cutoffRange(year, month);
 
     // 1. Ambil target
     const [targetRows] = await safeCleanoxQuery(
@@ -542,9 +546,9 @@ export const getKpiSummary = async (req, res) => {
         COUNT(*) AS total_rekomendasi,
         SUM(CASE WHEN follow_up_status = 'closing' THEN 1 ELSE 0 END) AS total_closing
        FROM tr_waschen_cross_sell
-       WHERE YEAR(chat_date) = ? AND MONTH(chat_date) = ?
+       WHERE chat_date BETWEEN ? AND ?
        GROUP BY staff_id`,
-      [year, month]
+      [dateFrom, dateTo]
     );
 
     const staffRecMap = new Map();
@@ -593,9 +597,9 @@ export const getKpiSummary = async (req, res) => {
         COUNT(*) AS total_rekomendasi,
         SUM(CASE WHEN follow_up_status = 'closing' THEN 1 ELSE 0 END) AS total_closing
        FROM tr_waschen_cross_sell
-       WHERE YEAR(chat_date) = ? AND MONTH(chat_date) = ?
+       WHERE chat_date BETWEEN ? AND ?
        GROUP BY outlet`,
-      [year, month]
+      [dateFrom, dateTo]
     );
 
     const outletRecMap = new Map();
@@ -622,14 +626,13 @@ export const getKpiSummary = async (req, res) => {
       };
     });
 
-    // 5. Hitung sisa hari di bulan yang dipilih
+    // 5. Hitung sisa hari sampai akhir periode cut off (tanggal 25) bila periode yang dipilih sedang berjalan
     let sisaHariBulanIni = 0;
-    const currentYear = now.getFullYear();
-    const currentMonth = now.getMonth() + 1;
-    if (year === currentYear && month === currentMonth) {
-      const lastDayOfMonth = new Date(year, month, 0).getDate();
-      const currentDay = now.getDate();
-      sisaHariBulanIni = Math.max(0, lastDayOfMonth - currentDay);
+    if (year === currentPeriod.year && month === currentPeriod.month) {
+      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const [endYear, endMonth, endDay] = dateTo.split("-").map(Number);
+      const periodEnd = new Date(endYear, endMonth - 1, endDay);
+      sisaHariBulanIni = Math.max(0, Math.round((periodEnd - todayStart) / 86400000));
     }
 
     const totalStaffCount = allStaff.length;
@@ -638,6 +641,7 @@ export const getKpiSummary = async (req, res) => {
     return res.json({
       year,
       month,
+      period: { date_from: dateFrom, date_to: dateTo },
       target_per_staff: targetPerStaff,
       summary_cards: {
         staff_mencapai_target_label: `${staffMencapaiTarget}/${totalStaffCount}`,
@@ -660,9 +664,10 @@ export const getKpiSummary = async (req, res) => {
 export const getStaffMonthProgress = async (req, res) => {
   try {
     const { id } = req.params;
-    const now = new Date();
-    const year = Number(req.query.year || now.getFullYear());
-    const month = Number(req.query.month || now.getMonth() + 1);
+    const currentPeriod = currentCutoffPeriod(new Date());
+    const year = Number(req.query.year || currentPeriod.year);
+    const month = Number(req.query.month || currentPeriod.month);
+    const { dateFrom, dateTo } = cutoffRange(year, month);
 
     const [staffRows] = await safeCleanoxQuery(
       "SELECT id, name, position, outlet FROM mst_waschen_cross_sell_staff WHERE id = ? LIMIT 1",
@@ -682,8 +687,8 @@ export const getStaffMonthProgress = async (req, res) => {
     const [countRows] = await safeCleanoxQuery(
       `SELECT COUNT(*) AS total
        FROM tr_waschen_cross_sell
-       WHERE staff_id = ? AND YEAR(chat_date) = ? AND MONTH(chat_date) = ?`,
-      [id, year, month]
+       WHERE staff_id = ? AND chat_date BETWEEN ? AND ?`,
+      [id, dateFrom, dateTo]
     );
     const count = Number(countRows[0].total || 0);
     const progressPercent = Math.min(100, Math.round((count / target) * 100));
@@ -693,6 +698,7 @@ export const getStaffMonthProgress = async (req, res) => {
       staff,
       year,
       month,
+      period: { date_from: dateFrom, date_to: dateTo },
       count,
       target,
       progress_percent: progressPercent,
