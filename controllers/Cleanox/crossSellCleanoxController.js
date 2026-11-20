@@ -1,5 +1,5 @@
 import { safeCleanoxQuery } from "../../db/pool.js";
-import { currentCutoffPeriod, cutoffRange } from "../MyWaschen/cutoffHelpers.js";
+import { currentCutoffPeriod, cutoffRange } from "../MyWaschen/utils/cutoffHelpers.js";
 
 // Mapping label ruko/outlet ke outlet_code standar POS
 export const OUTLET_MAPPING = {
