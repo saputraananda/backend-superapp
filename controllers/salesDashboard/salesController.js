@@ -1,4 +1,5 @@
 import { safeSmartlinkQuery } from "../../db/pool.js";
+import { loadTargetSalesRows, targetSalesDerivedSql } from "../MyWaschen/utils/targetWaschen.js";
 
 const EXCLUDED_NOTAS = [
   'JDS250308134809893','JRC250412083723856','LKZ250422142258203','QSE250429084550314','POS250430090223407',
@@ -64,6 +65,63 @@ function computeDateRange(asOfDate) {
     return `${y}-${m}-${d}`;
   };
   return { dateStart: fmt(dateStart), dateEnd: fmt(dateEnd) };
+}
+
+/**
+ * Aktual sales per bulan tagihan (tgl 26 bln lalu s/d tgl 25) untuk SATU outlet Smartlink.
+ * Rumus & filter sama dengan getPenjualan + tampilan Sales (PenjualanSection.getAdjustedSales):
+ *   aktual = (pembayaran reguler non e-money + pembelian e-money) − 70% × omzet Cleanox
+ *            (Cleanox dihitung 30% bagian Waschen).
+ * @param {string} outletName nama outlet Smartlink (lihat SMARTLINK_OUTLET_BY_ID)
+ * @param {string} dateStart  YYYY-MM-DD (tgl 26 bulan pertama − 1)
+ * @param {string} dateEnd    YYYY-MM-DD (biasanya hari ini)
+ * @returns {Promise<Array<{ym:number, gross:number, cleanox:number, actual:number}>>}
+ */
+export async function getMonthlyAdjustedActual(outletName, dateStart, dateEnd) {
+  const EP = EXCLUDED_NOTAS.map(() => "?").join(",");
+  const periodYm = (col) =>
+    `(YEAR(DATE_ADD(DATE(${col}), INTERVAL IF(DAY(${col}) >= 26, 1, 0) MONTH)) * 100 + MONTH(DATE_ADD(DATE(${col}), INTERVAL IF(DAY(${col}) >= 26, 1, 0) MONTH)))`;
+  const sql = `
+    SELECT ym, SUM(total) AS gross, SUM(cleanox) AS cleanox FROM (
+      SELECT ${periodYm("rtrp.waktu_pembayaran")} AS ym,
+             rtrp.nominal_bayar AS total,
+             CASE WHEN nf.is_cleanox = 1 THEN rtrp.nominal_bayar ELSE 0 END AS cleanox
+      FROM rekap_transaksi_reguler_pembayaran rtrp
+      LEFT JOIN (
+        SELECT rtr.no_nota COLLATE utf8mb4_unicode_ci AS no_nota,
+               MAX(CASE WHEN LOWER(COALESCE(rtr.nama_item, '')) LIKE '%cleanox%'
+                          OR LOWER(COALESCE(rtr.nama_item, '')) LIKE '%karpet%' THEN 1 ELSE 0 END) AS is_cleanox
+        FROM rekap_transaksi_reguler rtr
+        WHERE LOWER(rtr.outlet) = LOWER(?)
+        GROUP BY 1
+      ) nf ON nf.no_nota = rtrp.no_nota COLLATE utf8mb4_unicode_ci
+      WHERE DATE(rtrp.waktu_pembayaran) BETWEEN ? AND ?
+        AND rtrp.jenis_bayar <> 'e-money'
+        AND rtrp.no_nota NOT IN (${EP})
+        AND LOWER(rtrp.outlet) = LOWER(?)
+        AND NOT EXISTS (
+              SELECT 1 FROM rekap_transaksi_reguler rtr2
+              WHERE rtr2.no_nota = rtrp.no_nota
+                AND rtr2.outlet LIKE '%legenda%'
+                AND (rtr2.nama_item LIKE '%haji%' OR rtr2.customer_nama LIKE '%haji%')
+        )
+      UNION ALL
+      SELECT ${periodYm("rpe.tanggal_beli")} AS ym, rpe.grand_total AS total, 0 AS cleanox
+      FROM rekap_pembelian_emoney rpe
+      WHERE DATE(rpe.tanggal_beli) BETWEEN ? AND ?
+        AND LOWER(rpe.outlet) = LOWER(?)
+    ) x
+    GROUP BY ym
+    ORDER BY ym`;
+  const [rows] = await safeSmartlinkQuery(sql, [
+    outletName, dateStart, dateEnd, ...EXCLUDED_NOTAS, outletName,
+    dateStart, dateEnd, outletName,
+  ]);
+  return rows.map((r) => {
+    const gross = Number(r.gross) || 0;
+    const cleanox = Number(r.cleanox) || 0;
+    return { ym: Number(r.ym), gross, cleanox, actual: Math.round(gross - 0.7 * cleanox) };
+  });
 }
 
 // Helper: build IN clause and params for multi-outlet filtering
@@ -134,6 +192,8 @@ export const getPenjualan = async (req, res) => {
     const cleanoxOutletFilter = buildOutletFilter(outlets);
     const customerOutletFilter = buildOutletFilter(outlets);
     const targetOutletFilter = buildTargetOutletFilter(outlets);
+    // Target dari myWaschen.mst_target_waschen (bukan lagi waschen_smartlink.target_sales)
+    const targetSql = targetSalesDerivedSql(await loadTargetSalesRows());
 
     // ── Main per-outlet query ────────────────────────────────────────────
     const mainSql = `
@@ -261,7 +321,7 @@ customer_segment_counts AS (
 ),
 target_period AS (
     SELECT ts.outlet, SUM(ts.nominal) AS nominal
-    FROM target_sales ts
+    FROM ${targetSql} ts
     CROSS JOIN param p
     WHERE (ts.tahun * 100 + ts.bulan) BETWEEN
           (YEAR(DATE_ADD(p.date_start, INTERVAL IF(DAY(p.date_start) >= 26, 1, 0) MONTH)) * 100

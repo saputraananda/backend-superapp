@@ -74,6 +74,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { pool } from "../../db/pool.js";
 
+import { mstOutlet } from "../../utils/outletSource.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
@@ -312,7 +313,7 @@ const resolveScopeSelection = async (companyIdsRaw, outletIdsRaw, fallbackCompan
     let outlets = [];
     if (hasWaschen && outletIds.length) {
         outlets = await safeQuery(
-            `SELECT id AS outlet_id, full_name FROM mst_outlet
+            `SELECT id AS outlet_id, full_name FROM ${mstOutlet()}
              WHERE id IN (${outletIds.map(() => "?").join(",")}) ORDER BY full_name`,
             outletIds
         );
@@ -355,7 +356,7 @@ const getScopesOfPr = async (prId) => {
         `SELECT prs.company_id, c.company_name, prs.outlet_id, o.full_name AS outlet_name
          FROM tr_purchase_request_scope prs
          LEFT JOIN mst_company c ON c.company_id = prs.company_id
-         LEFT JOIN mst_outlet  o ON o.id         = prs.outlet_id
+         LEFT JOIN ${mstOutlet()}  o ON o.id         = prs.outlet_id
          WHERE prs.pr_id = ?
          ORDER BY c.company_name, o.full_name`,
         [prId]
@@ -381,7 +382,7 @@ const SCOPE_COMPANY_SELECT = `COALESCE((SELECT GROUP_CONCAT(DISTINCT mc.company_
                       WHERE prs.pr_id = pr.pr_id), c.company_name) AS company_name`;
 const SCOPE_OUTLET_SELECT = `COALESCE((SELECT GROUP_CONCAT(DISTINCT mo.full_name ORDER BY mo.full_name SEPARATOR ', ')
                       FROM tr_purchase_request_scope prs
-                      JOIN mst_outlet mo ON mo.id = prs.outlet_id
+                      JOIN ${mstOutlet()} mo ON mo.id = prs.outlet_id
                       WHERE prs.pr_id = pr.pr_id), o.full_name) AS outlet_name`;
 
 // Filter kategori: cocokkan kolom lama pr.company_id ATAU baris di scope (multi-kategori)
@@ -508,34 +509,141 @@ const splitsFromAllocations = (classIds, rows) => {
     return out;
 };
 
+const isMissingColumn = (err) => err?.code === "ER_BAD_FIELD_ERROR" || err?.errno === 1054;
+
+// Kolom qty (tr_purchase_request_allocation.qty) ditambahkan manual lewat
+// sql/2026-11-18_add_qty_to_pr_allocation.sql. Selama belum ada, qty tidak disimpan
+// tetapi pembayaran tetap berjalan.
 const syncAllocations = async (prId, rows) => {
     await safeQuery(`DELETE FROM tr_purchase_request_allocation WHERE pr_id = ?`, [prId]);
     if (!rows.length) return;
-    await safeQuery(
-        `INSERT INTO tr_purchase_request_allocation
-            (pr_id, classification_id, company_id, outlet_id, nominal)
-         VALUES ${rows.map(() => "(?, ?, ?, ?, ?)").join(", ")}`,
-        rows.flatMap(r => [prId, r.classification_id, r.company_id, r.outlet_id, r.nominal])
-    );
+    try {
+        await safeQuery(
+            `INSERT INTO tr_purchase_request_allocation
+                (pr_id, classification_id, company_id, outlet_id, nominal, qty)
+             VALUES ${rows.map(() => "(?, ?, ?, ?, ?, ?)").join(", ")}`,
+            rows.flatMap(r => [prId, r.classification_id, r.company_id, r.outlet_id, r.nominal, r.qty ?? null])
+        );
+    } catch (err) {
+        if (!isMissingColumn(err)) throw err;
+        await safeQuery(
+            `INSERT INTO tr_purchase_request_allocation
+                (pr_id, classification_id, company_id, outlet_id, nominal)
+             VALUES ${rows.map(() => "(?, ?, ?, ?, ?)").join(", ")}`,
+            rows.flatMap(r => [prId, r.classification_id, r.company_id, r.outlet_id, r.nominal])
+        );
+    }
 };
 
 const getAllocationsOfPr = async (prId) => {
-    try {
-        return await safeQuery(
-            `SELECT a.classification_id, c.classification_name, a.company_id, mc.company_name,
-                    a.outlet_id, o.full_name AS outlet_name, a.nominal
+    const build = (qtySelect) => `SELECT a.classification_id, c.classification_name, a.company_id, mc.company_name,
+                    a.outlet_id, o.full_name AS outlet_name, a.nominal${qtySelect}
              FROM tr_purchase_request_allocation a
              JOIN mst_purchase_classification c ON c.id = a.classification_id
              LEFT JOIN mst_company mc ON mc.company_id = a.company_id
-             LEFT JOIN mst_outlet o ON o.id = a.outlet_id
+             LEFT JOIN ${mstOutlet()} o ON o.id = a.outlet_id
              WHERE a.pr_id = ?
-             ORDER BY c.classification_name, mc.company_name, o.full_name`,
-            [prId]
-        );
+             ORDER BY c.classification_name, mc.company_name, o.full_name`;
+    try {
+        return await safeQuery(build(", a.qty"), [prId]);
     } catch (err) {
         if (err.code === "ER_NO_SUCH_TABLE" || err.errno === 1146) return [];
+        if (isMissingColumn(err)) return await safeQuery(build(", NULL AS qty"), [prId]);
         throw err;
     }
+};
+
+// Qty per outlet untuk banyak PR sekaligus (export Excel).
+// Hasil: Map<pr_id, [{ outlet_name, qty }]> — hanya PR dengan >1 outlet yang punya qty.
+const getOutletQtyMap = async (prIds) => {
+    const map = new Map();
+    const ids = [...new Set((prIds || []).map(Number).filter(Boolean))];
+    if (!ids.length) return map;
+    const build = (qtyExpr) => `SELECT a.pr_id, COALESCE(o.full_name, mc.company_name) AS outlet_name, mc.company_name AS company_name,
+                    ${qtyExpr} AS qty, SUM(a.nominal) AS nominal
+             FROM tr_purchase_request_allocation a
+             LEFT JOIN mst_company mc ON mc.company_id = a.company_id
+             LEFT JOIN ${mstOutlet()} o ON o.id = a.outlet_id
+             WHERE a.pr_id IN (?)
+             GROUP BY a.pr_id, a.company_id, a.outlet_id, outlet_name
+             ORDER BY a.pr_id, outlet_name`;
+    let rows;
+    try {
+        try {
+            rows = await safeQuery(build("SUM(a.qty)"), [ids]);
+        } catch (err) {
+            if (!isMissingColumn(err)) throw err;
+            rows = await safeQuery(build("NULL"), [ids]); // kolom qty belum ada → nominal tetap tampil
+        }
+    } catch (err) {
+        if (err.code === "ER_NO_SUCH_TABLE" || err.errno === 1146) return map;
+        throw err;
+    }
+    for (const r of rows) {
+        if (!map.has(r.pr_id)) map.set(r.pr_id, []);
+        map.get(r.pr_id).push({
+            outlet_name: r.outlet_name,
+            company_name: r.company_name,
+            qty: r.qty == null ? null : Number(r.qty),
+            nominal: Number(r.nominal) || 0,
+        });
+    }
+    return map;
+};
+
+const attachOutletQty = async (rows) => {
+    const map = await getOutletQtyMap(rows.map(r => r.pr_id));
+    for (const r of rows) r.outlet_qty = map.get(r.pr_id) || [];
+    return rows;
+};
+
+// GET /pengajuan/outlet-qty?ids=1,2,3  → { data: { [pr_id]: [{ outlet_name, qty }] } }
+export const getOutletQty = async (req, res) => {
+    try {
+        const ids = String(req.query.ids || "").split(",").map(Number).filter(Boolean).slice(0, 2000);
+        const map = await getOutletQtyMap(ids);
+        res.json({ data: Object.fromEntries(map) });
+    } catch (err) {
+        console.error("[getOutletQty]", err);
+        res.status(500).json({ message: "Gagal memuat qty outlet" });
+    }
+};
+
+// Qty per outlet harus dijumlahkan = qty pengajuan (ga_qty jika ada, kalau tidak qty awal).
+// Hanya berlaku bila >1 outlet dan qty pengajuan > 1. Qty disimpan di baris klasifikasi
+// pertama tiap outlet agar tidak terhitung dobel.
+const applyOutletQty = async (prId, targets, rows, rawQty) => {
+    if (targets.length <= 1 || !rows.length) return { rows, error: null };
+    const [pr] = await safeQuery(`SELECT qty, ga_qty FROM tr_purchase_request WHERE pr_id = ?`, [prId]);
+    const prQty = Number(pr?.ga_qty) || Number(pr?.qty) || 0;
+    if (!(prQty > 1)) return { rows, error: null };
+
+    let list = rawQty;
+    if (typeof rawQty === "string" && rawQty.trim()) {
+        try { list = JSON.parse(rawQty); } catch { list = null; }
+    }
+    if (!Array.isArray(list)) list = [];
+
+    const r2 = (n) => Math.round(n * 100) / 100;
+    const qtyOf = (t) => {
+        const hit = list.find(x => Number(x.company_id) === Number(t.company_id)
+            && Number(x.outlet_id || 0) === Number(t.outlet_id || 0));
+        const n = Number(hit?.qty);
+        return Number.isFinite(n) && n > 0 ? r2(n) : 0;
+    };
+    const total = r2(targets.reduce((s, t) => s + qtyOf(t), 0));
+    if (total !== r2(prQty)) {
+        return { rows: [], error: `Total qty outlet harus sama dengan jumlah pengajuan (${prQty})` };
+    }
+
+    const seen = new Set();
+    const out = rows.map(r => {
+        const key = `${r.company_id}:${r.outlet_id || 0}`;
+        if (seen.has(key)) return { ...r, qty: null };
+        seen.add(key);
+        return { ...r, qty: qtyOf(r) };
+    });
+    return { rows: out, error: null };
 };
 
 const resolvePaymentAllocations = async (prId, classIds, classRows, nominalBayar, body) => {
@@ -545,6 +653,9 @@ const resolvePaymentAllocations = async (prId, classIds, classRows, nominalBayar
         body.allocations, classIds, targets, nominalBayar, body.classification_splits
     );
     if (parsed.error) return parsed;
+    const withQty = await applyOutletQty(prId, targets, parsed.rows, body.allocation_qty);
+    if (withQty.error) return withQty;
+    parsed.rows = withQty.rows;
     const classificationSplits = parsed.rows.length
         ? splitsFromAllocations(classIds, parsed.rows)
         : parseClassificationSplits(body.classification_splits, classIds, nominalBayar);
@@ -599,7 +710,7 @@ export const getCompanies = async (_req, res) => {
 export const getOutlets = async (_req, res) => {
     try {
         const data = await safeQuery(
-            `SELECT id AS outlet_id, name, full_name FROM mst_outlet ORDER BY name`
+            `SELECT id AS outlet_id, name, full_name FROM ${mstOutlet()} ORDER BY name`
         );
         res.json({ data });
     } catch (err) {
@@ -1185,7 +1296,7 @@ export const getClassificationItems = async (req, res) => {
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
              LEFT JOIN mst_satuan     s ON s.satuan_id     = pr.satuan_id
              LEFT JOIN mst_company    c ON c.company_id    = pr.company_id
-             LEFT JOIN mst_outlet     o ON o.id            = pr.outlet_id
+             LEFT JOIN ${mstOutlet()}     o ON o.id            = pr.outlet_id
              WHERE a.gkey = ?
              ORDER BY a.amt ${order}, pr.pr_id DESC
              LIMIT ? OFFSET ?`,
@@ -1241,12 +1352,14 @@ export const exportByClassification = async (req, res) => {
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
              LEFT JOIN mst_satuan     s ON s.satuan_id     = pr.satuan_id
              LEFT JOIN mst_company    c ON c.company_id    = pr.company_id
-             LEFT JOIN mst_outlet     o ON o.id            = pr.outlet_id
+             LEFT JOIN ${mstOutlet()}     o ON o.id            = pr.outlet_id
              WHERE ${where}
              ORDER BY pr.created_at DESC
              LIMIT ?`,
             [...params, EXPORT_MAX_ROWS]
         );
+
+        await attachOutletQty(data);
 
         res.json({ data, truncated: data.length >= EXPORT_MAX_ROWS });
     } catch (err) {
@@ -1306,7 +1419,7 @@ export const listMy = async (req, res) => {
              FROM tr_purchase_request pr
              LEFT JOIN mst_satuan  s ON s.satuan_id  = pr.satuan_id
              LEFT JOIN mst_company c ON c.company_id = pr.company_id
-             LEFT JOIN mst_outlet  o ON o.id         = pr.outlet_id
+             LEFT JOIN ${mstOutlet()}  o ON o.id         = pr.outlet_id
              ${where}
              ORDER BY pr.created_at DESC LIMIT ? OFFSET ?`,
             [...params, limit, offset]
@@ -1422,7 +1535,7 @@ export const listDepartment = async (req, res) => {
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
              LEFT JOIN mst_satuan     s ON s.satuan_id     = pr.satuan_id
              LEFT JOIN mst_company    c ON c.company_id    = pr.company_id
-             LEFT JOIN mst_outlet     o ON o.id            = pr.outlet_id
+             LEFT JOIN ${mstOutlet()}     o ON o.id            = pr.outlet_id
              ${where}
              ORDER BY pr.created_at DESC
              LIMIT ? OFFSET ?`,
@@ -1492,7 +1605,7 @@ export const listApproval = async (req, res) => {
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
              LEFT JOIN mst_satuan     s ON s.satuan_id     = pr.satuan_id
              LEFT JOIN mst_company    c ON c.company_id    = pr.company_id
-             LEFT JOIN mst_outlet     o ON o.id            = pr.outlet_id
+             LEFT JOIN ${mstOutlet()}     o ON o.id            = pr.outlet_id
              ${where}
              ORDER BY pr.created_at ASC`,
             params
@@ -1523,7 +1636,7 @@ export const getDetail = async (req, res) => {
              LEFT JOIN mst_department d   ON d.department_id = pr.department_id
              LEFT JOIN mst_satuan     s   ON s.satuan_id     = pr.satuan_id
              LEFT JOIN mst_company    c   ON c.company_id    = pr.company_id
-             LEFT JOIN mst_outlet     o   ON o.id            = pr.outlet_id
+             LEFT JOIN ${mstOutlet()}     o   ON o.id            = pr.outlet_id
              LEFT JOIN mst_bank       bnk ON bnk.bank_id     = pr.bank_id
              LEFT JOIN mst_purchase_classification pc ON pc.id = pr.classification_id
              WHERE pr.pr_id = ? AND pr.is_deleted = 0`,
@@ -2229,7 +2342,7 @@ export const updateHeaderInfo = async (req, res) => {
              LEFT JOIN mst_employee   e ON e.employee_id   = pr.employee_id
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
              LEFT JOIN mst_company    c ON c.company_id    = pr.company_id
-             LEFT JOIN mst_outlet     o ON o.id            = pr.outlet_id
+             LEFT JOIN ${mstOutlet()}     o ON o.id            = pr.outlet_id
              WHERE pr.pr_id = ? AND pr.is_deleted = 0`,
             [id]
         );
@@ -2613,7 +2726,7 @@ export const listAll = async (req, res) => {
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
              LEFT JOIN mst_satuan     s ON s.satuan_id     = pr.satuan_id
              LEFT JOIN mst_company    c ON c.company_id    = pr.company_id
-             LEFT JOIN mst_outlet     o ON o.id            = pr.outlet_id
+             LEFT JOIN ${mstOutlet()}     o ON o.id            = pr.outlet_id
              ${where}
              ORDER BY pr.created_at DESC
              LIMIT ? OFFSET ?`,
@@ -2676,7 +2789,7 @@ export const listGaReview = async (req, res) => {
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
              LEFT JOIN mst_satuan     s ON s.satuan_id     = pr.satuan_id
              LEFT JOIN mst_company    c ON c.company_id    = pr.company_id
-             LEFT JOIN mst_outlet     o ON o.id            = pr.outlet_id
+             LEFT JOIN ${mstOutlet()}     o ON o.id            = pr.outlet_id
              ${where}
              ORDER BY pr.created_at ASC`,
             params
@@ -2883,7 +2996,7 @@ export const getPOData = async (req, res) => {
              LEFT JOIN mst_department d       ON d.department_id   = pr.department_id
              LEFT JOIN mst_satuan     s       ON s.satuan_id       = pr.satuan_id
              LEFT JOIN mst_company    c       ON c.company_id      = pr.company_id
-             LEFT JOIN mst_outlet     o       ON o.id              = pr.outlet_id
+             LEFT JOIN ${mstOutlet()}     o       ON o.id              = pr.outlet_id
              LEFT JOIN mst_bank       bnk     ON bnk.bank_id       = pr.bank_id
              LEFT JOIN mst_employee   spv_e   ON spv_e.employee_id = pr.approved_spv_by
              LEFT JOIN mst_employee   bod_e   ON bod_e.employee_id = pr.approved_bod_by
@@ -2961,7 +3074,7 @@ export const listFinanceReview = async (req, res) => {
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
              LEFT JOIN mst_satuan     s ON s.satuan_id     = pr.satuan_id
              LEFT JOIN mst_company    c ON c.company_id    = pr.company_id
-             LEFT JOIN mst_outlet     o ON o.id            = pr.outlet_id
+             LEFT JOIN ${mstOutlet()}     o ON o.id            = pr.outlet_id
              ${where}
              ORDER BY pr.created_at ASC`,
             params
@@ -3147,7 +3260,7 @@ export const listPaymentPending = async (req, res) => {
              LEFT JOIN mst_department d   ON d.department_id = pr.department_id
              LEFT JOIN mst_satuan     s   ON s.satuan_id     = pr.satuan_id
              LEFT JOIN mst_company    c   ON c.company_id    = pr.company_id
-             LEFT JOIN mst_outlet     o   ON o.id            = pr.outlet_id
+             LEFT JOIN ${mstOutlet()}     o   ON o.id            = pr.outlet_id
              LEFT JOIN mst_bank       bnk ON bnk.bank_id     = pr.bank_id
              ${where}
              ORDER BY pr.created_at ASC`,
@@ -3674,7 +3787,7 @@ export const listCredit = async (req, res) => {
              LEFT JOIN mst_department d ON d.department_id = pr.department_id
              LEFT JOIN mst_satuan     s ON s.satuan_id     = pr.satuan_id
              LEFT JOIN mst_company    c ON c.company_id    = pr.company_id
-             LEFT JOIN mst_outlet     o ON o.id            = pr.outlet_id
+             LEFT JOIN ${mstOutlet()}     o ON o.id            = pr.outlet_id
              ${where}
              ORDER BY pr.created_at DESC`,
             params

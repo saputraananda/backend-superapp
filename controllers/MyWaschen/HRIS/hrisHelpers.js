@@ -124,6 +124,6 @@ export async function resolveEmployeeOutletId(employeeId, preferredOutletId) {
 
 export async function validateOutletId(outletId) {
   if (!outletId) return false;
-  const [rows] = await safeQuery(`SELECT id FROM mst_outlet WHERE id = ? LIMIT 1`, [outletId]);
+  const [rows] = await safeMyWaschenQuery(`SELECT id FROM mst_outlet WHERE id = ? LIMIT 1`, [outletId]);
   return rows.length > 0;
 }

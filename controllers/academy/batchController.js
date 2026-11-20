@@ -4,6 +4,7 @@ import { toMysqlDatetime, validateBatchPayload } from "./utils/academyBatch.js";
 import { matchKeywords } from "./utils/academyEssay.js";
 import { computeParticipantScores, questionMaxPoints, testScoreFromAnswers } from "./utils/academyScoring.js";
 
+import { mstOutlet } from "../../utils/outletSource.js";
 // Peserta Academy hanya karyawan Waschen (sama dengan WASCHEN_COMPANY_ID di waschen-mobile).
 const WASCHEN_COMPANY_ID = 5;
 
@@ -44,7 +45,7 @@ export async function getWaschenEmployees(employeeIds = null) {
 }
 
 async function getOutletNames() {
-  const [outlets] = await safeQuery(`SELECT id, name FROM mst_outlet ORDER BY name`);
+  const [outlets] = await safeQuery(`SELECT id, name FROM ${mstOutlet()} ORDER BY name`);
   return outlets;
 }
 

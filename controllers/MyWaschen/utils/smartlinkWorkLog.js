@@ -2,7 +2,7 @@
  * Riwayat pengerjaan nota Smartlink (tr_smartlink_work_log, data lama — hanya dibaca).
  * Diubah ke bentuk yang sama dengan tr_item_progress supaya bisa tampil di "Alur Pengerjaan".
  *
- * File ini identik di AloraSuperApp/backend/utils, my-waschen-new/api/utils
+ * File ini identik di AloraSuperApp/backend/controllers/MyWaschen/utils, my-waschen-new/api/utils
  * dan waschen-mobile/api/utils — ubah ketiganya bersamaan.
  */
 

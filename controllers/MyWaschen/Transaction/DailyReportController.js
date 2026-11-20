@@ -1,5 +1,5 @@
 import { safeMyWaschenQuery, safeQuery } from "../../../db/pool.js";
-import { posFileUrl } from "../../../utils/waschenPosUpload.js";
+import { posFileUrl } from "../utils/waschenPosUpload.js";
 
 /** Batas upload bukti setoran tunai: H+1 dari tanggal closing (sama dengan POS). */
 const DEPOSIT_DUE_DAYS = 1;

@@ -1,4 +1,4 @@
-import { safeMyWaschenQuery } from "../../db/pool.js";
+import { safeMyWaschenQuery } from "../../../db/pool.js";
 import { currentCutoffPeriod } from "./cutoffHelpers.js";
 
 /**

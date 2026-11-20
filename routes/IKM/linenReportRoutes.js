@@ -7,12 +7,14 @@ import {
   updateLinenReport,
   deleteLinenReport,
   updateLinenReportStatus,
+  getLinenReportDashboard,
 } from "../../controllers/IKM/linenReportController.js";
 import { uploadIKMLinen } from "../../middleware/upload.js";
 
 const router = express.Router();
 
 router.get("/meta",  requireAuth, getLinenReportMeta);
+router.get("/dashboard", requireAuth, getLinenReportDashboard);
 router.get("/",      requireAuth, getLinenReports);
 router.post("/",     requireAuth, uploadIKMLinen.single("attachment"), createLinenReport);
 router.put("/:id",   requireAuth, uploadIKMLinen.single("attachment"), updateLinenReport);

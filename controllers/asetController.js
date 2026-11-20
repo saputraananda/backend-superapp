@@ -3,6 +3,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
+import { mstOutlet } from "../utils/outletSource.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -81,7 +82,7 @@ export const getMasterData = async (_req, res) => {
        WHERE e.is_deleted = 0 AND e.exit_date IS NULL ORDER BY e.full_name`
     );
     const [outlets] = await safeQuery(
-      "SELECT id, name, full_name FROM mst_outlet ORDER BY name"
+      `SELECT id, name, full_name FROM ${mstOutlet()} ORDER BY name`
     );
     res.json({ companies, employees, outlets });
   } catch (err) {
@@ -187,7 +188,7 @@ export const getAsets = async (req, res) => {
        LEFT JOIN mst_company c ON a.company_id = c.company_id
        LEFT JOIN mst_employee e ON a.pic_employee_id = e.employee_id
        LEFT JOIN mst_employee sub ON a.submitted_by = sub.employee_id
-       LEFT JOIN mst_outlet o ON a.outlet_id = o.id
+       LEFT JOIN ${mstOutlet()} o ON a.outlet_id = o.id
        WHERE ${where}
        ORDER BY a.created_at DESC
        LIMIT ? OFFSET ?`,
@@ -233,7 +234,7 @@ export const getAsetById = async (req, res) => {
        LEFT JOIN mst_company c ON a.company_id = c.company_id
        LEFT JOIN mst_employee e ON a.pic_employee_id = e.employee_id
        LEFT JOIN mst_employee sub ON a.submitted_by = sub.employee_id
-       LEFT JOIN mst_outlet o ON a.outlet_id = o.id
+       LEFT JOIN ${mstOutlet()} o ON a.outlet_id = o.id
        WHERE a.id = ? AND a.is_deleted = 0`,
       [req.params.id]
     );
@@ -269,7 +270,7 @@ export const getAsetByKode = async (req, res) => {
        LEFT JOIN mst_company c ON a.company_id = c.company_id
        LEFT JOIN mst_employee e ON a.pic_employee_id = e.employee_id
        LEFT JOIN mst_employee sub ON a.submitted_by = sub.employee_id
-       LEFT JOIN mst_outlet o ON a.outlet_id = o.id
+       LEFT JOIN ${mstOutlet()} o ON a.outlet_id = o.id
        WHERE a.kode_aset = ? AND a.is_deleted = 0`,
       [req.params.kode]
     );

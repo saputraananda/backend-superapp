@@ -1,6 +1,7 @@
 import { safeAcademyQuery, safeQuery } from "../../db/pool.js";
 import { indicatorAverages, summarizeTraining } from "./utils/academyDashboard.js";
 
+import { mstOutlet } from "../../utils/outletSource.js";
 const MONTH = /^\d{4}-\d{2}$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const round1 = (value) => Math.round((value + Number.EPSILON) * 10) / 10;
@@ -109,7 +110,7 @@ export const getSkillDashboard = async (req, res) => {
       params
     );
     const [positions] = await safeAcademyQuery(`SELECT id, name FROM mst_sm_position WHERE is_active = 1 ORDER BY sort_order, name`);
-    const [outlets] = await safeQuery(`SELECT id, name FROM mst_outlet ORDER BY name`);
+    const [outlets] = await safeQuery(`SELECT id, name FROM ${mstOutlet()} ORDER BY name`);
     const names = await getNames([...new Set(assessments.map((a) => a.employee_id))]);
 
     const byPosition = new Map();

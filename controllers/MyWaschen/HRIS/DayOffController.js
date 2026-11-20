@@ -1,5 +1,5 @@
 import { safeMyWaschenQuery, safeQuery } from "../../../db/pool.js";
-import { defaultCutoffDateRange } from "../cutoffHelpers.js";
+import { defaultCutoffDateRange } from "../utils/cutoffHelpers.js";
 import { getActor, getEmployeeNameMap, toISODate, resolveMstRoleEmployeeIds, appendEmployeeIdInClause } from "./hrisHelpers.js";
 
 async function resolveBackupId(raw, employeeId, offDate) {
@@ -98,7 +98,7 @@ export const getDayOffList = async (req, res) => {
       const outletIds = [...new Set(roles.map((r) => Number(r.outlet_id)).filter(Boolean))];
       const outletName = new Map();
       if (outletIds.length) {
-        const [outlets] = await safeQuery(
+        const [outlets] = await safeMyWaschenQuery(
           `SELECT id, name, full_name FROM mst_outlet WHERE id IN (${outletIds.map(() => "?").join(",")})`,
           outletIds,
         );

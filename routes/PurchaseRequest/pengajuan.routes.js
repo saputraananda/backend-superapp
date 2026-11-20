@@ -13,7 +13,7 @@ import {
     approveGA, rejectGA, getPOData,
     approveFinance, rejectFinance,
     processPayment, rejectPayment, completePR,
-    updatePaymentInfo,
+    updatePaymentInfo, getOutletQty,
 } from "../../controllers/PurchaseRequest/pengajuan.controller.js";
 
 const router = Router();
@@ -34,6 +34,7 @@ router.get("/dashboard",            requireAuth, getDashboard);
 router.get("/by-classification",       requireAuth, getByClassification);
 router.get("/by-classification/items", requireAuth, getClassificationItems);
 router.get("/by-classification/export", requireAuth, exportByClassification);
+router.get("/outlet-qty",           requireAuth, getOutletQty);
 router.get("/me",                   requireAuth, listMy);
 router.get("/department",           requireAuth, listDepartment);
 router.get("/approval",             requireAuth, listApproval);

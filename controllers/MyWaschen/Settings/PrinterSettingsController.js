@@ -148,9 +148,23 @@ export const savePrinterSettings = async (req, res) => {
     await upsertNotaSetting(outletId, "customer", customer);
     await upsertNotaSetting(outletId, "internal", internal);
 
+    // Simpan Default Global = berlaku untuk SEMUA outlet: hapus pengaturan khusus outlet
+    // supaya seluruh outlet otomatis mengikuti Global (fallback outlet_id 0 di getPrinterSettings).
+    let resetOutlets = 0;
+    if (outletId === 0) {
+      const [del] = await safeMyWaschenQuery(
+        "DELETE FROM mst_thermal_nota_setting WHERE outlet_id <> 0",
+        []
+      );
+      resetOutlets = del?.affectedRows || 0;
+    }
+
     res.json({
       success: true,
-      message: "Pengaturan nota berhasil disimpan",
+      message: outletId === 0
+        ? "Pengaturan Global disimpan dan diterapkan ke semua outlet"
+        : "Pengaturan nota outlet berhasil disimpan",
+      resetOutletRows: resetOutlets,
       data: { outletId, customer, internal, fieldLabels: FIELD_LABELS },
     });
   } catch (err) {

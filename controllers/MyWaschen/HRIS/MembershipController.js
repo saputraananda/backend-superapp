@@ -1,5 +1,5 @@
 import { safeMyWaschenQuery } from "../../../db/pool.js";
-import { posFileUrl } from "../../../utils/waschenPosUpload.js";
+import { posFileUrl } from "../utils/waschenPosUpload.js";
 
 /** Membership terbaru (non-Cancelled) per customer — definisi "member" sama dengan Data Customer. */
 const LATEST_MEMBERSHIP = `

@@ -4,7 +4,7 @@ import {
   uploadWaschenPayslipFile,
   deleteWaschenPayslipFile,
   fetchWaschenPayslipFile,
-} from "../../../utils/waschenMobileUpload.js";
+} from "../utils/waschenMobileUpload.js";
 
 const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 

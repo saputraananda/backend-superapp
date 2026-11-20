@@ -1,5 +1,5 @@
 import { safeMyWaschenQuery, safeQuery } from "../../../db/pool.js";
-import { posFileUrl } from "../../../utils/waschenPosUpload.js";
+import { posFileUrl } from "../utils/waschenPosUpload.js";
 
 const SORT_COLUMNS = [
   "id", "customer_code", "name", "phone", "email", "city",
