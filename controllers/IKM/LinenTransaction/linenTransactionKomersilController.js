@@ -1,6 +1,12 @@
 import fs from "fs";
 import path from "path";
 import { safeIKMQuery, safeQuery } from "../../../db/pool.js";
+import { pushKomersilBersihToParent, komersilMeasure } from "./komersilSync.js";
+
+const PARENT_SIG_FIELDS = [
+  "signature_valet_pickup", "signature_hospital_pickup", "signature_assistant_pickup",
+  "signature_valet_delivery", "signature_hospital_delivery", "signature_assistant_delivery"
+];
 
 function toISODateString(v) {
   return /^\d{4}-\d{2}-\d{2}$/.test(v || "") ? v : null;
@@ -96,6 +102,8 @@ export const getLinenTransactions = async (req, res) => {
 
     const fetchSql = `
       SELECT tr.id, tr.form_number, tr.hospital_id, tr.user_pickup, tr.user_delivery, tr.pickup_date, tr.delivery_date, tr.status, tr.notes_pickup, tr.notes_delivery,
+             tr.parent_transaction_id, tr.is_express,
+             (SELECT p.form_number FROM tr_linen_transaction p WHERE p.id = tr.parent_transaction_id) AS parent_form_number,
              h.hospital_name,
              COALESCE(SUM(d.qty_kotor), 0) AS total_kotor,
              COALESCE(SUM(d.qty_bersih), 0) AS total_bersih,
@@ -104,7 +112,7 @@ export const getLinenTransactions = async (req, res) => {
       LEFT JOIN mst_hospital h ON h.id = tr.hospital_id
       LEFT JOIN tr_komersil_linen_transaction_detail d ON d.transaction_id = tr.id
       ${whereSql}
-      GROUP BY tr.id
+      GROUP BY tr.id, tr.parent_transaction_id, tr.is_express
       ${kurang_kirim_only === 'true' || kurang_kirim_only === true ? 'HAVING total_kotor != total_bersih' : ''}
       ORDER BY tr.pickup_date DESC, tr.id DESC
       LIMIT ? OFFSET ?
@@ -161,6 +169,7 @@ export const getLinenTransactionById = async (req, res) => {
               tr.signature_valet_pickup, tr.signature_hospital_pickup, tr.signature_assistant_pickup,
               tr.signature_valet_delivery, tr.signature_hospital_delivery, tr.signature_assistant_delivery,
               tr.pickup_date, tr.delivery_date, tr.status, tr.notes_pickup, tr.notes_delivery,
+              tr.parent_transaction_id, tr.is_express,
               h.hospital_name
        FROM tr_komersil_linen_transaction tr
        LEFT JOIN mst_hospital h ON h.id = tr.hospital_id
@@ -173,6 +182,15 @@ export const getLinenTransactionById = async (req, res) => {
     }
 
     const header = headers[0];
+    // Formulir berinduk: TTD & status mengikuti formulir serah terima induk
+    if (header.parent_transaction_id) {
+      const [[parent]] = await safeIKMQuery("SELECT * FROM tr_linen_transaction WHERE id = ?", [header.parent_transaction_id]);
+      if (parent) {
+        for (const f of PARENT_SIG_FIELDS) header[f] = parent[f];
+        header.status = parent.status;
+        header.parent_form_number = parent.form_number;
+      }
+    }
     const employeeIds = [header.user_pickup, header.user_delivery].filter(Boolean);
     if (employeeIds.length) {
       const ph = employeeIds.map(() => "?").join(",");
@@ -190,10 +208,11 @@ export const getLinenTransactionById = async (req, res) => {
 
     // Fetch Details
     let detailSql = `
-      SELECT d.id, d.transaction_id, d.hospital_linen_id, d.item_name, d.category, d.qty_kotor, d.qty_bersih, d.length_cm, d.width_cm, d.area_m2, d.accessory_qty, d.notes,
-             hl.hospital_linen_name, hl.ownership_type,
-             l.linen_name AS master_linen_name, sz.size_name, cl.color_name, mt.material_name
+      SELECT d.id, d.transaction_id, d.hospital_linen_id, d.room_id, d.item_name, d.category, d.qty_kotor, d.qty_bersih, d.length_cm, d.width_cm, d.area_m2, d.accessory_qty, d.notes,
+             hl.hospital_linen_name, hl.ownership_type, hl.grammage, COALESCE(hl.washing_price_type, 'PCS') AS washing_price_type,
+             l.linen_name AS master_linen_name, sz.size_name, cl.color_name, mt.material_name, r.room_name
       FROM tr_komersil_linen_transaction_detail d
+      LEFT JOIN mst_rooms_rs r ON r.id = d.room_id
       LEFT JOIN mst_hospital_linen hl ON hl.id = d.hospital_linen_id
       LEFT JOIN mst_linen l ON l.id = hl.linen_id
       LEFT JOIN mst_size sz ON l.size_id = sz.id
@@ -202,7 +221,8 @@ export const getLinenTransactionById = async (req, res) => {
       WHERE d.transaction_id = ?
     `;
 
-    const [details] = await safeIKMQuery(detailSql, [id]);
+    const [details] = await safeIKMQuery(`${detailSql} ORDER BY r.room_name, d.hospital_linen_id, d.id`, [id]);
+    details.forEach(d => { const m = komersilMeasure(d); d.measure_value = m.value; d.measure_unit = m.unit; });
 
     // Fetch Audit Logs
     const [auditLogs] = await safeIKMQuery(
@@ -480,110 +500,18 @@ export const getHospitalKomersilLinens = async (req, res) => {
 };
 
 export const createLinenTransaction = async (req, res) => {
-  try {
-    const {
-      hospital_id,
-      user_pickup,
-      user_delivery,
-      pickup_date,
-      delivery_date,
-      notes_pickup,
-      notes_delivery,
-      status,
-      details
-    } = req.body;
-
-    if (!hospital_id || !user_pickup || !pickup_date) {
-      return res.status(400).json({ success: false, message: "Parameter wajib tidak lengkap" });
-    }
-
-    // Generate form number: {hospitalCode}-CUST-{yyyymmdd}-{seq}
-    const d = new Date(pickup_date);
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
-    const yyyymmdd = `${yyyy}${mm}${dd}`;
-
-    const [countResult] = await safeIKMQuery(
-      `SELECT COUNT(*) as cnt FROM tr_komersil_linen_transaction
-       WHERE hospital_id = ? AND DATE(pickup_date) = DATE(?)`,
-      [Number(hospital_id), pickup_date]
-    );
-    const nextSeq = (countResult?.[0]?.cnt || 0) + 1;
-
-    // Get the hospital_id code from mst_hospital
-    const [hospitalRows] = await safeIKMQuery(
-      `SELECT hospital_id FROM mst_hospital WHERE id = ?`,
-      [Number(hospital_id)]
-    );
-    const hospitalCode = hospitalRows?.[0]?.hospital_id || hospital_id;
-    const form_number = `${hospitalCode}-CUST-${yyyymmdd}-${String(nextSeq).padStart(3, '0')}`;
-
-    // Insert Header
-    const [result] = await safeIKMQuery(
-      `INSERT INTO tr_komersil_linen_transaction 
-       (form_number, hospital_id, user_pickup, user_delivery, pickup_date, delivery_date, status, notes_pickup, notes_delivery) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        form_number,
-        Number(hospital_id),
-        Number(user_pickup),
-        user_delivery ? Number(user_delivery) : null,
-        pickup_date,
-        delivery_date || null,
-        status || "PROSES",
-        notes_pickup || null,
-        notes_delivery || null
-      ]
-    );
-
-    const transactionId = result.insertId;
-
-    // Insert Details
-    if (details && Array.isArray(details) && details.length > 0) {
-      const detailValues = [];
-      const queryParams = [];
-      details.forEach(d => {
-        detailValues.push("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-        queryParams.push(
-          transactionId,
-          d.hospital_linen_id ? Number(d.hospital_linen_id) : null,
-          d.item_name || 'Linen Komersil',
-          d.category || 'LAINNYA',
-          Number(d.qty_kotor || 0),
-          d.qty_bersih !== undefined && d.qty_bersih !== null ? Number(d.qty_bersih) : null,
-          d.length_cm !== undefined && d.length_cm !== null ? parseFloat(d.length_cm) : null,
-          d.width_cm !== undefined && d.width_cm !== null ? parseFloat(d.width_cm) : null,
-          d.area_m2 !== undefined && d.area_m2 !== null ? parseFloat(d.area_m2) : null,
-          Number(d.accessory_qty || 0)
-        );
-      });
-
-      await safeIKMQuery(
-        `INSERT INTO tr_komersil_linen_transaction_detail 
-         (transaction_id, hospital_linen_id, item_name, category, qty_kotor, qty_bersih, length_cm, width_cm, area_m2, accessory_qty) 
-         VALUES ${detailValues.join(", ")}`,
-        queryParams
-      );
-    }
-
-    // Capture snapshot for audit log
-    const snapshot = await getTransactionSnapshot(transactionId);
-    await writeAuditLog(transactionId, "PICKUP_KOTOR", req, null, snapshot);
-
-    res.json({ success: true, message: "Transaksi komersil berhasil dibuat", transactionId });
-
-  } catch (err) {
-    if (err.code === "ER_DUP_ENTRY") {
-      return res.status(400).json({ success: false, message: "Nomor Formulir sudah digunakan" });
-    }
-    res.status(500).json({ success: false, message: err.message });
-  }
+  // Formulir komersil kini dibuat otomatis dari formulir serah terima induk (linen is_commercial)
+  return res.status(400).json({
+    success: false,
+    message: "Formulir linen komersil dibuat otomatis dari Serah Terima Linen. Catat linen komersil di formulir serah terima."
+  });
 };
 
 export const updateLinenTransaction = async (req, res) => {
   try {
     const { id } = req.params;
+    const [[head]] = await safeIKMQuery("SELECT parent_transaction_id FROM tr_komersil_linen_transaction WHERE id = ?", [id]);
+    if (head?.parent_transaction_id) return updateKomersilChild(req, res);
     const {
       form_number,
       user_pickup,
@@ -694,6 +622,15 @@ export const updateLinenTransaction = async (req, res) => {
 export const deleteLinenTransaction = async (req, res) => {
   try {
     const { id } = req.params;
+    const [[head]] = await safeIKMQuery("SELECT parent_transaction_id FROM tr_komersil_linen_transaction WHERE id = ?", [id]);
+    if (head?.parent_transaction_id) {
+      return res.status(400).json({
+        success: false,
+        message: "Formulir komersil ini mengikuti formulir serah terima induknya. Hapus linen komersil dari formulir induk."
+      });
+    }
+    // Tabel komersil tidak punya FK cascade: hapus rinciannya dulu
+    await safeIKMQuery("DELETE FROM tr_komersil_linen_transaction_detail WHERE transaction_id = ?", [id]);
 
     // Delete header (cascades automatically delete details and audit logs)
     const [result] = await safeIKMQuery(
@@ -850,3 +787,49 @@ export const proxySignature = async (req, res) => {
     }
   }
 };
+
+/**
+ * Simpan formulir komersil berinduk: hanya qty bersih, P × L (tipe M2), catatan dan express.
+ * Baris, kotor, TTD dan status mengikuti formulir serah terima induk. Bersih ditulis balik ke induk.
+ */
+async function updateKomersilChild(req, res) {
+  const { id } = req.params;
+  const { details = [], is_express } = req.body;
+  const oldSnapshot = await getTransactionSnapshot(id);
+
+  const [rows] = await safeIKMQuery(
+    `SELECT d.*, COALESCE(hl.washing_price_type, 'PCS') AS washing_price_type
+       FROM tr_komersil_linen_transaction_detail d
+       LEFT JOIN mst_hospital_linen hl ON hl.id = d.hospital_linen_id
+      WHERE d.transaction_id = ?`, [id]);
+  const byId = new Map(rows.map(r => [String(r.id), r]));
+  const num = (v) => (v === "" || v === null || v === undefined || !Number.isFinite(Number(v)) ? null : Number(v));
+
+  for (const item of details) {
+    const row = byId.get(String(item.id));
+    if (!row) continue;
+    const kotor = Number(row.qty_kotor) || 0;
+    let bersih = item.qty_bersih === undefined ? row.qty_bersih : num(item.qty_bersih);
+    if (bersih !== null) bersih = Math.max(0, Math.min(kotor, Math.round(bersih)));
+    let length = null, width = null, area = null;
+    if (row.washing_price_type === "M2") {
+      length = item.length_cm === undefined ? num(row.length_cm) : num(item.length_cm);
+      width = item.width_cm === undefined ? num(row.width_cm) : num(item.width_cm);
+      area = length && width ? Math.round(length * width * 100) / 100 : null;
+    }
+    await safeIKMQuery(
+      `UPDATE tr_komersil_linen_transaction_detail
+          SET qty_bersih = ?, length_cm = ?, width_cm = ?, area_m2 = ?, notes = ?
+        WHERE id = ? AND transaction_id = ?`,
+      [bersih, length, width, area, item.notes === undefined ? row.notes : (item.notes || null), row.id, id]);
+  }
+  if (is_express !== undefined) {
+    await safeIKMQuery("UPDATE tr_komersil_linen_transaction SET is_express = ? WHERE id = ?",
+      [is_express === true || is_express === 1 || is_express === "1" ? 1 : 0, id]);
+  }
+  await pushKomersilBersihToParent(id);
+
+  const newSnapshot = await getTransactionSnapshot(id);
+  await writeAuditLog(id, "ADMIN", req, oldSnapshot, newSnapshot);
+  res.json({ success: true, message: "Formulir linen komersil berhasil diperbarui" });
+}

@@ -1,4 +1,5 @@
 import fs from "fs";
+import { commercialLinenIds, syncKomersilChild, deleteKomersilChild } from "./komersilSync.js";
 import path from "path";
 import { safeIKMQuery, safeQuery } from "../../../db/pool.js";
 
@@ -210,6 +211,9 @@ export const getLinenTransactionById = async (req, res) => {
 
     const header = headers[0];
     header.kg_total = computeKgTotal(header);
+    const [[komersil]] = await safeIKMQuery(
+      "SELECT id, form_number FROM tr_komersil_linen_transaction WHERE parent_transaction_id = ?", [id]);
+    header.komersil = komersil || null;
     const employeeIds = [header.user_pickup, header.user_delivery].filter(Boolean);
     if (employeeIds.length) {
       const ph = employeeIds.map(() => "?").join(",");
@@ -228,6 +232,7 @@ export const getLinenTransactionById = async (req, res) => {
     // Fetch Details
     let detailSql = `
       SELECT d.id, d.transaction_id, d.hospital_linen_id, d.room_id, d.qty_kotor, d.qty_bersih, d.notes,
+             d.is_commercial, hl.washing_price_type,
              hl.hospital_linen_name, hl.ownership_type,
              l.linen_name AS master_linen_name, sz.size_name, cl.color_name, mt.material_name,
              rr.room_name, COALESCE(rr.is_gudang_linen, 0) AS is_gudang_linen
@@ -631,27 +636,31 @@ export const createLinenTransaction = async (req, res) => {
 
     // Insert Details
     if (details && Array.isArray(details) && details.length > 0) {
+      // Linen komersil (is_commercial) ditandai; disalin ke formulir komersil anak
+      const commercialIds = await commercialLinenIds(details.map(d => d.hospital_linen_id));
       const detailValues = [];
       const queryParams = [];
       details.forEach(d => {
-        detailValues.push("(?, ?, ?, ?, ?, ?)");
+        detailValues.push("(?, ?, ?, ?, ?, ?, ?)");
         queryParams.push(
           transactionId,
           Number(d.hospital_linen_id),
           d.room_id ? Number(d.room_id) : null,
           Number(d.qty_kotor || 0),
           d.qty_bersih !== undefined && d.qty_bersih !== null ? Number(d.qty_bersih) : null,
-          d.notes || null
+          d.notes || null,
+          commercialIds.has(Number(d.hospital_linen_id)) ? 1 : 0
         );
       });
 
       await safeIKMQuery(
         `INSERT INTO tr_linen_transaction_detail 
-         (transaction_id, hospital_linen_id, room_id, qty_kotor, qty_bersih, notes) 
+         (transaction_id, hospital_linen_id, room_id, qty_kotor, qty_bersih, notes, is_commercial) 
          VALUES ${detailValues.join(", ")}`,
         queryParams
       );
     }
+    await syncKomersilChild(transactionId, { syncBersih: true });
 
     // Capture snapshot for audit log
     const snapshot = await getTransactionSnapshot(transactionId);
@@ -746,27 +755,31 @@ export const updateLinenTransaction = async (req, res) => {
 
     // Insert new details
     if (details && Array.isArray(details) && details.length > 0) {
+      // Linen komersil (is_commercial) ditandai; disalin ke formulir komersil anak
+      const commercialIds = await commercialLinenIds(details.map(d => d.hospital_linen_id));
       const detailValues = [];
       const queryParams = [];
       details.forEach(d => {
-        detailValues.push("(?, ?, ?, ?, ?, ?)");
+        detailValues.push("(?, ?, ?, ?, ?, ?, ?)");
         queryParams.push(
           id,
           Number(d.hospital_linen_id),
           d.room_id ? Number(d.room_id) : null,
           Number(d.qty_kotor || 0),
           d.qty_bersih !== undefined && d.qty_bersih !== null ? Number(d.qty_bersih) : null,
-          d.notes || null
+          d.notes || null,
+          commercialIds.has(Number(d.hospital_linen_id)) ? 1 : 0
         );
       });
 
       await safeIKMQuery(
         `INSERT INTO tr_linen_transaction_detail 
-         (transaction_id, hospital_linen_id, room_id, qty_kotor, qty_bersih, notes) 
+         (transaction_id, hospital_linen_id, room_id, qty_kotor, qty_bersih, notes, is_commercial) 
          VALUES ${detailValues.join(", ")}`,
         queryParams
       );
     }
+    await syncKomersilChild(id, { syncBersih: true });
 
     // Capture new snapshot
     const newSnapshot = await getTransactionSnapshot(id);
@@ -785,6 +798,12 @@ export const updateLinenTransaction = async (req, res) => {
 export const deleteLinenTransaction = async (req, res) => {
   try {
     const { id } = req.params;
+
+    // Formulir komersil anak ikut dihapus (tidak punya FK cascade)
+    const child = await deleteKomersilChild(id);
+    if (!child.ok) {
+      return res.status(400).json({ success: false, message: child.message });
+    }
 
     // Delete header (cascades automatically delete details and audit logs)
     const [result] = await safeIKMQuery(
