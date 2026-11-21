@@ -748,6 +748,14 @@ export const updateLinenTransaction = async (req, res) => {
       ]
     );
 
+    // Status komersil baris lama (per linen+ruangan) dipertahankan; master hanya berlaku untuk baris baru
+    const [prevRows] = await safeIKMQuery(
+      "SELECT hospital_linen_id, room_id, is_commercial FROM tr_linen_transaction_detail WHERE transaction_id = ?",
+      [id]
+    );
+    const prevCommercial = new Map(prevRows.map(r =>
+      [`${Number(r.hospital_linen_id)}|${r.room_id == null ? "" : Number(r.room_id)}`, Number(r.is_commercial) === 1 ? 1 : 0]));
+
     // Delete old details
     await safeIKMQuery(
       "DELETE FROM tr_linen_transaction_detail WHERE transaction_id = ?",
@@ -762,6 +770,7 @@ export const updateLinenTransaction = async (req, res) => {
       const queryParams = [];
       details.forEach(d => {
         detailValues.push("(?, ?, ?, ?, ?, ?, ?)");
+        const prevFlag = prevCommercial.get(`${Number(d.hospital_linen_id)}|${d.room_id ? Number(d.room_id) : ""}`);
         queryParams.push(
           id,
           Number(d.hospital_linen_id),
@@ -769,7 +778,7 @@ export const updateLinenTransaction = async (req, res) => {
           Number(d.qty_kotor || 0),
           d.qty_bersih !== undefined && d.qty_bersih !== null ? Number(d.qty_bersih) : null,
           d.notes || null,
-          commercialIds.has(Number(d.hospital_linen_id)) ? 1 : 0
+          prevFlag !== undefined ? prevFlag : (commercialIds.has(Number(d.hospital_linen_id)) ? 1 : 0)
         );
       });
 

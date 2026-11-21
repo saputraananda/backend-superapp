@@ -1,4 +1,4 @@
-import { safeIKMQuery } from "../../../db/pool.js";
+import { safeIKMQuery, ikmPool } from "../../../db/pool.js";
 
 // Formulir Linen Komersil berinduk — padanan api/utils/komersilChild.js di LMS (logika harus sama).
 // Linen komersil = mst_hospital_linen.is_commercial = 1. Baris komersil formulir serah terima induk disalin ke
@@ -19,19 +19,19 @@ export async function commercialLinenIds(hospitalLinenIds) {
   return new Set(rows.map(r => Number(r.id)));
 }
 
-async function childFormNumber(parentFormNumber) {
+async function childFormNumber(run, parentFormNumber) {
   const m = String(parentFormNumber).match(/^(.*)-(\d{6,8})-(\d+)$/);
   const base = m ? `${m[1]}-KOM-${m[2]}-${m[3]}` : `${parentFormNumber}-KOM`;
   for (let n = 1; ; n++) {
     const candidate = n === 1 ? base : `${base}-${n}`;
-    const [[hit]] = await q("SELECT COUNT(*) AS n FROM tr_komersil_linen_transaction WHERE form_number = ?", [candidate]);
+    const [[hit]] = await run("SELECT COUNT(*) AS n FROM tr_komersil_linen_transaction WHERE form_number = ?", [candidate]);
     if (!Number(hit.n)) return candidate;
   }
 }
 
-async function usedByKurangKirim(detailIds) {
+async function usedByKurangKirim(run, detailIds) {
   if (!detailIds.length) return new Set();
-  const [rows] = await q(
+  const [rows] = await run(
     `SELECT DISTINCT komersil_detail_id AS id FROM tr_komersil_kurang_kirim_delivery_detail
       WHERE komersil_detail_id IN (${detailIds.map(() => "?").join(",")})`,
     detailIds
@@ -40,11 +40,11 @@ async function usedByKurangKirim(detailIds) {
 }
 
 /** Samakan formulir komersil anak dengan baris komersil induk. syncBersih = tulis bersih induk ke anak. */
-export async function syncKomersilChild(parentId, { syncBersih = false } = {}) {
-  const [[parent]] = await q("SELECT * FROM tr_linen_transaction WHERE id = ?", [parentId]);
+async function syncKomersilChildOn(run, parentId, { syncBersih = false } = {}) {
+  const [[parent]] = await run("SELECT * FROM tr_linen_transaction WHERE id = ? FOR UPDATE", [parentId]);
   if (!parent) return null;
 
-  const [groups] = await q(
+  const [groups] = await run(
     `SELECT d.hospital_linen_id, d.room_id,
             SUM(d.qty_kotor) AS kotor,
             SUM(d.qty_bersih) AS bersih, COUNT(d.qty_bersih) AS bersih_n,
@@ -59,17 +59,17 @@ export async function syncKomersilChild(parentId, { syncBersih = false } = {}) {
     [parentId]
   );
 
-  let [[child]] = await q("SELECT * FROM tr_komersil_linen_transaction WHERE parent_transaction_id = ?", [parentId]);
+  let [[child]] = await run("SELECT * FROM tr_komersil_linen_transaction WHERE parent_transaction_id = ? FOR UPDATE", [parentId]);
 
   if (!groups.length) {
     if (!child) return null;
-    const [[sj]] = await q("SELECT COUNT(*) AS n FROM tr_komersil_kurang_kirim_delivery WHERE transaction_id = ?", [child.id]);
+    const [[sj]] = await run("SELECT COUNT(*) AS n FROM tr_komersil_kurang_kirim_delivery WHERE transaction_id = ?", [child.id]);
     if (Number(sj.n)) {
-      await q("UPDATE tr_komersil_linen_transaction_detail SET qty_kotor = 0 WHERE transaction_id = ?", [child.id]);
+      await run("UPDATE tr_komersil_linen_transaction_detail SET qty_kotor = 0 WHERE transaction_id = ?", [child.id]);
       return child.id;
     }
-    await q("DELETE FROM tr_komersil_linen_transaction_detail WHERE transaction_id = ?", [child.id]);
-    await q("DELETE FROM tr_komersil_linen_transaction WHERE id = ?", [child.id]);
+    await run("DELETE FROM tr_komersil_linen_transaction_detail WHERE transaction_id = ?", [child.id]);
+    await run("DELETE FROM tr_komersil_linen_transaction WHERE id = ?", [child.id]);
     return null;
   }
 
@@ -81,8 +81,8 @@ export async function syncKomersilChild(parentId, { syncBersih = false } = {}) {
     parent.notes_pickup, parent.notes_delivery
   ];
   if (!child) {
-    const formNumber = await childFormNumber(parent.form_number);
-    const [r] = await q(
+    const formNumber = await childFormNumber(run, parent.form_number);
+    const [r] = await run(
       `INSERT INTO tr_komersil_linen_transaction
          (form_number, parent_transaction_id, hospital_id, user_pickup, user_delivery,
           hospital_staff_pickup, hospital_assistant_pickup, hospital_staff_delivery, hospital_assistant_delivery,
@@ -90,9 +90,9 @@ export async function syncKomersilChild(parentId, { syncBersih = false } = {}) {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [formNumber, parentId, ...headerValues, Number(parent.is_express) === 1 ? 1 : 0]
     );
-    [[child]] = await q("SELECT * FROM tr_komersil_linen_transaction WHERE id = ?", [r.insertId]);
+    [[child]] = await run("SELECT * FROM tr_komersil_linen_transaction WHERE id = ?", [r.insertId]);
   } else {
-    await q(
+    await run(
       `UPDATE tr_komersil_linen_transaction
           SET hospital_id = ?, user_pickup = ?, user_delivery = ?,
               hospital_staff_pickup = ?, hospital_assistant_pickup = ?,
@@ -104,20 +104,20 @@ export async function syncKomersilChild(parentId, { syncBersih = false } = {}) {
     );
   }
 
-  const [existing] = await q("SELECT * FROM tr_komersil_linen_transaction_detail WHERE transaction_id = ? ORDER BY id", [child.id]);
+  const [existing] = await run("SELECT * FROM tr_komersil_linen_transaction_detail WHERE transaction_id = ? ORDER BY id FOR UPDATE", [child.id]);
   const byKey = new Map();
   for (const row of existing) {
     const k = keyOf(row.hospital_linen_id, row.room_id);
     if (!byKey.has(k)) byKey.set(k, []);
     byKey.get(k).push(row);
   }
-  const protectedIds = await usedByKurangKirim(existing.map(r => r.id));
+  const protectedIds = await usedByKurangKirim(run, existing.map(r => r.id));
   const removeRows = async (rows) => {
     for (const row of rows) {
       if (protectedIds.has(Number(row.id))) {
-        await q("UPDATE tr_komersil_linen_transaction_detail SET qty_kotor = 0 WHERE id = ?", [row.id]);
+        await run("UPDATE tr_komersil_linen_transaction_detail SET qty_kotor = 0 WHERE id = ?", [row.id]);
       } else {
-        await q("DELETE FROM tr_komersil_linen_transaction_detail WHERE id = ?", [row.id]);
+        await run("DELETE FROM tr_komersil_linen_transaction_detail WHERE id = ?", [row.id]);
       }
     }
   };
@@ -136,14 +136,14 @@ export async function syncKomersilChild(parentId, { syncBersih = false } = {}) {
         const bersih = writeBersih ? (i < parentBersih ? 1 : 0) : undefined;
         const row = rows[i];
         if (row) {
-          await q(
+          await run(
             `UPDATE tr_komersil_linen_transaction_detail
                 SET item_name = ?, qty_kotor = 1${bersih !== undefined ? ", qty_bersih = ?" : ""}
               WHERE id = ?`,
             bersih !== undefined ? [g.item_name, bersih, row.id] : [g.item_name, row.id]
           );
         } else {
-          await q(
+          await run(
             `INSERT INTO tr_komersil_linen_transaction_detail
                (transaction_id, hospital_linen_id, room_id, item_name, qty_kotor, qty_bersih)
              VALUES (?, ?, ?, ?, 1, ?)`,
@@ -155,7 +155,7 @@ export async function syncKomersilChild(parentId, { syncBersih = false } = {}) {
     } else {
       const [row, ...extra] = rows;
       if (row) {
-        await q(
+        await run(
           `UPDATE tr_komersil_linen_transaction_detail
               SET item_name = ?, qty_kotor = ?${writeBersih ? ", qty_bersih = ?" : ""},
                   length_cm = NULL, width_cm = NULL, area_m2 = NULL
@@ -163,7 +163,7 @@ export async function syncKomersilChild(parentId, { syncBersih = false } = {}) {
           writeBersih ? [g.item_name, kotor, parentBersih, row.id] : [g.item_name, kotor, row.id]
         );
       } else {
-        await q(
+        await run(
           `INSERT INTO tr_komersil_linen_transaction_detail
              (transaction_id, hospital_linen_id, room_id, item_name, qty_kotor, qty_bersih)
            VALUES (?, ?, ?, ?, ?, ?)`,
@@ -177,6 +177,26 @@ export async function syncKomersilChild(parentId, { syncBersih = false } = {}) {
     if (!seen.has(k)) await removeRows(rows);
   }
   return child.id;
+}
+
+/**
+ * Samakan formulir komersil anak dengan baris komersil induk. syncBersih = tulis bersih induk ke anak.
+ * Dijalankan dalam satu transaksi dengan baris induk dikunci, supaya simpanan bersamaan (SuperApp/LMS)
+ * tidak sama-sama membuat formulir anak.
+ */
+export async function syncKomersilChild(parentId, opts) {
+  const conn = await ikmPool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const result = await syncKomersilChildOn((sql, params) => conn.query(sql, params), parentId, opts);
+    await conn.commit();
+    return result;
+  } catch (err) {
+    await conn.rollback().catch(() => {});
+    throw err;
+  } finally {
+    conn.release();
+  }
 }
 
 /** Qty bersih formulir komersil → baris induk (per linen per ruangan) */
