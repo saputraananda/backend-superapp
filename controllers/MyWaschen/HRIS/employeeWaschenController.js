@@ -1,5 +1,6 @@
 import { pool, safeQuery, safeMyWaschenQuery } from "../../../db/pool.js";
 import bcrypt from "bcrypt";
+import { getEmployeePinMap, parsePinInput, saveEmployeePin } from "../../../utils/employeePin.js";
 
 const SORT_COLUMNS = {
   full_name: "e.full_name",
@@ -23,7 +24,7 @@ export const listWaschenEmployees = async (req, res) => {
 
     // Fetch mst_role entries (produksi/frontliner from company 5)
     const [roleRows] = await safeMyWaschenQuery(
-      "SELECT employee_id, role, is_leader, outlet_id, code_pin, employee_name FROM mst_role"
+      "SELECT employee_id, role, is_leader, outlet_id, employee_name FROM mst_role"
     );
     const roleMap = {};
     for (const rr of roleRows) {
@@ -31,9 +32,6 @@ export const listWaschenEmployees = async (req, res) => {
         role: rr.role,
         is_leader: rr.is_leader,
         outlet_id: rr.outlet_id,
-        code_pin: rr.code_pin != null && String(rr.code_pin).trim() !== ""
-          ? String(rr.code_pin).trim()
-          : null,
         employee_name: rr.employee_name || null,
       };
     }
@@ -80,6 +78,8 @@ export const listWaschenEmployees = async (req, res) => {
       params,
     );
 
+    const pinMap = await getEmployeePinMap(rows.map((r) => r.employee_id));
+
     // Fetch outlets to resolve outlet names
     const [outletRows] = await safeMyWaschenQuery("SELECT id, name, full_name FROM mst_outlet");
     const outletMap = {};
@@ -93,7 +93,7 @@ export const listWaschenEmployees = async (req, res) => {
       is_leader: roleMap[r.employee_id]?.is_leader ?? null,
       outlet_id: roleMap[r.employee_id]?.outlet_id ?? null,
       outlet_name: roleMap[r.employee_id]?.outlet_id ? (outletMap[roleMap[r.employee_id].outlet_id] ?? "-") : "-",
-      code_pin: roleMap[r.employee_id]?.code_pin ?? null,
+      code_pin: pinMap.get(Number(r.employee_id)) ?? null,
     }));
 
     // Apply post-merge filters (role/outlet/leader live in separate DB)
@@ -310,48 +310,29 @@ export const updateEmployeeRole = async (req, res) => {
     const cleanIsLeader = is_leader !== undefined && is_leader !== null && is_leader !== "null" && is_leader !== "" ? (Number(is_leader) === 1 ? 1 : 0) : null;
     const cleanOutletId = outlet_id && outlet_id !== "null" && outlet_id !== "" ? Number(outlet_id) : null;
 
+    // PIN → waschen.mst_employee_pin (terpisah dari mst_role)
     let cleanPin;
     if (code_pin !== undefined) {
-      if (code_pin === null || code_pin === "" || code_pin === "null") {
-        cleanPin = null;
-      } else {
-        const digits = String(code_pin).replace(/\D/g, "");
-        if (!digits) {
-          return res.status(400).json({ message: "PIN harus berupa angka." });
-        }
-        if (digits.length !== 4) {
-          return res.status(400).json({ message: "PIN harus 4 digit." });
-        }
-        cleanPin = digits;
-      }
+      const parsed = parsePinInput(code_pin);
+      if (parsed.status) return res.status(parsed.status).json({ message: parsed.message });
+      cleanPin = parsed.pin;
+      const pinErr = await saveEmployeePin(Number(id), cleanPin);
+      if (pinErr) return res.status(pinErr.status).json({ message: pinErr.message });
     }
-
-    if (code_pin !== undefined && cleanPin) {
-      const [dup] = await safeMyWaschenQuery(
-        `SELECT employee_id FROM mst_role
-         WHERE TRIM(CAST(code_pin AS CHAR)) = ?
-           AND employee_id != ?
-         LIMIT 1`,
-        [cleanPin, id]
-      );
-      if (dup.length > 0) {
-        return res.status(409).json({
-          message: `PIN ${cleanPin} sudah dipakai karyawan lain. Gunakan PIN unik.`,
-        });
-      }
+    if (role === undefined && is_leader === undefined && outlet_id === undefined) {
+      return res.json({ success: true, message: "PIN karyawan berhasil diperbarui.", data: { code_pin: cleanPin } });
     }
 
     const [exist] = await safeMyWaschenQuery(
-      "SELECT employee_id, role, is_leader, outlet_id, code_pin FROM mst_role WHERE employee_id = ? LIMIT 1",
+      "SELECT employee_id, role, is_leader, outlet_id FROM mst_role WHERE employee_id = ? LIMIT 1",
       [id]
     );
     if (exist.length > 0) {
       const finalRole = role !== undefined ? cleanRole : exist[0].role;
       const finalIsLeader = is_leader !== undefined ? cleanIsLeader : exist[0].is_leader;
       const finalOutletId = outlet_id !== undefined ? cleanOutletId : exist[0].outlet_id;
-      const finalPin = code_pin !== undefined ? cleanPin : (exist[0].code_pin != null && String(exist[0].code_pin).trim() !== "" ? String(exist[0].code_pin).trim() : null);
 
-      if (finalRole === null && finalIsLeader === null && finalOutletId === null && !finalPin) {
+      if (finalRole === null && finalIsLeader === null && finalOutletId === null) {
         await safeMyWaschenQuery("DELETE FROM mst_role WHERE employee_id = ?", [id]);
       } else {
         const updates = [];
@@ -368,26 +349,21 @@ export const updateEmployeeRole = async (req, res) => {
           updates.push("outlet_id = ?");
           params.push(cleanOutletId);
         }
-        if (code_pin !== undefined) {
-          updates.push("code_pin = ?");
-          params.push(cleanPin);
-        }
         if (updates.length > 0) {
           params.push(id);
           await safeMyWaschenQuery(`UPDATE mst_role SET ${updates.join(", ")} WHERE employee_id = ?`, params);
         }
       }
     } else {
-      if (cleanRole !== null || cleanIsLeader !== null || cleanOutletId !== null || (code_pin !== undefined && cleanPin)) {
+      if (cleanRole !== null || cleanIsLeader !== null || cleanOutletId !== null) {
         await safeMyWaschenQuery(
-          "INSERT INTO mst_role (employee_id, employee_name, role, is_leader, outlet_id, code_pin) VALUES (?, ?, ?, ?, ?, ?)",
+          "INSERT INTO mst_role (employee_id, employee_name, role, is_leader, outlet_id) VALUES (?, ?, ?, ?, ?)",
           [
             id,
             emp[0].full_name || null,
             cleanRole,
             cleanIsLeader,
             cleanOutletId,
-            code_pin !== undefined ? cleanPin : null,
           ]
         );
       }
@@ -438,9 +414,10 @@ export const getWaschenEmployee = async (req, res) => {
     }
 
     const [roleRows] = await safeMyWaschenQuery(
-      "SELECT role, is_leader, outlet_id, code_pin FROM mst_role WHERE employee_id = ? LIMIT 1",
+      "SELECT role, is_leader, outlet_id FROM mst_role WHERE employee_id = ? LIMIT 1",
       [id],
     );
+    const pinMap = await getEmployeePinMap([id]);
     const role = roleRows[0] || null;
     let outlet_name = null;
     if (role?.outlet_id) {
@@ -456,7 +433,7 @@ export const getWaschenEmployee = async (req, res) => {
         is_leader: role?.is_leader ?? null,
         outlet_id: role?.outlet_id ?? null,
         outlet_name,
-        code_pin: role?.code_pin ?? null,
+        code_pin: pinMap.get(id) ?? null,
       },
     });
   } catch (error) {

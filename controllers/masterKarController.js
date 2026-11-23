@@ -1,4 +1,5 @@
 import { safeQuery } from "../db/pool.js";
+import { getEmployeePinMap, parsePinInput, saveEmployeePin } from "../utils/employeePin.js";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -632,5 +633,34 @@ export const deleteEmployeeDoc = async (req, res) => {
   } catch (err) {
     console.error("deleteEmployeeDoc error:", err);
     res.status(500).json({ message: err.message });
+  }
+};
+// ── PIN karyawan (waschen.mst_employee_pin, 4 digit unik) ──────────────────
+export const getEmployeePin = async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ message: "Karyawan tidak valid" });
+    const pinMap = await getEmployeePinMap([id]);
+    return res.json({ success: true, data: { pin: pinMap.get(id) ?? null } });
+  } catch (error) {
+    console.error("[getEmployeePin]", error);
+    return res.status(500).json({ message: "Gagal mengambil PIN" });
+  }
+};
+
+export const updateEmployeePin = async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ message: "Karyawan tidak valid" });
+    const [emp] = await safeQuery("SELECT employee_id FROM mst_employee WHERE employee_id = ? AND is_deleted = 0 LIMIT 1", [id]);
+    if (!emp.length) return res.status(404).json({ message: "Karyawan tidak ditemukan" });
+    const parsed = parsePinInput(req.body?.pin);
+    if (parsed.status) return res.status(parsed.status).json({ message: parsed.message });
+    const pinErr = await saveEmployeePin(id, parsed.pin);
+    if (pinErr) return res.status(pinErr.status).json({ message: pinErr.message });
+    return res.json({ success: true, message: parsed.pin ? "PIN tersimpan" : "PIN dihapus", data: { pin: parsed.pin } });
+  } catch (error) {
+    console.error("[updateEmployeePin]", error);
+    return res.status(500).json({ message: "Gagal menyimpan PIN" });
   }
 };
