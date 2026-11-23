@@ -515,6 +515,31 @@ export const getTransactionById = async (req, res) => {
       }
     }
 
+    // Ceklis jenis pakaian kiloan oleh Tim Setrika / Tim Packing (per aksi QC)
+    const kgCheckMap = {};
+    if (progressIds.length) {
+      try {
+        const [checkRows] = await safeMyWaschenQuery(
+          `SELECT progress_id, item_name, expected_qty, actual_qty, is_match
+           FROM tr_item_kg_check
+           WHERE progress_id IN (${progressIds.map(() => "?").join(",")})
+           ORDER BY id ASC`,
+          progressIds,
+        );
+        for (const c of checkRows) {
+          (kgCheckMap[c.progress_id] ||= []).push({
+            item_name: c.item_name,
+            expected_qty: Number(c.expected_qty),
+            actual_qty: Number(c.actual_qty),
+            is_match: Number(c.is_match) === 1,
+          });
+        }
+      } catch (err) {
+        // Tabel belum dimigrasi (migrate_qc_kg_check.sql) → detail tetap tampil tanpa ceklis
+        if (err?.code !== "ER_NO_SUCH_TABLE") throw err;
+      }
+    }
+
     const progressByDetail = {};
     for (const p of progressRows) {
       const detailId = p.transaction_detail_id;
@@ -534,6 +559,7 @@ export const getTransactionById = async (req, res) => {
         hold_resolved_by_name: p.hold_resolved_by ? empMap[p.hold_resolved_by] || null : null,
         hold_resolution_note: p.hold_resolution_note,
         photos: photoMap[p.id] || [],
+        kg_checks: kgCheckMap[p.id] || [],
       });
     }
 
