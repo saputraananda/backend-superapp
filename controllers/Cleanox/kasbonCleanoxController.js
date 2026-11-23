@@ -1,4 +1,5 @@
 import fs from "fs";
+import { nowWIB, wibNow } from "../../utils/timeWIB.js";
 import path from "path";
 import { safeQuery, safeCleanoxQuery } from "../../db/pool.js";
 import { CLEANOX_KASBON_DIR } from "../../middleware/upload.js";
@@ -15,7 +16,7 @@ const ALLOWED_PAYMENT_METHODS = new Set(["tunai", "potong_gaji", "transfer", "la
 // Cutoff: tgl 26 bulan lalu s/d tgl 25 bulan ini.
 // Jika hari ini > 25, aktifkan cutoff bulan depan.
 function getDefaultCutoff() {
-	const now = new Date();
+	const now = wibNow();
 	const CUTOFF_END_DAY = 25;
 	let month = now.getMonth() + 1;
 	let year = now.getFullYear();
@@ -742,7 +743,7 @@ export const updateKasbonStatus = async (req, res) => {
 		const existing = existingRows?.[0];
 		if (!existing) return res.status(404).json({ message: "Data tidak ditemukan" });
 
-		const now = new Date().toISOString().slice(0, 19).replace("T", " ");
+		const now = nowWIB();
 
 		if (status === "proses") {
 			await safeCleanoxQuery(

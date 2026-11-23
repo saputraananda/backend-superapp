@@ -1,4 +1,5 @@
 import path from "path";
+import { todayWIB } from "../../utils/timeWIB.js";
 import { safeIKMQuery, safeQuery } from "../../db/pool.js";
 
 const IKM_COMPANY_ID = 2;
@@ -102,7 +103,7 @@ function resolveEmployeeInfo(map, employeeId) {
 // ─── GET /ikm/leaves ──────────────────────────────────────────────────────────
 export const getLeaves = async (req, res) => {
 	try {
-		const today = new Date().toISOString().slice(0, 10);
+		const today = todayWIB();
 		const startDate = toISODateString(req.query.startDate) || null;
 		const endDate = toISODateString(req.query.endDate) || null;
 

@@ -1,4 +1,5 @@
 import fs from "fs";
+import { todayWIB } from "../../utils/timeWIB.js";
 import path from "path";
 import { safeAloraMobileQuery, safeQuery } from "../../db/pool.js";
 import { ALORA_MOBILE_ATT_DIR, ALORA_MOBILE_BASE } from "../../middleware/upload.js";
@@ -1466,7 +1467,7 @@ export const updateManualAttendance = async (req, res) => {
 			return res.status(404).json({ success: false, message: "Data absensi tidak ditemukan" });
 		}
 		const record = rows[0];
-		const workDate = record.attendance_date ? String(record.attendance_date).slice(0, 10) : new Date().toISOString().slice(0, 10);
+		const workDate = record.attendance_date ? String(record.attendance_date).slice(0, 10) : todayWIB();
 
 		const clockInTime = parseTimeToDatetime(req.body.check_in_time, workDate);
 		const clockOutTime = parseTimeToDatetime(req.body.check_out_time, workDate);

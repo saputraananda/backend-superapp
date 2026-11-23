@@ -1,4 +1,5 @@
 import { safeIKMQuery, safeQuery } from "../../db/pool.js";
+import { todayWIB } from "../../utils/timeWIB.js";
 
 const IKM_COMPANY_ID = 2;
 const ADMIN_EMPLOYEE_ID = 31;
@@ -184,7 +185,7 @@ function toMySQLDatetime(value) {
  */
 export const getManagementAttendance = async (req, res) => {
 	try {
-		const today = new Date().toISOString().slice(0, 10);
+		const today = todayWIB();
 		const startDate = toISODateString(req.query.startDate) || today;
 		const endDate = toISODateString(req.query.endDate) || startDate;
 

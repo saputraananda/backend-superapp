@@ -1,4 +1,5 @@
 import { safeIKMQuery, safeQuery } from "../../db/pool.js";
+import { wibNow } from "../../utils/timeWIB.js";
 
 function toISODateString(v) {
   return /^\d{4}-\d{2}-\d{2}$/.test(v || "") ? v : null;
@@ -15,7 +16,7 @@ function toUInt(v, def = 0) {
 }
 
 function getDefaultCutoffDates() {
-  const now = new Date();
+  const now = wibNow();
   const day = now.getDate();
   const year = now.getFullYear();
   const month = now.getMonth();

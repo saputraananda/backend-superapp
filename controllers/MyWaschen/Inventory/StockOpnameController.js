@@ -49,7 +49,7 @@ export const setOpeningStock = async (req, res) => {
     const minStock = req.body?.min_stock !== undefined ? num(req.body.min_stock) : undefined;
     let periodStart = req.body?.period_start
       ? String(req.body.period_start).slice(0, 10)
-      : new Date().toISOString().slice(0, 10);
+      : todayWIB();
     const employeeId = req.body?.employeeId
       ? Number(req.body.employeeId)
       : req.session?.employeeId
@@ -119,7 +119,7 @@ export const setOpeningStock = async (req, res) => {
 export const getDailyOpname = async (req, res) => {
   try {
     const outletId = Number(req.query.outletId);
-    const usageDate = String(req.query.usageDate || new Date().toISOString().slice(0, 10)).slice(0, 10);
+    const usageDate = String(req.query.usageDate || todayWIB()).slice(0, 10);
 
     if (!outletId) {
       return res.status(400).json({ success: false, message: "outletId wajib" });
@@ -146,7 +146,7 @@ export const getDailyOpname = async (req, res) => {
 export const postDailyOpname = async (req, res) => {
   try {
     const outletId = Number(req.body?.outletId);
-    const usageDate = String(req.body?.usageDate || new Date().toISOString().slice(0, 10)).slice(0, 10);
+    const usageDate = String(req.body?.usageDate || todayWIB()).slice(0, 10);
     const employeeId = req.body?.employeeId
       ? Number(req.body.employeeId)
       : req.session?.employeeId
@@ -349,3 +349,5 @@ export const postItemMove = async (req, res) => {
     return res.status(500).json({ success: false, message: "Gagal menyimpan stok" });
   }
 };
+
+import { todayWIB } from "../../../utils/timeWIB.js";

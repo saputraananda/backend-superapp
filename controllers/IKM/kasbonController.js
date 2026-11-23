@@ -1,4 +1,5 @@
 import path from "path";
+import { nowWIB, wibNow } from "../../utils/timeWIB.js";
 import fs from "fs";
 import { fileURLToPath } from "url";
 import { safeIKMQuery, safeQuery } from "../../db/pool.js";
@@ -17,7 +18,7 @@ const IKM_COMPANY_ID = 2;
 // Cutoff: tgl 26 bulan lalu s/d tgl 25 bulan ini.
 // Jika hari ini > 25, aktifkan cutoff bulan depan.
 function getDefaultCutoff() {
-  const now = new Date();
+  const now = wibNow();
   const CUTOFF_END_DAY = 25;
   let month = now.getMonth() + 1;
   let year  = now.getFullYear();
@@ -483,7 +484,7 @@ export const updateKasbonStatus = async (req, res) => {
     const [[existing]] = await safeIKMQuery(`SELECT * FROM tr_kasbon WHERE id = ?`, [id]);
     if (!existing) return res.status(404).json({ message: "Data tidak ditemukan" });
 
-    const now = new Date().toISOString().slice(0, 19).replace("T", " ");
+    const now = nowWIB();
 
     if (status === "proses") {
       await safeIKMQuery(

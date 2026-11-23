@@ -70,6 +70,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import fs from "fs";
+import { todayWIB, wibNow, localDateISO } from "../../utils/timeWIB.js";
 import path from "path";
 import { fileURLToPath } from "url";
 import { pool } from "../../db/pool.js";
@@ -1689,7 +1690,7 @@ export const createPR = async (req, res) => {
         if (!me) return res.status(404).json({ message: "Employee tidak ditemukan" });
 
         const type             = ["pengajuan", "reimburse"].includes(req.body.type) ? req.body.type : "pengajuan";
-        const tanggalPengajuan = req.body.tanggal_pengajuan || new Date().toISOString().split("T")[0];
+        const tanggalPengajuan = req.body.tanggal_pengajuan || todayWIB();
 
         // Multi kategori + multi outlet. Kolom lama diisi pilihan pertama.
         const scope = await resolveScopeSelection(
@@ -3345,11 +3346,11 @@ export const processPayment = async (req, res) => {
             if (!terminValue || !terminUnit) {
                 return res.status(400).json({ message: "Termin wajib diisi untuk pembayaran kredit" });
             }
-            const now = new Date();
+            const now = wibNow();
             if (terminUnit === "hari")        now.setDate(now.getDate() + terminValue);
             else if (terminUnit === "bulan")  now.setMonth(now.getMonth() + terminValue);
             else if (terminUnit === "tahun")  now.setFullYear(now.getFullYear() + terminValue);
-            jatuhTempo = now.toISOString().split("T")[0];
+            jatuhTempo = localDateISO(now);
         }
 
         const paymentNote    = req.body.payment_note ? sanitize(req.body.payment_note) : null;

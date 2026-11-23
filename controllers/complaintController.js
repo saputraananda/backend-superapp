@@ -1,4 +1,5 @@
 import { safeQuery, safeSmartlinkQuery, safeMyWaschenQuery } from "../db/pool.js";
+import { wibNow } from "../utils/timeWIB.js";
 
 /** Komplain tinggal di myWaschen. Karyawan PIC kantor tetap di DB waschen. */
 const complaintQuery = safeMyWaschenQuery;
@@ -133,7 +134,7 @@ async function deleteComplaintFiles(relativePaths) {
 }
 
 function getLastCutoffPeriods(count = 6) {
-  const now = new Date();
+  const now = wibNow();
   const currentPeriod = new Date(
     now.getFullYear(),
     now.getMonth() + (now.getDate() > 25 ? 1 : 0),

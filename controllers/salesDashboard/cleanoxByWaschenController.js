@@ -1,4 +1,5 @@
 import { safeSmartlinkQuery } from "../../db/pool.js";
+import { todayWIB, addDaysISO } from "../../utils/timeWIB.js";
 
 const EXCLUDED_NOTAS = [
   'JDS250308134809893','JRC250412083723856','LKZ250422142258203','QSE250429084550314','POS250430090223407',
@@ -39,7 +40,7 @@ function computeDateRange(asOfDate) {
 }
 
 function buildDateRange(filterType, month, year, startDate, endDate, asOfDate) {
-  const today = new Date().toISOString().split("T")[0];
+  const today = todayWIB();
   if (filterType === "range" && startDate && endDate && DATE_RE.test(startDate) && DATE_RE.test(endDate)) {
     return { dateStart: startDate, dateEnd: endDate, asOfDate: endDate };
   }
@@ -56,9 +57,7 @@ function buildDateRange(filterType, month, year, startDate, endDate, asOfDate) {
   if (asOfDate && DATE_RE.test(asOfDate)) {
     return { ...computeDateRange(asOfDate), asOfDate };
   }
-  const yesterday = new Date();
-  yesterday.setDate(yesterday.getDate() - 1);
-  const ao = yesterday.toISOString().split("T")[0];
+  const ao = addDaysISO(todayWIB(), -1);
   return { ...computeDateRange(ao), asOfDate: ao };
 }
 

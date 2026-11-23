@@ -1,4 +1,5 @@
 import { safeQuery } from "../db/pool.js";
+import { todayWIB } from "../utils/timeWIB.js";
 import { pool } from "../db/pool.js";
 
 // Helper checking if user is HRD based on position_id
@@ -298,7 +299,7 @@ export const createRequest = async (req, res) => {
             trainingCode,
             requester_id,
             department_id,
-            request_date || new Date().toISOString().split("T")[0],
+            request_date || todayWIB(),
             topic,
             company_id,
             training_type,

@@ -156,7 +156,7 @@ async function loadShiftTransactions(shift) {
 export async function getDailyReportList(req, res) {
   try {
     const outletIds = String(req.query.outletId || "").split(",").map(Number).filter((n) => Number.isInteger(n) && n > 0);
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayWIB();
     const dateFrom = String(req.query.dateFrom || req.query.date || today).slice(0, 10);
     const dateTo = String(req.query.dateTo || req.query.date || dateFrom).slice(0, 10);
 
@@ -346,3 +346,5 @@ export async function updateDailyReportShift(req, res) {
     });
   }
 }
+
+import { todayWIB } from "../../../utils/timeWIB.js";

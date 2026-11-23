@@ -1,4 +1,5 @@
 import path from "path";
+import { wibNow } from "../../utils/timeWIB.js";
 import fs from "fs";
 import { fileURLToPath } from "url";
 import { safeIKMQuery, safeQuery } from "../../db/pool.js";
@@ -14,7 +15,7 @@ const BASE_DIR = isProd
 const IKM_COMPANY_ID = 2;
 
 function getDefaultCutoffDates() {
-  const now = new Date();
+  const now = wibNow();
   const day = now.getDate();
   const year = now.getFullYear();
   const month = now.getMonth(); // 0-indexed

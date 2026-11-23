@@ -1,4 +1,5 @@
 ﻿import { safeIKMQuery, safeQuery } from "../../db/pool.js";
+import { todayWIB } from "../../utils/timeWIB.js";
 
 const ALLOWED_SHIFTS = new Set(["pagi", "siang", "sore", "lembur"]);
 const SHIFT_ORDER = { pagi: 0, siang: 1, sore: 2, lembur: 3 };
@@ -410,7 +411,7 @@ export const streamAttendanceShiftIKM = async (req, res) => {
 
 export const getAttendanceShiftIKM = async (req, res) => {
 	try {
-		const today = new Date().toISOString().slice(0, 10);
+		const today = todayWIB();
 		const startDate = toISODateString(req.query.startDate) || today;
 		const endDate = toISODateString(req.query.endDate) || startDate;
 
