@@ -1,4 +1,5 @@
 import { safeMyWaschenQuery } from "../../../db/pool.js";
+import { notifyPosOutletUpdated } from "../utils/notifyPosOutlet.js";
 
 const SORT_COLUMNS = ["id", "outlet_code", "name", "full_name", "created_at"];
 
@@ -83,6 +84,8 @@ export const createOutlet = async (req, res) => {
     const formattedCode = outlet_code.trim().toUpperCase();
     // Outlet baru default aktif, bukan drop point, dan wajib buka shift.
     const isDropPoint = parseFlag(req.body.is_drop_point, 0);
+    // Outlet Event: stand event yang bisa dipilih semua staf di POS (terpisah dari drop point)
+    const isEvent = parseFlag(req.body.is_event, 0);
     const isActive = parseFlag(req.body.is_active, 1);
     const requiresShift = parseFlag(req.body.requires_shift, 1);
 
@@ -92,10 +95,12 @@ export const createOutlet = async (req, res) => {
     }
 
     const [result] = await safeMyWaschenQuery(
-      `INSERT INTO mst_outlet (outlet_code, name, full_name, address, lat, lon, is_drop_point, is_active, requires_shift)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [formattedCode, name.trim(), full_name.trim(), address?.trim() || null, coords.lat, coords.lon, isDropPoint, isActive, requiresShift]
+      `INSERT INTO mst_outlet (outlet_code, name, full_name, address, lat, lon, is_drop_point, is_event, is_active, requires_shift)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [formattedCode, name.trim(), full_name.trim(), address?.trim() || null, coords.lat, coords.lon, isDropPoint, isEvent, isActive, requiresShift]
     );
+
+    notifyPosOutletUpdated(result.insertId);
 
     // Outlet baru TIDAK otomatis mendapat layanan (tidak ada baris mst_service_outlet = tidak tersedia).
     // Admin menambahkan layanannya manual lewat Master Layanan (keputusan user 2026-11-15).
@@ -130,6 +135,7 @@ export const updateOutlet = async (req, res) => {
     const formattedCode = outlet_code.trim().toUpperCase();
     // Tidak dikirim → nilai lama dipertahankan.
     const isDropPoint = parseFlag(req.body.is_drop_point, null);
+    const isEvent = parseFlag(req.body.is_event, null);
     const isActive = parseFlag(req.body.is_active, null);
     const requiresShift = parseFlag(req.body.requires_shift, null);
 
@@ -144,12 +150,14 @@ export const updateOutlet = async (req, res) => {
     await safeMyWaschenQuery(
       `UPDATE mst_outlet
        SET outlet_code = ?, name = ?, full_name = ?, address = ?, lat = ?, lon = ?,
-           is_drop_point = COALESCE(?, is_drop_point), is_active = COALESCE(?, is_active),
+           is_drop_point = COALESCE(?, is_drop_point), is_event = COALESCE(?, is_event), is_active = COALESCE(?, is_active),
            requires_shift = COALESCE(?, requires_shift), updated_at = NOW()
        WHERE id = ?`,
-      [formattedCode, name.trim(), full_name.trim(), address?.trim() || null, coords.lat, coords.lon, isDropPoint, isActive, requiresShift, id]
+      [formattedCode, name.trim(), full_name.trim(), address?.trim() || null, coords.lat, coords.lon, isDropPoint, isEvent, isActive, requiresShift, id]
     );
 
+    // POS menyesuaikan gerbang shift / status outlet secara realtime
+    notifyPosOutletUpdated(id);
     res.json({ success: true, message: "Outlet berhasil diperbarui" });
   } catch (err) {
     console.error("updateOutlet error:", err);

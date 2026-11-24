@@ -1,5 +1,6 @@
 import { safeMyWaschenQuery, safeQuery } from "../../../db/pool.js";
 import { posFileUrl } from "../utils/waschenPosUpload.js";
+import { getShiftRevenue } from "../utils/revenue.js";
 
 /** Batas upload bukti setoran tunai: H+1 dari tanggal closing (sama dengan POS). */
 const DEPOSIT_DUE_DAYS = 1;
@@ -64,7 +65,12 @@ function formatEmployeeLabel(employeeId, nameMap) {
 
 async function enrichShiftRow(row, nameMap) {
   if (!row) return null;
+  // Revenue = uang masuk di shift (tunai / non tunai), dihitung ulang dari log pembayaran
+  const rev = await getShiftRevenue(row);
   return {
+    revenueTunai: rev.tunai,
+    revenueNonTunai: rev.nonTunai,
+    revenueTotal: rev.total,
     id: row.id,
     outletId: row.outlet_id,
     cashierEmployeeId: row.cashier_employee_id,

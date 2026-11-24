@@ -1,5 +1,6 @@
 import { safeMyWaschenQuery } from "../../../db/pool.js";
 import { defaultCutoffDateRange } from "../utils/cutoffHelpers.js";
+import { REVENUE_PAYMENTS_SQL, revenuePaymentParams, TUNAI_SQL } from "../utils/revenue.js";
 
 /**
  * Filter nota berdasarkan tanggal order (operasional).
@@ -26,31 +27,25 @@ function buildOrderFilters({ outletId, dateFrom, dateTo, alias = "t" }) {
 }
 
 /**
- * Filter revenue: payment_status <> Outstanding, tanggal berdasarkan paid_at.
- * Contoh: nota tgl 1 Outstanding → bayar tgl 5 → revenue masuk tanggal 5.
+ * Revenue = uang masuk dari pembayaran nota (log DP/Lunas/Pelunasan) pada tanggal bayar — definisi seragam
+ * POS & SuperApp (lihat ../utils/revenue.js). DP ikut dihitung saat dibayar; nota outstanding tidak.
+ * Contoh: nota tgl 1 DP 50rb tgl 1, lunas 75rb tgl 5 → 50rb masuk tgl 1, 75rb masuk tgl 5.
+ * fromSql: rp = baris pembayaran, t = nota.
  */
-function buildRevenueFilters({ outletId, dateFrom, dateTo, alias = "t" }) {
-  const where = [
-    `${alias}.payment_status <> 'Outstanding'`,
-    `${alias}.paid_at IS NOT NULL`,
-    `${alias}.is_delete_requested = 0`,
-  ];
-  const params = [];
-
+function buildRevenueSource({ outletId, dateFrom, dateTo }) {
+  const from = `${dateFrom || "2000-01-01"} 00:00:00`;
+  const to = `${dateTo || "9999-12-31"} 23:59:59`;
+  const where = ["t.is_delete_requested = 0"];
+  const params = [...revenuePaymentParams(from, to)];
   if (outletId) {
-    where.push(`${alias}.outlet_id = ?`);
+    where.push("t.outlet_id = ?");
     params.push(Number(outletId));
   }
-  if (dateFrom) {
-    where.push(`${alias}.paid_at >= ?`);
-    params.push(`${dateFrom} 00:00:00`);
-  }
-  if (dateTo) {
-    where.push(`${alias}.paid_at <= ?`);
-    params.push(`${dateTo} 23:59:59`);
-  }
-
-  return { whereSql: where.join(" AND "), params };
+  return {
+    fromSql: `FROM (${REVENUE_PAYMENTS_SQL}) rp JOIN tr_transaction t ON t.id = rp.transaction_id`,
+    whereSql: where.join(" AND "),
+    params,
+  };
 }
 
 /**
@@ -61,9 +56,11 @@ function buildRevenueFilters({ outletId, dateFrom, dateTo, alias = "t" }) {
 const WASCHEN_SHARE = (alias = "t") =>
   `(CASE WHEN EXISTS (SELECT 1 FROM tr_transaction_detail cx WHERE cx.transaction_id = ${alias}.id AND cx.is_cleanox = 1) THEN 0.30 ELSE 1 END)`;
 
-/** Nominal revenue Waschen: uang yang sudah dibayar (fallback grand_total jika paid_amount kosong) × bagian Waschen. */
-const REVENUE_AMOUNT = (alias = "t") =>
-  `COALESCE(NULLIF(${alias}.paid_amount, 0), ${alias}.grand_total) * ${WASCHEN_SHARE(alias)}`;
+/** Nominal revenue Waschen per baris pembayaran × bagian Waschen. */
+const REVENUE_AMOUNT = () => `rp.amount * ${WASCHEN_SHARE("t")}`;
+
+/** Porsi item terhadap nota (membagi pembayaran ke kategori / layanan secara proporsional). */
+const ITEM_RATIO = `(td.subtotal / NULLIF((SELECT SUM(x.subtotal) FROM tr_transaction_detail x WHERE x.transaction_id = td.transaction_id), 0))`;
 
 export const getDashboard = async (req, res) => {
   try {
@@ -73,8 +70,8 @@ export const getDashboard = async (req, res) => {
     const dateTo = String(req.query.dateTo || defaults.dateTo).trim();
 
     const orderF = buildOrderFilters({ outletId, dateFrom, dateTo });
-    const revF = buildRevenueFilters({ outletId, dateFrom, dateTo });
-    const revAmt = REVENUE_AMOUNT("t");
+    const revF = buildRevenueSource({ outletId, dateFrom, dateTo });
+    const revAmt = REVENUE_AMOUNT();
 
     const [
       [orderSummaryRows],
@@ -109,29 +106,31 @@ export const getDashboard = async (req, res) => {
       ),
       safeMyWaschenQuery(
         `SELECT
-           COUNT(*) AS revenue_orders,
+           COUNT(DISTINCT rp.transaction_id) AS revenue_orders,
            COALESCE(SUM(${revAmt}), 0) AS total_revenue,
-           COALESCE(AVG(${revAmt}), 0) AS avg_order_value,
-           COALESCE(SUM(${revAmt}), 0) AS total_paid
-         FROM tr_transaction t
+           COALESCE(SUM(${revAmt}) / NULLIF(COUNT(DISTINCT rp.transaction_id), 0), 0) AS avg_order_value,
+           COALESCE(SUM(${revAmt}), 0) AS total_paid,
+           COALESCE(SUM(CASE WHEN ${TUNAI_SQL("rp.method")} THEN ${revAmt} ELSE 0 END), 0) AS total_revenue_tunai,
+           COALESCE(SUM(CASE WHEN ${TUNAI_SQL("rp.method")} THEN 0 ELSE ${revAmt} END), 0) AS total_revenue_non_tunai
+         ${revF.fromSql}
          WHERE ${revF.whereSql}`,
         revF.params
       ),
       safeMyWaschenQuery(
-        `SELECT DATE(t.paid_at) AS sale_date,
+        `SELECT DATE(rp.paid_at) AS sale_date,
                 COALESCE(SUM(${revAmt}), 0) AS revenue,
-                COUNT(*) AS order_count
-         FROM tr_transaction t
+                COUNT(DISTINCT rp.transaction_id) AS order_count
+         ${revF.fromSql}
          WHERE ${revF.whereSql}
-         GROUP BY DATE(t.paid_at)
+         GROUP BY DATE(rp.paid_at)
          ORDER BY sale_date ASC`,
         revF.params
       ),
       safeMyWaschenQuery(
         `SELECT o.id AS outlet_id, o.outlet_code, o.name AS outlet_name,
                 COALESCE(SUM(${revAmt}), 0) AS revenue,
-                COUNT(*) AS order_count
-         FROM tr_transaction t
+                COUNT(DISTINCT rp.transaction_id) AS order_count
+         ${revF.fromSql}
          JOIN mst_outlet o ON o.id = t.outlet_id
          WHERE ${revF.whereSql}
          GROUP BY o.id, o.outlet_code, o.name
@@ -141,10 +140,10 @@ export const getDashboard = async (req, res) => {
       safeMyWaschenQuery(
         `SELECT COALESCE(sc.name, 'Lainnya') AS category_name,
                 COALESCE(sc.code, 'OTHER') AS category_code,
-                COALESCE(SUM(td.subtotal * ${WASCHEN_SHARE("t")}), 0) AS revenue,
-                COALESCE(SUM(td.qty), 0) AS qty
-         FROM tr_transaction_detail td
-         JOIN tr_transaction t ON t.id = td.transaction_id
+                COALESCE(SUM(${revAmt} * ${ITEM_RATIO}), 0) AS revenue,
+                COALESCE(SUM(td.qty * rp.amount / NULLIF(t.grand_total, 0)), 0) AS qty
+         ${revF.fromSql}
+         JOIN tr_transaction_detail td ON td.transaction_id = t.id
          JOIN mst_service s ON s.id = td.service_id
          LEFT JOIN mst_service_category sc ON sc.id = s.category_id
          WHERE ${revF.whereSql}
@@ -155,10 +154,10 @@ export const getDashboard = async (req, res) => {
       safeMyWaschenQuery(
         `SELECT s.id AS service_id, s.code AS service_code, s.name AS service_name,
                 COALESCE(sc.name, 'Lainnya') AS category_name,
-                COALESCE(SUM(td.subtotal * ${WASCHEN_SHARE("t")}), 0) AS revenue,
-                COALESCE(SUM(td.qty), 0) AS qty
-         FROM tr_transaction_detail td
-         JOIN tr_transaction t ON t.id = td.transaction_id
+                COALESCE(SUM(${revAmt} * ${ITEM_RATIO}), 0) AS revenue,
+                COALESCE(SUM(td.qty * rp.amount / NULLIF(t.grand_total, 0)), 0) AS qty
+         ${revF.fromSql}
+         JOIN tr_transaction_detail td ON td.transaction_id = t.id
          JOIN mst_service s ON s.id = td.service_id
          LEFT JOIN mst_service_category sc ON sc.id = s.category_id
          WHERE ${revF.whereSql}
@@ -178,20 +177,20 @@ export const getDashboard = async (req, res) => {
         orderF.params
       ),
       safeMyWaschenQuery(
-        `SELECT COALESCE(t.payment_method, 'Belum diisi') AS payment_method,
-                COUNT(*) AS order_count,
+        `SELECT COALESCE(rp.method, 'Belum diisi') AS payment_method,
+                COUNT(DISTINCT rp.transaction_id) AS order_count,
                 COALESCE(SUM(${revAmt}), 0) AS amount
-         FROM tr_transaction t
+         ${revF.fromSql}
          WHERE ${revF.whereSql}
-         GROUP BY t.payment_method
+         GROUP BY rp.method
          ORDER BY amount DESC`,
         revF.params
       ),
       safeMyWaschenQuery(
         `SELECT t.order_category,
-                COUNT(*) AS order_count,
+                COUNT(DISTINCT rp.transaction_id) AS order_count,
                 COALESCE(SUM(${revAmt}), 0) AS revenue
-         FROM tr_transaction t
+         ${revF.fromSql}
          WHERE ${revF.whereSql}
          GROUP BY t.order_category
          ORDER BY revenue DESC`,

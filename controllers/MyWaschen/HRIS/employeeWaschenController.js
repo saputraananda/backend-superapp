@@ -1,6 +1,7 @@
 import { pool, safeQuery, safeMyWaschenQuery } from "../../../db/pool.js";
 import bcrypt from "bcrypt";
 import { getEmployeePinMap, parsePinInput, saveEmployeePin } from "../../../utils/employeePin.js";
+import { WASCHEN_ROLE_VALUES } from "./hrisHelpers.js";
 
 const SORT_COLUMNS = {
   full_name: "e.full_name",
@@ -221,7 +222,7 @@ export const addWaschenEmployee = async (req, res) => {
   try {
     const { mode, employee_id, role, is_leader, outlet_id, full_name, email, username, password } = req.body;
 
-    const ALLOWED_ROLES = ["Frontliner", "Washing Staff", "Ironing Staff", "Packing Staff", "Delivery Staff"];
+    const ALLOWED_ROLES = WASCHEN_ROLE_VALUES;
 
     if (mode === "existing") {
       if (!employee_id) {
@@ -293,7 +294,7 @@ export const updateEmployeeRole = async (req, res) => {
     const { id } = req.params;
     const { role, is_leader, outlet_id, code_pin } = req.body;
 
-    const ALLOWED_ROLES = ["Frontliner", "Washing Staff", "Ironing Staff", "Packing Staff", "Delivery Staff"];
+    const ALLOWED_ROLES = WASCHEN_ROLE_VALUES;
     if (role && !ALLOWED_ROLES.includes(role) && role !== "null" && role !== null) {
       return res.status(400).json({ message: "Posisi tidak valid." });
     }

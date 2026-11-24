@@ -99,9 +99,8 @@ export const updateProfile = async (req, res) => {
     username, mother_name, email, private_email,
   } = req.body;
 
-  if (!employee_code?.trim()) {
-    return res.status(400).json({ message: "Nomor Induk Karyawan wajib diisi." });
-  }
+  // NIK opsional: kosong disimpan NULL; bila diisi wajib unik
+  const employeeCode = employee_code?.trim() || null;
 
   if (company_id === "" || company_id == null) {
     return res.status(400).json({ message: "Perusahaan wajib diisi." });
@@ -120,10 +119,10 @@ export const updateProfile = async (req, res) => {
   const newEmail = email?.trim() || oldEmail;
 
   try {
-    const [existing] = await safeQuery(
+    const [existing] = employeeCode ? await safeQuery(
       "SELECT employee_id FROM mst_employee WHERE employee_code = ? AND email != ? AND is_deleted = 0",
-      [employee_code, oldEmail]
-    );
+      [employeeCode, oldEmail]
+    ) : [[]];
     if (existing.length > 0) {
       return res.status(400).json({ message: "Nomor Induk Karyawan sudah digunakan oleh karyawan lain." });
     }
@@ -174,7 +173,7 @@ export const updateProfile = async (req, res) => {
         toNull(education_level_id), school_name, major_name || null, toNull(religion_id), marital_status,
         bpjs_health_number, bpjs_employment_number, npwp_number,
         toNull(bank_id), bank_account_number, emergency_contact, notes,
-        employee_code, mother_name || null, newEmail, private_email || null, oldEmail,
+        employeeCode, mother_name || null, newEmail, private_email || null, oldEmail,
       ]
     );
 

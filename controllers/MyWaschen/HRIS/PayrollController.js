@@ -22,11 +22,15 @@
 //                      sebelumnya yang belum lunas (+ kasbon lama tanpa jadwal termin).
 //                      Hanya metode 'potong_gaji' yang masuk potongan gaji; 'langsung'
 //                      ditampilkan terpisah (dibayar sendiri oleh karyawan).
+//   Daily Worker     = pekerja lepas: tanpa gaji tetap, jatah libur, maupun kasbon. Hari tanpa
+//                      absen = "tidak bekerja" (bukan tanpa keterangan). Payroll-nya = jam kerja
+//                      + pengerjaan: nota yang dia buat (kasir) + item yang dia QC di semua tahap
+//                      (tr_item_progress), lengkap dengan kg untuk item kiloan.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { safeQuery, safeMyWaschenQuery } from "../../../db/pool.js";
 import { defaultCutoffDateRange } from "../utils/cutoffHelpers.js";
-import { toISODate, resolveMstRoleEmployeeIds, getEmployeeNameMap } from "./hrisHelpers.js";
+import { toISODate, resolveMstRoleEmployeeIds, getEmployeeNameMap, DAILY_WORKER_ROLE } from "./hrisHelpers.js";
 import { loadShiftMap, evaluateShift } from "./attendanceShift.js";
 
 const WASCHEN_COMPANY_ID = 5;
@@ -227,6 +231,8 @@ async function loadActivity(ids, startDate, endDate) {
   locations.forEach((l) => placeMap.set(Number(l.id), { id: Number(l.id), code: l.location_id || null, name: l.location_name, is_outlet: false }));
 
   const roleById = new Map(roles.map((r) => [Number(r.employee_id), r]));
+  const dailyIds = roles.filter((r) => r.role === DAILY_WORKER_ROLE).map((r) => Number(r.employee_id));
+  const work = await loadDailyWork(dailyIds, startDate, endDate);
   const shiftMap = await loadShiftMap();
   attendance.forEach((r) => {
     Object.assign(r, evaluateShift(r, roleById.get(Number(r.employee_id))?.role, shiftMap));
@@ -243,7 +249,128 @@ async function loadActivity(ids, startDate, endDate) {
     payments: group(payments, "kasbon_id"),
     nameMap,
     placeMap,
+    work,
   };
+}
+
+// ── Pengerjaan Daily Worker: nota yang dibuat + QC semua tahap ────────────────
+const isKgUnit = (unit) => String(unit || "").trim().toLowerCase() === "kg";
+const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+const WORK_STAGES = ["frontliner", "washing", "ironing", "packing", "delivery", "handover"];
+
+function addQty(target, unit, qty) {
+  const q = Number(qty) || 0;
+  if (isKgUnit(unit)) target.kg = round2(target.kg + q);
+  else {
+    const u = String(unit || "Item").trim() || "Item";
+    target.units[u] = round2((target.units[u] || 0) + q);
+  }
+}
+
+async function loadDailyWork(ids, startDate, endDate) {
+  const empty = { notas: new Map(), qc: new Map() };
+  if (!ids.length) return empty;
+  const inIds = ph(ids);
+  const from = `${startDate} 00:00:00`;
+  const to = `${endDate} 23:59:59`;
+  const notDeleted = "NOT (COALESCE(t.is_delete_requested, 0) = 1 AND t.delete_approval_status = 1)";
+
+  const [[notaRows], [notaItems], [qcRows]] = await Promise.all([
+    safeMyWaschenQuery(
+      `SELECT t.id, t.order_no, t.cashier_employee_id AS employee_id, t.order_date, t.is_delivery, t.source
+       FROM tr_transaction t
+       WHERE t.cashier_employee_id IN (${inIds}) AND t.order_date BETWEEN ? AND ? AND ${notDeleted}
+       ORDER BY t.order_date ASC, t.id ASC`,
+      [...ids, from, to]),
+    safeMyWaschenQuery(
+      `SELECT d.transaction_id, d.service_name, d.qty, d.unit
+       FROM tr_transaction_detail d
+       JOIN tr_transaction t ON t.id = d.transaction_id
+       WHERE t.cashier_employee_id IN (${inIds}) AND t.order_date BETWEEN ? AND ? AND ${notDeleted}
+         AND COALESCE(d.item_work_status, '') <> 'Dibatalkan'`,
+      [...ids, from, to]),
+    // Satu baris progress = satu pengerjaan (QC) item di satu tahap. Yang dibatalkan tidak dihitung.
+    safeMyWaschenQuery(
+      `SELECT p.id, p.employee_id, p.stage, p.status, p.qc_status, p.transaction_detail_id,
+              COALESCE(p.completed_at, p.created_at) AS worked_at,
+              t.order_no, d.service_name, d.qty, d.unit
+       FROM tr_item_progress p
+       JOIN tr_transaction_detail d ON d.id = p.transaction_detail_id
+       JOIN tr_transaction t ON t.id = p.transaction_id
+       WHERE p.employee_id IN (${inIds}) AND COALESCE(p.status, '') <> 'cancelled'
+         AND COALESCE(p.completed_at, p.created_at) BETWEEN ? AND ? AND ${notDeleted}
+       ORDER BY worked_at ASC, p.id ASC`,
+      [...ids, from, to]),
+  ]);
+
+  const itemsByNota = new Map();
+  notaItems.forEach((d) => {
+    const k = Number(d.transaction_id);
+    if (!itemsByNota.has(k)) itemsByNota.set(k, []);
+    itemsByNota.get(k).push(d);
+  });
+
+  const notas = new Map();
+  notaRows.forEach((t) => {
+    const qty = { kg: 0, units: {} };
+    const items = (itemsByNota.get(Number(t.id)) || []).map((d) => {
+      addQty(qty, d.unit, d.qty);
+      return { service_name: d.service_name || "Item", qty: round2(d.qty), unit: d.unit || null };
+    });
+    const k = Number(t.employee_id);
+    if (!notas.has(k)) notas.set(k, []);
+    notas.get(k).push({
+      id: Number(t.id),
+      order_no: t.order_no,
+      date: toISODate(t.order_date),
+      time: hhmm(t.order_date),
+      is_delivery: Number(t.is_delivery) === 1,
+      source: t.source || "POS",
+      kg: qty.kg,
+      units: qty.units,
+      items,
+    });
+  });
+
+  const qc = new Map();
+  qcRows.forEach((p) => {
+    const k = Number(p.employee_id);
+    if (!qc.has(k)) qc.set(k, []);
+    qc.get(k).push({
+      id: Number(p.id),
+      date: toISODate(p.worked_at),
+      time: hhmm(p.worked_at),
+      stage: p.stage,
+      status: p.status,
+      qc_status: p.qc_status || null,
+      order_no: p.order_no,
+      service_name: p.service_name || "Item",
+      qty: round2(p.qty),
+      unit: p.unit || null,
+      is_kg: isKgUnit(p.unit),
+    });
+  });
+  return { notas, qc };
+}
+
+// Ringkasan pengerjaan: nota (jumlah, kg, satuan) + QC per tahap (jumlah item, kg, satuan)
+function summarizeWork(notas, qcList) {
+  const nota = { count: notas.length, kg: 0, units: {} };
+  notas.forEach((n) => {
+    nota.kg = round2(nota.kg + n.kg);
+    Object.entries(n.units).forEach(([u, q]) => { nota.units[u] = round2((nota.units[u] || 0) + q); });
+  });
+  const stages = {};
+  WORK_STAGES.forEach((s) => { stages[s] = { count: 0, kg: 0, units: {} }; });
+  qcList.forEach((p) => {
+    const s = stages[p.stage] || (stages[p.stage] = { count: 0, kg: 0, units: {} });
+    s.count += 1;
+    addQty(s, p.unit, p.qty);
+  });
+  const qcTotal = qcList.length;
+  const qcKg = round2(Object.values(stages).reduce((t, s) => t + s.kg, 0));
+  const days = new Set([...notas.map((n) => n.date), ...qcList.map((p) => p.date)].filter(Boolean));
+  return { nota, qc: { total: qcTotal, kg: qcKg, stages }, active_days: days.size };
 }
 
 const placeOf = (ctx, id) =>
@@ -457,7 +584,11 @@ function buildEmployee(emp, ctx, startDate, endDate, withDetail) {
   const yesterday = shiftISO(today, -1);
   const scopeFrom = emp.join_date && emp.join_date > startDate ? emp.join_date : startDate;
   const scopeTo = [endDate, yesterday, emp.exit_date].filter(Boolean).sort()[0];
-  const noInfoDates = scopeFrom <= scopeTo
+  // Daily Worker datang hanya saat dibutuhkan → hari tanpa absen bukan "tanpa keterangan"
+  const isDaily = roleRow?.role === DAILY_WORKER_ROLE;
+  const workNotas = isDaily ? ctx.work.notas.get(id) || [] : [];
+  const workQc = isDaily ? ctx.work.qc.get(id) || [] : [];
+  const noInfoDates = !isDaily && scopeFrom <= scopeTo
     ? eachDate(scopeFrom, scopeTo).filter((d) => !hadirDates.has(d) && !offDates.has(d) && !leaveByDate.has(d))
     : [];
 
@@ -473,6 +604,8 @@ function buildEmployee(emp, ctx, startDate, endDate, withDetail) {
     join_date: emp.join_date,
     exit_date: emp.exit_date,
     role: roleRow?.role || null,
+    is_daily_worker: isDaily,
+    work: isDaily ? summarizeWork(workNotas, workQc) : null,
     is_leader: Number(roleRow?.is_leader) === 1,
     home_outlet: home,
     hadir: hadirDates.size,
@@ -508,6 +641,9 @@ function buildEmployee(emp, ctx, startDate, endDate, withDetail) {
 
   // ── Detail: kalender harian + daftar per kategori ──
   const noInfoSet = new Set(noInfoDates);
+  const countByDate = (list) => list.reduce((m, r) => m.set(r.date, (m.get(r.date) || 0) + 1), new Map());
+  const notaByDate = countByDate(workNotas);
+  const qcByDate = countByDate(workQc);
   const days = eachDate(startDate, endDate).map((d) => {
     const recs = (byDate.get(d) || []).filter((r) => r.check_in_time);
     const first = recs[0] || null;
@@ -520,6 +656,7 @@ function buildEmployee(emp, ctx, startDate, endDate, withDetail) {
     else if (noInfoSet.has(d)) status = "tanpa_keterangan";
     else if (emp.join_date && d < emp.join_date) status = "belum_bergabung";
     else if (emp.exit_date && d > emp.exit_date) status = "sudah_keluar";
+    else if (isDaily && d <= yesterday) status = "tidak_bekerja";
     else status = "belum_berjalan";
     return {
       date: d,
@@ -539,6 +676,8 @@ function buildEmployee(emp, ctx, startDate, endDate, withDetail) {
       outside_home: Boolean(first && homeOutletId && Number(first.outlet_id) !== homeOutletId),
       overtime_minutes: otByDate.get(d) || 0,
       backup_for: backupByDate.get(d) || [],
+      nota_count: notaByDate.get(d) || 0,
+      qc_count: qcByDate.get(d) || 0,
       note: [first?.check_in_note, last?.check_out_note].filter(Boolean).join(" · ") || null,
     };
   });
@@ -585,6 +724,8 @@ function buildEmployee(emp, ctx, startDate, endDate, withDetail) {
     })),
     kasbon_list: kasbonList,
     pinjaman_list: pinjamanList,
+    work_notas: workNotas,
+    work_qc: workQc,
   };
 }
 

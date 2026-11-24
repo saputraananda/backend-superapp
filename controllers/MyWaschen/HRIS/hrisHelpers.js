@@ -6,7 +6,18 @@ export const WASCHEN_ROLE_VALUES = [
   "Ironing Staff",
   "Packing Staff",
   "Delivery Staff",
+  "Daily Worker",
 ];
+
+/** Pekerja lepas: tanpa gaji tetap, jatah libur, kasbon. Payroll = jam kerja + pengerjaan. */
+export const DAILY_WORKER_ROLE = "Daily Worker";
+
+export async function isDailyWorker(employeeId) {
+  const id = Number(employeeId) || 0;
+  if (!id) return false;
+  const [rows] = await safeMyWaschenQuery("SELECT role FROM mst_role WHERE employee_id = ? LIMIT 1", [id]);
+  return rows[0]?.role === DAILY_WORKER_ROLE;
+}
 
 export function toISODate(v) {
   if (!v) return null;

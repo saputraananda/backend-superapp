@@ -2,7 +2,7 @@ import { safeQuery, safeMyWaschenQuery, myWaschenPool } from "../../../db/pool.j
 
 import { defaultCutoffDateRange } from "../utils/cutoffHelpers.js";
 
-import { getActor, toISODate, resolveMstRoleEmployeeIds, appendEmployeeIdInClause } from "./hrisHelpers.js";
+import { getActor, toISODate, resolveMstRoleEmployeeIds, appendEmployeeIdInClause, isDailyWorker } from "./hrisHelpers.js";
 
 import { buildKasbonProofUrl } from "./hrisAssetHelpers.js";
 
@@ -796,6 +796,10 @@ export const createOpeningBalance = async (req, res) => {
 
       return res.status(422).json({ success: false, message: "Karyawan dan jenis saldo awal wajib diisi" });
 
+    }
+
+    if (await isDailyWorker(employeeId)) {
+      return res.status(422).json({ success: false, message: "Daily Worker tidak memakai kasbon/pinjaman" });
     }
 
     if (paymentMethod !== "potong_gaji" && paymentMethod !== "langsung") {

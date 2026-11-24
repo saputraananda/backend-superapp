@@ -1,6 +1,6 @@
 import { safeMyWaschenQuery, safeQuery } from "../../../db/pool.js";
 import { defaultCutoffDateRange } from "../utils/cutoffHelpers.js";
-import { getActor, getEmployeeNameMap, toISODate, resolveMstRoleEmployeeIds, appendEmployeeIdInClause } from "./hrisHelpers.js";
+import { getActor, getEmployeeNameMap, toISODate, resolveMstRoleEmployeeIds, appendEmployeeIdInClause, isDailyWorker } from "./hrisHelpers.js";
 
 async function resolveBackupId(raw, employeeId, offDate) {
   if (raw === undefined || raw === null || raw === "") return null;
@@ -150,6 +150,9 @@ export const adminAssignDayOff = async (req, res) => {
     const reason = String(req.body.reason || "").trim();
     if (!employeeId || !offDate || !reason) {
       return res.status(422).json({ success: false, message: "Karyawan, tanggal, dan alasan wajib" });
+    }
+    if (await isDailyWorker(employeeId)) {
+      return res.status(422).json({ success: false, message: "Daily Worker tidak memakai jadwal libur" });
     }
     const backupId = await resolveBackupId(req.body.backup_employee_id, employeeId, offDate);
     const d = new Date(`${offDate}T12:00:00`);
