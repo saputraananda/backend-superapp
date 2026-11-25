@@ -93,6 +93,18 @@ export const getLinenTransactions = async (req, res) => {
 
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
+    // Kurang / lebih kirim disamakan dengan LMS (Kurang Kirim Linen): dihitung per baris,
+    // hanya linen reguler (komersil punya halaman sendiri), dan hanya formulir SELESAI.
+    // Formulir yang belum selesai → NULL (tampil "—").
+    const kurangLebihSql = `
+             CASE WHEN tr.status = 'SELESAI' THEN COALESCE(SUM(CASE WHEN d.is_commercial = 0 AND d.qty_kotor > COALESCE(d.qty_bersih, 0)
+               THEN d.qty_kotor - COALESCE(d.qty_bersih, 0) ELSE 0 END), 0) END AS kurang_kirim,
+             CASE WHEN tr.status = 'SELESAI' THEN COALESCE(SUM(CASE WHEN d.is_commercial = 0 AND COALESCE(d.qty_bersih, 0) > d.qty_kotor
+               THEN COALESCE(d.qty_bersih, 0) - d.qty_kotor ELSE 0 END), 0) END AS lebih_kirim`;
+    const kurangOnlySql = kurang_kirim_only === 'true' || kurang_kirim_only === true
+      ? 'HAVING kurang_kirim > 0 OR lebih_kirim > 0'
+      : '';
+
     // Count SQL
     let countParams = [];
     if (room_id) {
@@ -102,16 +114,14 @@ export const getLinenTransactions = async (req, res) => {
 
     const countSql = `
       SELECT COUNT(*) AS total FROM (
-        SELECT tr.id,
-               COALESCE(SUM(d.qty_kotor), 0) AS total_kotor,
-               COALESCE(SUM(d.qty_bersih), 0) AS total_bersih
+        SELECT tr.id,${kurangLebihSql}
         FROM tr_linen_transaction tr
         LEFT JOIN mst_hospital h ON h.id = tr.hospital_id
         LEFT JOIN tr_linen_transaction_detail d ON d.transaction_id = tr.id
         ${room_id ? 'INNER JOIN mst_hospital_linen_rooms hlr ON hlr.hospital_linen_id = d.hospital_linen_id AND hlr.room_id = ?' : ''}
         ${whereSql}
         GROUP BY tr.id
-        ${kurang_kirim_only === 'true' || kurang_kirim_only === true ? 'HAVING total_kotor != total_bersih' : ''}
+        ${kurangOnlySql}
       ) temp
     `;
 
@@ -129,15 +139,14 @@ export const getLinenTransactions = async (req, res) => {
              tr.total_kg_valet, tr.is_express, tr.total_kg_admin,
              h.hospital_name, h.billing_by_kg, h.allow_express, h.kg_agreement,
              COALESCE(SUM(d.qty_kotor), 0) AS total_kotor,
-             COALESCE(SUM(d.qty_bersih), 0) AS total_bersih,
-             (COALESCE(SUM(d.qty_kotor), 0) - COALESCE(SUM(d.qty_bersih), 0)) AS kurang_kirim
+             COALESCE(SUM(d.qty_bersih), 0) AS total_bersih,${kurangLebihSql}
       FROM tr_linen_transaction tr
       LEFT JOIN mst_hospital h ON h.id = tr.hospital_id
       LEFT JOIN tr_linen_transaction_detail d ON d.transaction_id = tr.id
       ${room_id ? 'INNER JOIN mst_hospital_linen_rooms hlr ON hlr.hospital_linen_id = d.hospital_linen_id AND hlr.room_id = ?' : ''}
       ${whereSql}
       GROUP BY tr.id
-      ${kurang_kirim_only === 'true' || kurang_kirim_only === true ? 'HAVING total_kotor != total_bersih' : ''}
+      ${kurangOnlySql}
       ORDER BY tr.pickup_date DESC, tr.id DESC
       LIMIT ? OFFSET ?
     `;
