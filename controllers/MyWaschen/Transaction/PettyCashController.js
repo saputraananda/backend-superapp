@@ -1,4 +1,5 @@
 import { safeMyWaschenQuery, safeQuery } from "../../../db/pool.js";
+import { notifyPosPettyCashUpdated } from "../utils/notifyPosPettyCash.js";
 
 function num(v, fallback = 0) {
   const n = Number(v);
@@ -119,14 +120,20 @@ async function getOutletPettyBalance(outletId) {
   );
   const hasOpenShift = shiftRows.length > 0;
   const initialPettyCash = hasOpenShift ? num(shiftRows[0].initial_petty_cash) : 0;
+  // Hanya mutasi shift yang sedang buka (modal awal sudah membawa sisa shift sebelumnya). Sama dengan POS.
+  const shiftScope = hasOpenShift ? "shift_id = ?" : "shift_id IS NULL";
+  const shiftParams = hasOpenShift ? [shiftRows[0].id] : [];
 
+  // Uang tunai di laci: Masuk dihitung setelah disetujui; Keluar dihitung sejak Pengajuan
+  // (uang sudah keluar dari laci). Ditolak tidak dihitung → saldo otomatis kembali. Sama dengan POS.
   const [moves] = await safeMyWaschenQuery(
     `SELECT
-       COALESCE(SUM(CASE WHEN type = 'Masuk' THEN amount ELSE 0 END), 0) AS masuk,
-       COALESCE(SUM(CASE WHEN type = 'Keluar' THEN amount ELSE 0 END), 0) AS keluar
+       COALESCE(SUM(CASE WHEN type = 'Masuk' AND status = 'Disetujui' THEN amount ELSE 0 END), 0) AS masuk,
+       COALESCE(SUM(CASE WHEN type = 'Keluar' AND status IN ('Disetujui', 'Pengajuan') THEN amount ELSE 0 END), 0) AS keluar
      FROM tr_petty_cash
-     WHERE outlet_id = ? AND status = 'Disetujui' AND COALESCE(is_petty_cash, 1) = 1`,
-    [outletId]
+     WHERE outlet_id = ? AND status IN ('Disetujui', 'Pengajuan') AND COALESCE(is_petty_cash, 1) = 1
+       AND ${shiftScope}`,
+    [outletId, ...shiftParams]
   );
 
   const masuk = num(moves[0]?.masuk);
@@ -347,6 +354,8 @@ export const updatePettyCash = async (req, res) => {
       [outletId, type, category, isPettyCash, amount, description, id]
     );
 
+    notifyPosPettyCashUpdated({ id, outletId });
+    if (Number(row.outlet_id) !== Number(outletId)) notifyPosPettyCashUpdated({ outletId: row.outlet_id });
     res.json({ success: true, message: "Pengajuan petty cash diperbarui" });
   } catch (err) {
     console.error("updatePettyCash error:", err);
@@ -382,6 +391,7 @@ export const approvePettyCash = async (req, res) => {
       [employeeId, id]
     );
 
+    notifyPosPettyCashUpdated({ id, outletId: row.outlet_id });
     res.json({ success: true, message: "Pengajuan petty cash disetujui" });
   } catch (err) {
     console.error("approvePettyCash error:", err);
@@ -422,6 +432,7 @@ export const rejectPettyCash = async (req, res) => {
       [employeeId, rejectedReason, id]
     );
 
+    notifyPosPettyCashUpdated({ id, outletId: row.outlet_id });
     res.json({ success: true, message: "Pengajuan petty cash ditolak" });
   } catch (err) {
     console.error("rejectPettyCash error:", err);
@@ -445,6 +456,7 @@ export const deletePettyCash = async (req, res) => {
     }
 
     await safeMyWaschenQuery("DELETE FROM tr_petty_cash WHERE id = ?", [id]);
+    notifyPosPettyCashUpdated({ outletId: rows[0].outlet_id });
     res.json({ success: true, message: "Pengajuan petty cash dihapus" });
   } catch (err) {
     console.error("deletePettyCash error:", err);
