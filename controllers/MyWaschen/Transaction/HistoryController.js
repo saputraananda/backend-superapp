@@ -137,6 +137,7 @@ function mapTransactionRow(row) {
     deleteRequestedAt: row.delete_requested_at,
     deleteReason: row.delete_reason,
     deleteAttachmentUrl: posFileUrl(row.delete_attachment_url),
+    deleteRequestedByName: row.delete_requested_by_name || null,
     refundPendingCount: num(row.refund_pending_count),
     itemCount: num(row.item_count),
   };
@@ -370,11 +371,29 @@ export const getTransactions = async (req, res) => {
 
     await attachQueueNo(safeMyWaschenQuery, rows);
 
-    // cashier / settler names from main DB (best-effort)
+    // Pengaju hapus nota: kolom delete_requested_by_employee_id; data lama (sebelum kolom ada)
+    // memakai pengaju refund otomatis "Hapus Nota" bila nota itu sudah dibayar.
+    if (isDeleteList && rows.length) {
+      const missing = rows.filter((r) => !r.delete_requested_by_employee_id).map((r) => r.id);
+      if (missing.length) {
+        const [rf] = await safeMyWaschenQuery(
+          `SELECT transaction_id, requested_by_employee_id FROM tr_transaction_refund
+           WHERE source = 'Hapus Nota' AND requested_by_employee_id IS NOT NULL AND transaction_id IN (${missing.map(() => "?").join(",")})
+           ORDER BY id ASC`,
+          missing
+        );
+        const byTxn = new Map(rf.map((r) => [r.transaction_id, r.requested_by_employee_id]));
+        rows.forEach((r) => {
+          if (!r.delete_requested_by_employee_id && byTxn.has(r.id)) r.delete_requested_by_employee_id = byTxn.get(r.id);
+        });
+      }
+    }
+
+    // cashier / settler / pengaju hapus names from main DB (best-effort)
     const cashierIds = [
       ...new Set(
         rows
-          .flatMap((r) => [r.cashier_employee_id, r.settled_by_employee_id])
+          .flatMap((r) => [r.cashier_employee_id, r.settled_by_employee_id, r.delete_requested_by_employee_id])
           .filter(Boolean)
       ),
     ];
@@ -392,6 +411,7 @@ export const getTransactions = async (req, res) => {
         ...r,
         cashier_name: cashierMap[r.cashier_employee_id] || null,
         settled_by_name: cashierMap[r.settled_by_employee_id] || null,
+        delete_requested_by_name: cashierMap[r.delete_requested_by_employee_id] || null,
       })
     );
 
@@ -762,6 +782,14 @@ export const requestDeleteTransaction = async (req, res) => {
        WHERE id = ?`,
       [reason, attachmentPath, rows[0].id]
     );
+    // Pengaju = karyawan login SuperApp (kolom baru; abaikan bila belum dimigrasi)
+    const requesterId = Number(req.session?.employeeId) || null;
+    if (requesterId) {
+      await safeMyWaschenQuery(
+        "UPDATE tr_transaction SET delete_requested_by_employee_id = ? WHERE id = ?",
+        [requesterId, rows[0].id]
+      ).catch((err) => { if (err?.code !== "ER_BAD_FIELD_ERROR") throw err; });
+    }
 
     res.json({
       success: true,
