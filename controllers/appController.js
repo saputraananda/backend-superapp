@@ -1,5 +1,6 @@
-import { safeQuery, safeSmartlinkQuery } from "../db/pool.js";
-import { effectiveCustomerTarget, loadCustomerTargets, loadTargetSalesRows, targetSalesDerivedSql } from "./MyWaschen/utils/targetWaschen.js";
+import { safeQuery, safeMyWaschenQuery } from "../db/pool.js";
+import { effectiveCustomerTarget, getEffectiveSalesTargetsForMonth, loadCustomerTargets } from "./MyWaschen/utils/targetWaschen.js";
+import { REVENUE_PAYMENTS_SQL, revenuePaymentParams, WASCHEN_SHARE } from "./MyWaschen/utils/revenue.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Employee Stats — data real dari mst_employee
@@ -88,136 +89,70 @@ export const getApps = async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // NEW: Get Sales Stats dari Smartlink DB
 // ═══════════════════════════════════════════════════════════════════════════
+/** Tanggal lokal (WIB, timezone pool) → 'YYYY-MM-DD'. */
+const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+/** Periode cutoff berjalan (26 → 25) berdasarkan hari ini; bulan target = bulan tanggal akhir. */
+function currentCutoff(now = new Date()) {
+  const endMonth = now.getDate() > 25
+    ? new Date(now.getFullYear(), now.getMonth() + 1, 1)
+    : new Date(now.getFullYear(), now.getMonth(), 1);
+  const start = new Date(endMonth.getFullYear(), endMonth.getMonth() - 1, 26);
+  const end = new Date(endMonth.getFullYear(), endMonth.getMonth(), 25);
+  return { start, end, tahun: endMonth.getFullYear(), bulan: endMonth.getMonth() + 1 };
+}
+
+const dayDiff = (a, b) => Math.round((new Date(b.getFullYear(), b.getMonth(), b.getDate()) - new Date(a.getFullYear(), a.getMonth(), a.getDate())) / 86400000);
+
+/**
+ * Kartu "Total Sales" Portal — data myWaschen (bukan lagi waschen_smartlink).
+ * Sales = revenue Waschen (pembayaran DP/Lunas/Pelunasan, nota Cleanox 30%), definisi yang sama
+ * dengan Dashboard Waschen. Periode cutoff berjalan sampai sekarang (POS real-time).
+ * Target = mst_target_waschen per outlet (otomatis ikut bulan sebelumnya bila kosong).
+ */
 export const getSalesStats = async (req, res) => {
   try {
-    // Target dari myWaschen.mst_target_waschen (bukan lagi waschen_smartlink.target_sales)
-    const targetSql = targetSalesDerivedSql(await loadTargetSalesRows());
+    const now = new Date();
+    const { start, end, tahun, bulan } = currentCutoff(now);
+    const targets = await getEffectiveSalesTargetsForMonth(tahun, bulan);
 
-    // Query kompleks dari user (dengan sedikit penyesuaian)
-    const sql = `
-      WITH param AS (
-        SELECT
-          CURDATE() AS today,
-          DAY(CURDATE()) AS hari_ini,
-          CASE 
-            WHEN DAY(CURDATE()) > 25 
-              THEN DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-26'))
-            ELSE 
-              DATE(CONCAT(
-                YEAR(DATE_SUB(CURDATE(), INTERVAL 1 MONTH)), '-', 
-                MONTH(DATE_SUB(CURDATE(), INTERVAL 1 MONTH)), '-26'
-              ))
-          END AS date_start,
-          CASE 
-            WHEN DAY(CURDATE()) > 25 
-              THEN DATE(CONCAT(
-                YEAR(DATE_ADD(CURDATE(), INTERVAL 1 MONTH)), '-', 
-                MONTH(DATE_ADD(CURDATE(), INTERVAL 1 MONTH)), '-25'
-              ))
-            ELSE 
-              DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-25'))
-          END AS date_end,
-          DATE_SUB(CURDATE(), INTERVAL 1 DAY) AS yesterday
-      ),
-      reguler_daily AS (
-        SELECT 
-          outlet, 
-          DATE(rtrp.waktu_pembayaran) AS tanggal, 
-          SUM(rtrp.nominal_bayar) AS total_bayar
-        FROM rekap_transaksi_reguler_pembayaran rtrp
-        JOIN param p 
-          ON DATE(rtrp.waktu_pembayaran) 
-          BETWEEN p.date_start AND p.yesterday
-        WHERE jenis_bayar <> 'e-money' 
-          AND no_nota NOT IN ('JDS250308134809893','JRC250412083723856','LKZ250422142258203','QSE250429084550314','POS250430090223407','MDR250430160351857','TSI250501092607556','YOX250501094449877','PWX250501094618850','CAY250501162309243','AIR250502165019925','VYO250504101231388','BPZ250505153114890','YNZ250506084550029','LPA250509104354921','JKM250509133602454','ATR250509155731919','UVN250509155937609','COZ250510085855458','KCE250510092127311','PPR250511104248281','ULX250511141125683','CPD250511150921365','MSB250512102328567','YSS250512142214977','ESY250514094634398','VOE250514104206010','NPA250514134849617','KIZ250514150134296','RJR250514150240950','VBJ250521105035645','WSL250612090231990','XND250612090410209','ESZ250622092835859','VRB250705145607387','WNP250707092257535','ZQN250707095003871','ZQG250723150341368','SNR250726152557061','ZTZ250819164141353','MLL250911095440273','OXI250916160645735','TYO250919133458354','OSD250919135615402','QGC250927143951995','FGH251010145932475','EYF251013085108373','VPA251015090406450','LIZ251019134650581','DOT251027093136503','ORC251027100046038','KZZ251119154110977')
-        GROUP BY 1, 2
-      ),
-      emoney_daily AS (
-        SELECT 
-          outlet,
-          DATE(rpe.tanggal_beli) AS tanggal,
-          SUM(rpe.grand_total) AS total_saldo
-        FROM rekap_pembelian_emoney rpe
-        JOIN param p 
-          ON DATE(rpe.tanggal_beli) 
-          BETWEEN p.date_start AND p.yesterday
-        GROUP BY 1, 2
-      ),
-      combined_daily AS (
-        SELECT
-          COALESCE(r.outlet, e.outlet) COLLATE utf8mb4_unicode_ci AS outlet,
-          COALESCE(r.tanggal, e.tanggal) AS tanggal,
-          COALESCE(r.total_bayar, 0) + COALESCE(e.total_saldo, 0) AS total_revenue
-        FROM reguler_daily r
-        LEFT JOIN emoney_daily e
-          ON r.outlet COLLATE utf8mb4_unicode_ci = e.outlet
-          AND r.tanggal = e.tanggal
-        UNION ALL
-        SELECT
-          COALESCE(r.outlet, e.outlet) COLLATE utf8mb4_unicode_ci AS outlet,
-          COALESCE(r.tanggal, e.tanggal) AS tanggal,
-          COALESCE(r.total_bayar, 0) + COALESCE(e.total_saldo, 0) AS total_revenue
-        FROM reguler_daily r
-        RIGHT JOIN emoney_daily e
-          ON r.outlet COLLATE utf8mb4_unicode_ci = e.outlet
-          AND r.tanggal = e.tanggal
-        WHERE r.outlet IS NULL
-      ),
-      actual AS (
-        SELECT
-          outlet,
-          SUM(total_revenue) AS actual_sales
-        FROM combined_daily
-        GROUP BY outlet
-      )
-      SELECT
-        t.outlet,
-        p.date_start,
-        p.yesterday,
-        p.date_end,
-        DATEDIFF(p.yesterday, p.date_start) + 1 AS date_count,
-        DATEDIFF(p.date_end, p.date_start) + 1 AS total_day,
-        ROUND(((DATEDIFF(p.yesterday, p.date_start) + 1) /
-        (DATEDIFF(p.date_end, p.date_start) + 1))*100,2) AS persen_target_kumulatif,
-        ((DATEDIFF(p.yesterday, p.date_start) + 1) /
-        (DATEDIFF(p.date_end, p.date_start) + 1)) * t.nominal AS target_kumulatif_sales,
-        t.nominal AS target_bulanan,
-        COALESCE(a.actual_sales, 0) AS actual_sales,
-        (
-          COALESCE(a.actual_sales, 0)
-          -
-          (((DATEDIFF(p.yesterday, p.date_start) + 1) /
-          (DATEDIFF(p.date_end, p.date_start) + 1)) * t.nominal)
-        ) AS gap_nominal,
-        ROUND((COALESCE(a.actual_sales, 0) / NULLIF(t.nominal, 0))*100,2) AS persen_actual,
-        ROUND(((
-          (COALESCE(a.actual_sales, 0) / NULLIF(t.nominal, 0))
-          -
-          (
-            (DATEDIFF(p.yesterday, p.date_start) + 1) /
-            (DATEDIFF(p.date_end, p.date_start) + 1)
-          )
-        ))*100,2) AS persen_gap
-      FROM param p
-      CROSS JOIN ${targetSql} t
-        ON t.tahun = YEAR(p.date_end) AND t.bulan = MONTH(p.date_end)
-      LEFT JOIN actual a 
-        ON a.outlet COLLATE utf8mb4_unicode_ci
-        = t.outlet COLLATE utf8mb4_unicode_ci
-      ORDER BY t.outlet
-    `;
+    const from = `${ymd(start)} 00:00:00`;
+    const to = `${ymd(now)} 23:59:59`;
+    const [actualRows] = await safeMyWaschenQuery(
+      `SELECT t.outlet_id, SUM(rp.amount * ${WASCHEN_SHARE("t")}) AS actual_sales
+       FROM (${REVENUE_PAYMENTS_SQL}) rp
+       JOIN tr_transaction t ON t.id = rp.transaction_id
+       WHERE t.is_delete_requested = 0
+       GROUP BY t.outlet_id`,
+      revenuePaymentParams(from, to)
+    );
+    const actualByOutlet = new Map(actualRows.map((r) => [Number(r.outlet_id), Number(r.actual_sales) || 0]));
 
-    const [rows] = await safeSmartlinkQuery(sql, []);
+    // Hari berjalan / total hari periode → target kumulatif s.d. hari ini
+    const totalDay = dayDiff(start, end) + 1;
+    const dateCount = Math.min(totalDay, Math.max(0, dayDiff(start, now) + 1));
+    const ratio = totalDay > 0 ? dateCount / totalDay : 0;
 
-    // Aggregate: sum actual_sales & target_bulanan
-    const totalActual = rows.reduce((sum, row) => sum + (Number(row.actual_sales) || 0), 0);
-    const totalTarget = rows.reduce((sum, row) => sum + (Number(row.target_bulanan) || 0), 0);
+    const detail = targets.map((t) => {
+      const target = Number(t.nominal) || 0;
+      const actual = actualByOutlet.get(Number(t.outlet_id)) || 0;
+      const persenActual = target > 0 ? (actual / target) * 100 : 0;
+      return {
+        outlet_id: t.outlet_id,
+        target_bulanan: target,
+        actual_sales: Math.round(actual),
+        target_kumulatif_sales: Math.round(ratio * target),
+        gap_nominal: Math.round(actual - ratio * target),
+        persen_actual: Number(persenActual.toFixed(2)),
+        persen_gap: Number((persenActual - ratio * 100).toFixed(2)),
+      };
+    });
+
+    // Total = semua outlet (termasuk outlet tanpa target, mis. drop point / event)
+    const totalActual = Math.round([...actualByOutlet.values()].reduce((a, b) => a + b, 0));
+    const totalTarget = detail.reduce((sum, r) => sum + r.target_bulanan, 0);
     const percentage = totalTarget > 0 ? Math.round((totalActual / totalTarget) * 100) : 0;
-
-    // ✨ TAMBAHKAN: AVG persen_gap untuk growth
-    const avgPersenGap = rows.length > 0
-      ? rows.reduce((sum, row) => sum + (Number(row.persen_gap) || 0), 0) / rows.length
-      : 0;
+    const salesGrowth = totalTarget > 0 ? ((totalActual / totalTarget) - ratio) * 100 : 0;
 
     res.json({
       success: true,
@@ -225,13 +160,12 @@ export const getSalesStats = async (req, res) => {
         actual_sales: totalActual,
         target_bulanan: totalTarget,
         percentage,
-        sales_growth: Number(avgPersenGap.toFixed(2)), // ← tambahkan ini
-        period_start: rows[0]?.date_start || null,
-        period_end: rows[0]?.date_end || null,
-        detail_per_outlet: rows,
+        sales_growth: Number(salesGrowth.toFixed(2)),
+        period_start: ymd(start),
+        period_end: ymd(end),
+        detail_per_outlet: detail,
       },
     });
-
   } catch (error) {
     console.error("[getSalesStats] Error:", error);
     res.status(500).json({
@@ -241,16 +175,18 @@ export const getSalesStats = async (req, res) => {
   }
 };
 
-// ═══════════════════════════════════════════════════════════════════════════
-// NEW: Get Customer Target dari Smartlink DB
-// ═══════════════════════════════════════════════════════════════════════════
+/**
+ * Kartu "Total Customer Baru" Portal — data myWaschen (bukan lagi waschen_smartlink).
+ * Aktif = basis tahun lalu (mst_target_customer_waschen) + pelanggan yang terdaftar sejak 26 Jan
+ * tahun ini (mst_customer.created_at, tanggal daftar asli hasil migrasi Smartlink) DAN punya nota
+ * di periode itu. Pengecualian sama dengan query lama: nama haji/tni/dumm/tes, item haji.
+ */
 export const getCustomerTargets = async (req, res) => {
   try {
     const now = new Date();
     const currentYear = now.getFullYear();
-    const pad = (n) => String(n).padStart(2, "0");
     const obsStart = `${currentYear}-01-26`;
-    const obsEnd = `${currentYear}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+    const obsEnd = ymd(now);
 
     // Target customer dari myWaschen.mst_target_customer_waschen.
     // Tahun berjalan yang belum diisi otomatis mengikuti target tahun sebelumnya.
@@ -259,66 +195,25 @@ export const getCustomerTargets = async (req, res) => {
     // Tahun lalu = nilai tersimpan saja (dipakai sebagai basis customer yang sudah ada)
     const existingCustomer = customerTargets.find((r) => r.tahun === currentYear - 1)?.jumlah ?? 0;
 
-    const sql = `
-      WITH cust AS (
-        SELECT
-          CONCAT_WS('|',
-            LOWER(TRIM(nama)) COLLATE utf8mb4_unicode_ci,
-            REGEXP_REPLACE(nomor_telpon,'[^0-9]','') COLLATE utf8mb4_unicode_ci
-          ) AS customer_key,
-          CASE
-            WHEN DATE(terdaftar_sejak) BETWEEN ? AND ?
-            THEN 'Pelanggan Baru'
-            ELSE 'Pelanggan Lama'
-          END AS status_pelanggan
-        FROM customer
-        WHERE nama NOT LIKE '%haji%'
-          AND nama NOT LIKE '%tni%'
-          AND nama NOT LIKE '%dumm%'
-          AND nama NOT LIKE '%tes%'
-          AND DATE(terdaftar_sejak) <= ?
-      ),
-      txn_big AS (
-        SELECT DISTINCT
-          CONCAT_WS('|',
-            LOWER(TRIM(customer_nama)) COLLATE utf8mb4_unicode_ci,
-            REGEXP_REPLACE(customer_telepon,'[^0-9]','') COLLATE utf8mb4_unicode_ci
-          ) AS customer_key
-        FROM rekap_transaksi_reguler r
-        WHERE DATE(r.tgl_terima) BETWEEN ? AND ?
-          AND r.nama_item NOT LIKE '%haji%'
-      ),
-      txn_after_cutoff AS (
-        SELECT DISTINCT
-          CONCAT_WS('|',
-            LOWER(TRIM(customer_nama)) COLLATE utf8mb4_unicode_ci,
-            REGEXP_REPLACE(customer_telepon,'[^0-9]','') COLLATE utf8mb4_unicode_ci
-          ) AS customer_key
-        FROM rekap_transaksi_reguler r
-        WHERE DATE(r.tgl_terima) >= ?
-          AND r.nama_item NOT LIKE '%haji%'
-      ),
-      final AS (
-        SELECT
-          c.status_pelanggan,
-          CASE WHEN tb.customer_key IS NOT NULL THEN 1 ELSE 0 END AS aktif_periode_besar
-        FROM cust c
-        LEFT JOIN txn_big tb ON c.customer_key = tb.customer_key
-        LEFT JOIN txn_after_cutoff ta ON c.customer_key = ta.customer_key
-      )
-      SELECT
-        SUM(status_pelanggan='Pelanggan Baru' AND aktif_periode_besar=1) AS new_customer_transaksi
-      FROM final
-    `;
+    const [[row]] = await safeMyWaschenQuery(
+      `SELECT COUNT(*) AS new_customer_transaksi
+       FROM mst_customer c
+       WHERE c.created_at >= ? AND c.created_at <= ?
+         AND c.name NOT LIKE '%haji%' AND c.name NOT LIKE '%tni%'
+         AND c.name NOT LIKE '%dumm%' AND c.name NOT LIKE '%tes%'
+         AND EXISTS (
+           SELECT 1
+           FROM tr_transaction t
+           JOIN tr_transaction_detail d ON d.transaction_id = t.id
+           WHERE t.customer_id = c.id
+             AND t.is_delete_requested = 0
+             AND t.order_date >= ? AND t.order_date <= ?
+             AND COALESCE(d.service_name, '') NOT LIKE '%haji%'
+         )`,
+      [`${obsStart} 00:00:00`, `${obsEnd} 23:59:59`, `${obsStart} 00:00:00`, `${obsEnd} 23:59:59`]
+    );
 
-    const [rows] = await safeSmartlinkQuery(sql, [
-      obsStart, obsEnd, // cust: terdaftar_sejak BETWEEN
-      obsEnd,           // cust: terdaftar_sejak <=
-      obsStart, obsEnd, // txn_big: tgl_terima BETWEEN
-      obsStart,         // txn_after_cutoff: tgl_terima >=
-    ]);
-
-    const newCustomerTransaksi = rows.length > 0 ? Number(rows[0].new_customer_transaksi) || 0 : 0;
+    const newCustomerTransaksi = Number(row?.new_customer_transaksi) || 0;
     const actualCustomer = existingCustomer + newCustomerTransaksi;
     const percentage = targetCustomer > 0 ? Math.round((actualCustomer / targetCustomer) * 100) : 0;
 
@@ -328,6 +223,8 @@ export const getCustomerTargets = async (req, res) => {
         actual_customer: actualCustomer,
         target_customer: targetCustomer,
         percentage,
+        new_customer: newCustomerTransaksi,
+        existing_customer: existingCustomer,
         obs_start: obsStart,
         obs_end: obsEnd,
         year: currentYear,

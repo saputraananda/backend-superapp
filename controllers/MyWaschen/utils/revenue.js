@@ -39,6 +39,14 @@ export const REVENUE_PAYMENTS_SQL = `
 export const revenuePaymentParams = (from, to) => [from, to, from, to];
 
 /**
+ * Bagi hasil Cleanox: nota yang punya item Cleanox (tr_transaction_detail.is_cleanox = 1) hanya 30% yang
+ * menjadi revenue Waschen (70% milik Cleanox). Per nota, sama seperti rumus Alsa
+ * (`getAdjustedSales`: (actual − cleanox) + 0,30 × cleanox). Nota lain 100%.
+ */
+export const WASCHEN_SHARE = (alias = "t") =>
+  `(CASE WHEN EXISTS (SELECT 1 FROM tr_transaction_detail cx WHERE cx.transaction_id = ${alias}.id AND cx.is_cleanox = 1) THEN 0.30 ELSE 1 END)`;
+
+/**
  * Awal rentang pembayaran shift = tepat setelah closing shift sebelumnya di outlet itu (fallback
  * opened_at). Sama dengan POS: selain Frontliner boleh menerima pembayaran saat tidak ada shift
  * terbuka, dan uang di sela antar-shift jadi tanggung jawab shift berikutnya.

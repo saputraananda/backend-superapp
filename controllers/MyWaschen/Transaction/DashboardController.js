@@ -1,6 +1,6 @@
 import { safeMyWaschenQuery } from "../../../db/pool.js";
 import { defaultCutoffDateRange } from "../utils/cutoffHelpers.js";
-import { REVENUE_PAYMENTS_SQL, revenuePaymentParams, TUNAI_SQL } from "../utils/revenue.js";
+import { REVENUE_PAYMENTS_SQL, revenuePaymentParams, TUNAI_SQL, WASCHEN_SHARE } from "../utils/revenue.js";
 
 /**
  * Filter nota berdasarkan tanggal order (operasional).
@@ -47,14 +47,6 @@ function buildRevenueSource({ outletId, dateFrom, dateTo }) {
     params,
   };
 }
-
-/**
- * Bagi hasil Cleanox: nota yang punya item Cleanox (tr_transaction_detail.is_cleanox = 1) hanya 30% yang
- * menjadi revenue Waschen (70% milik Cleanox). Per nota, sama seperti rumus Alsa
- * (`getAdjustedSales`: (actual − cleanox) + 0,30 × cleanox). Nota lain 100%.
- */
-const WASCHEN_SHARE = (alias = "t") =>
-  `(CASE WHEN EXISTS (SELECT 1 FROM tr_transaction_detail cx WHERE cx.transaction_id = ${alias}.id AND cx.is_cleanox = 1) THEN 0.30 ELSE 1 END)`;
 
 /** Nominal revenue Waschen per baris pembayaran × bagian Waschen. */
 const REVENUE_AMOUNT = () => `rp.amount * ${WASCHEN_SHARE("t")}`;
