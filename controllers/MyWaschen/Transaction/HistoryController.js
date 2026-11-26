@@ -267,8 +267,10 @@ export const getTransactions = async (req, res) => {
     const where = [];
     const params = [];
 
-    if (listType === "delete") {
-      where.push("t.is_delete_requested = 1");
+    const isDeleteList = listType === "delete";
+    if (isDeleteList) {
+      // Pengajuan aktif/disetujui + riwayat yang ditolak (ditolak → is_delete_requested kembali 0, status 2)
+      where.push("(t.is_delete_requested = 1 OR t.delete_approval_status = 2)");
     } else if (!includeDeleted) {
       where.push("t.is_delete_requested = 0");
     }
@@ -292,16 +294,18 @@ export const getTransactions = async (req, res) => {
         params.push(paymentStatus);
       }
     }
+    // Daftar pengajuan hapus difilter menurut waktu pengajuan, bukan tanggal nota
+    const dateCol = isDeleteList ? "t.delete_requested_at" : "t.order_date";
     if (date) {
-      where.push("DATE(t.order_date) = ?");
-      params.push(date);
+      where.push(`${dateCol} >= ? AND ${dateCol} <= ?`);
+      params.push(`${date} 00:00:00`, `${date} 23:59:59`);
     } else {
       if (dateFrom) {
-        where.push("t.order_date >= ?");
+        where.push(`${dateCol} >= ?`);
         params.push(`${dateFrom} 00:00:00`);
       }
       if (dateTo) {
-        where.push("t.order_date <= ?");
+        where.push(`${dateCol} <= ?`);
         params.push(`${dateTo} 23:59:59`);
       }
     }
@@ -359,7 +363,7 @@ export const getTransactions = async (req, res) => {
       );
     } else {
       [rows] = await safeMyWaschenQuery(
-        `${TXN_SELECT} ${whereSql} ORDER BY t.order_date DESC, t.id DESC LIMIT 500`,
+        `${TXN_SELECT} ${whereSql} ORDER BY ${isDeleteList ? "t.delete_requested_at DESC," : ""} t.order_date DESC, t.id DESC LIMIT 500`,
         params
       );
     }
@@ -770,42 +774,69 @@ export const requestDeleteTransaction = async (req, res) => {
   }
 };
 
-/** PATCH /waschen/transactions/:id/approve-delete — approve by mst_employee */
+/**
+ * Jejak keputusan pengajuan hapus ditempel ke delete_reason (tidak ada kolom khusus):
+ *   [APPROVED|REJECTED by <NIK> — <nama> @ <ISO>] Catatan: <catatan opsional>
+ * Format tag lama "[APPROVED by …]" tetap sama agar parser POS/SuperApp lama tetap jalan.
+ */
+function deleteDecisionTag(kind, employee, notes) {
+  const clean = String(notes || "").replace(/\s+/g, " ").trim().slice(0, 300);
+  return `[${kind} by ${employee.employee_code} — ${employee.full_name} @ ${new Date().toISOString()}]${clean ? ` Catatan: ${clean}` : ""}`;
+}
+
+async function loadDeleteRequestForDecision(conn, id) {
+  const [rows] = await conn.query(
+    "SELECT * FROM tr_transaction WHERE id = ? OR order_no = ? LIMIT 1 FOR UPDATE",
+    [id, id]
+  );
+  if (!rows.length) {
+    const err = new Error("Nota tidak ditemukan");
+    err.status = 404;
+    throw err;
+  }
+  const order = rows[0];
+  if (!order.is_delete_requested) {
+    const err = new Error(
+      Number(order.delete_approval_status) === 2 ? "Pengajuan hapus sudah ditolak" : "Nota tidak dalam pengajuan hapus"
+    );
+    err.status = 400;
+    throw err;
+  }
+  if (Number(order.delete_approval_status) === 1) {
+    const err = new Error("Pengajuan hapus sudah disetujui");
+    err.status = 400;
+    throw err;
+  }
+  return order;
+}
+
+/** PATCH /waschen/transactions/:id/approve-delete { notes? } — approve by karyawan login */
 export const approveDeleteTransaction = async (req, res) => {
+  let conn;
   try {
     const { id } = req.params;
     const employee = await sessionEmployee(req);
+    const notes = String(req.body?.notes || "").trim();
 
-    const [rows] = await safeMyWaschenQuery(
-      "SELECT * FROM tr_transaction WHERE id = ? OR order_no = ? LIMIT 1",
-      [id, id]
-    );
-    if (!rows.length) {
-      return res.status(404).json({ success: false, message: "Nota tidak ditemukan" });
-    }
-    const order = rows[0];
-    if (!order.is_delete_requested) {
-      return res.status(400).json({ success: false, message: "Nota tidak dalam pengajuan hapus" });
-    }
-    if (Number(order.delete_approval_status) === 1) {
-      return res.status(400).json({ success: false, message: "Pengajuan hapus sudah disetujui" });
-    }
+    conn = await myWaschenPool.getConnection();
+    await conn.beginTransaction();
+    const order = await loadDeleteRequestForDecision(conn, id);
 
-    const note = `[APPROVED by ${employee.employee_code} — ${employee.full_name} @ ${new Date().toISOString()}]`;
-    await safeMyWaschenQuery(
+    await conn.query(
       `UPDATE tr_transaction SET
          delete_approval_status = 1,
          delete_reason = CONCAT(COALESCE(delete_reason, ''), '\n', ?),
          updated_at = NOW()
        WHERE id = ?`,
-      [note, order.id]
+      [deleteDecisionTag("APPROVED", employee, notes), order.id]
     );
 
-    await safeMyWaschenQuery(
+    await conn.query(
       `INSERT INTO tr_transaction_status_log (transaction_id, status, employee_id, notes)
        VALUES (?, 'Dibatalkan', ?, ?)`,
-      [order.id, employee.employee_id, `Approve hapus nota oleh ${employee.full_name}`]
+      [order.id, employee.employee_id, `Approve hapus nota oleh ${employee.full_name}${notes ? ` — ${notes.slice(0, 200)}` : ""}`]
     );
+    await conn.commit();
 
     res.json({
       success: true,
@@ -821,8 +852,62 @@ export const approveDeleteTransaction = async (req, res) => {
       },
     });
   } catch (err) {
+    if (conn) await conn.rollback().catch(() => {});
     console.error("approveDeleteTransaction error:", err);
     res.status(err.status || 500).json({ success: false, message: err.message });
+  } finally {
+    if (conn) conn.release();
+  }
+};
+
+/**
+ * PATCH /waschen/transactions/:id/reject-delete { notes? }
+ * Tolak pengajuan hapus: nota kembali aktif (is_delete_requested = 0 → ikut revenue lagi),
+ * delete_approval_status = 2 sebagai jejak "Ditolak" (kasir boleh mengajukan ulang).
+ * Refund otomatis "Hapus Nota" yang masih Pending ikut ditolak.
+ */
+export const rejectDeleteTransaction = async (req, res) => {
+  let conn;
+  try {
+    const { id } = req.params;
+    const employee = await sessionEmployee(req);
+    const notes = String(req.body?.notes || "").trim();
+
+    conn = await myWaschenPool.getConnection();
+    await conn.beginTransaction();
+    const order = await loadDeleteRequestForDecision(conn, id);
+
+    await conn.query(
+      `UPDATE tr_transaction SET
+         is_delete_requested = 0,
+         delete_approval_status = 2,
+         delete_reason = CONCAT(COALESCE(delete_reason, ''), '\n', ?),
+         updated_at = NOW()
+       WHERE id = ?`,
+      [deleteDecisionTag("REJECTED", employee, notes), order.id]
+    );
+    const [refundRes] = await conn.query(
+      `UPDATE tr_transaction_refund SET
+         status = 'Rejected',
+         reviewed_by_employee_id = ?,
+         reviewed_at = NOW(),
+         decline_notes = ?
+       WHERE transaction_id = ? AND source = 'Hapus Nota' AND status = 'Pending'`,
+      [employee.employee_id, `Pengajuan hapus nota ditolak${notes ? ` — ${notes}` : ""}`.slice(0, 500), order.id]
+    );
+    await conn.commit();
+
+    res.json({
+      success: true,
+      message: `Pengajuan hapus nota ${order.order_no} ditolak — nota kembali aktif`,
+      data: { transactionId: order.id, orderNo: order.order_no, refundsRejected: refundRes.affectedRows || 0 },
+    });
+  } catch (err) {
+    if (conn) await conn.rollback().catch(() => {});
+    console.error("rejectDeleteTransaction error:", err);
+    res.status(err.status || 500).json({ success: false, message: err.message });
+  } finally {
+    if (conn) conn.release();
   }
 };
 
@@ -1392,6 +1477,10 @@ export const getTransactionSummary = async (_req, res) => {
       safeMyWaschenQuery("SELECT COUNT(*) AS c FROM tr_transaction_refund WHERE status = 'Pending'"),
       safeMyWaschenQuery("SELECT COUNT(*) AS c FROM tr_transaction_refund WHERE status <> 'Pending'"),
     ]);
+    // Request Hapus Pelunasan menunggu (tabel bisa belum ada bila migrasi belum dijalankan)
+    const voidPending = await safeMyWaschenQuery("SELECT COUNT(*) AS c FROM tr_payment_void_request WHERE status = 'Pending'")
+      .then(([r]) => num(r[0]?.c))
+      .catch(() => 0);
 
     res.json({
       success: true,
@@ -1403,6 +1492,7 @@ export const getTransactionSummary = async (_req, res) => {
         refundPending: num(refPending[0]?.c),
         refundReviewed: num(refReviewed[0]?.c),
         refundTotal: num(refPending[0]?.c) + num(refReviewed[0]?.c),
+        voidPending,
       },
     });
   } catch (err) {
