@@ -331,21 +331,30 @@ export const getTransactions = async (req, res) => {
     let total = null;
     let tabCounts = null;
     if (paged) {
-      const [[countRow]] = await safeMyWaschenQuery(
-        `SELECT COUNT(*) AS total FROM tr_transaction t LEFT JOIN mst_customer c ON c.id = t.customer_id ${whereSql}`,
-        params
-      );
-      total = num(countRow?.total);
+      // Kolom customer hanya dibutuhkan WHERE saat mencari; tanpa join hitungan ~4x lebih cepat.
+      const countFrom = `FROM tr_transaction t${search ? " LEFT JOIN mst_customer c ON c.id = t.customer_id" : ""}`;
       const bandSums = Object.entries(WORK_TAB_COUNT_KEYS)
         .map(([key, sql]) => `SUM(CASE WHEN ${sql} THEN 1 ELSE 0 END) AS \`${key}\``)
         .join(", ");
+      // Satu query hitung: badge per tab + total (total = tab terpilih, atau Semua)
       const [[countsRow]] = await safeMyWaschenQuery(
-        `SELECT COUNT(*) AS \`Semua\`, ${bandSums} FROM tr_transaction t LEFT JOIN mst_customer c ON c.id = t.customer_id ${baseWhereSql}`,
+        `SELECT COUNT(*) AS \`Semua\`, ${bandSums} ${countFrom} ${baseWhereSql}`,
         baseParams
       );
       tabCounts = Object.fromEntries(Object.entries(countsRow || {}).map(([k, v]) => [k, num(v)]));
+      const bandKey = bandSql
+        ? Object.keys(WORK_TAB_COUNT_KEYS).find((k) => WORK_TAB_COUNT_KEYS[k] === bandSql)
+        : "Semua";
+      total = num(tabCounts[bandKey]);
+      // Ambil 50 id dulu (pakai indeks order_date), baru gabung kolom lengkap + subquery hanya untuk
+      // baris halaman ini. Tanpa ini MySQL menghitung subquery seluruh nota (semua periode ±4 detik).
       [rows] = await safeMyWaschenQuery(
-        `${TXN_SELECT} ${whereSql} ORDER BY t.order_date DESC, t.id DESC LIMIT ? OFFSET ?`,
+        `${TXN_SELECT}
+         JOIN (
+           SELECT t.id ${countFrom} ${whereSql}
+           ORDER BY t.order_date DESC, t.id DESC LIMIT ? OFFSET ?
+         ) pg ON pg.id = t.id
+         ORDER BY t.order_date DESC, t.id DESC`,
         [...params, pageSize, (page - 1) * pageSize]
       );
     } else {

@@ -289,7 +289,7 @@ async function loadDailyWork(ids, startDate, endDate) {
        WHERE t.cashier_employee_id IN (${inIds}) AND t.order_date BETWEEN ? AND ? AND ${notDeleted}
          AND COALESCE(d.item_work_status, '') <> 'Dibatalkan'`,
       [...ids, from, to]),
-    // Satu baris progress = satu pengerjaan (QC) item di satu tahap. Yang dibatalkan tidak dihitung.
+    // Satu baris progress = satu pengerjaan (QC) item di satu tahap. Yang dibatalkan & "Dilewati" (skipped) tidak dihitung.
     safeMyWaschenQuery(
       `SELECT p.id, p.employee_id, p.stage, p.status, p.qc_status, p.transaction_detail_id,
               COALESCE(p.completed_at, p.created_at) AS worked_at,
@@ -297,7 +297,7 @@ async function loadDailyWork(ids, startDate, endDate) {
        FROM tr_item_progress p
        JOIN tr_transaction_detail d ON d.id = p.transaction_detail_id
        JOIN tr_transaction t ON t.id = p.transaction_id
-       WHERE p.employee_id IN (${inIds}) AND COALESCE(p.status, '') <> 'cancelled'
+       WHERE p.employee_id IN (${inIds}) AND COALESCE(p.status, '') NOT IN ('cancelled', 'skipped')
          AND COALESCE(p.completed_at, p.created_at) BETWEEN ? AND ? AND ${notDeleted}
        ORDER BY worked_at ASC, p.id ASC`,
       [...ids, from, to]),
