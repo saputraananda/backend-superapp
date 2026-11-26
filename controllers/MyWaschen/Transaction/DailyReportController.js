@@ -1,6 +1,6 @@
 import { safeMyWaschenQuery, safeQuery } from "../../../db/pool.js";
 import { posFileUrl } from "../utils/waschenPosUpload.js";
-import { getShiftRevenue } from "../utils/revenue.js";
+import { getShiftPaymentFrom, getShiftRevenue } from "../utils/revenue.js";
 
 /** Batas upload bukti setoran tunai: H+1 dari tanggal closing (sama dengan POS). */
 const DEPOSIT_DUE_DAYS = 1;
@@ -138,7 +138,7 @@ async function loadShiftTransactions(shift) {
      LEFT JOIN tr_shift_txn_verify v ON v.transaction_id = t.id AND v.shift_id = ?
      WHERE t.outlet_id = ? AND t.is_delete_requested = 0
      ORDER BY p.last_paid_at ASC`,
-    [shift.opened_at, shift.closed_at || null, shift.id, shift.outlet_id]
+    [await getShiftPaymentFrom(shift), shift.closed_at || null, shift.id, shift.outlet_id]
   );
   // Nama pembuat nota (untuk kolom "Pembuat Nota" di export Excel)
   const creatorNames = await getEmployeeNameMap(rows.map((r) => r.cashier_employee_id));

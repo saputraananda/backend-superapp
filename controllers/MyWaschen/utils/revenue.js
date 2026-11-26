@@ -38,16 +38,34 @@ export const REVENUE_PAYMENTS_SQL = `
 
 export const revenuePaymentParams = (from, to) => [from, to, from, to];
 
-/** Revenue shift: pembayaran outlet itu antara opened_at dan closed_at (atau sekarang). */
+/**
+ * Awal rentang pembayaran shift = tepat setelah closing shift sebelumnya di outlet itu (fallback
+ * opened_at). Sama dengan POS: selain Frontliner boleh menerima pembayaran saat tidak ada shift
+ * terbuka, dan uang di sela antar-shift jadi tanggung jawab shift berikutnya.
+ */
+export async function getShiftPaymentFrom(shift) {
+  if (!shift?.opened_at) return shift?.opened_at || null;
+  const [rows] = await safeMyWaschenQuery(
+    `SELECT DATE_ADD(MAX(closed_at), INTERVAL 1 SECOND) AS from_at
+     FROM tr_cashier_shift
+     WHERE outlet_id = ? AND id <> ? AND status = 'Closed'
+       AND closed_at IS NOT NULL AND closed_at <= ?`,
+    [shift.outlet_id, shift.id || 0, shift.opened_at]
+  );
+  return rows?.[0]?.from_at || shift.opened_at;
+}
+
+/** Revenue shift: pembayaran outlet itu sejak closing shift sebelumnya sampai closed_at (atau sekarang). */
 export async function getShiftRevenue(shift) {
   const until = shift.closed_at || "9999-12-31 23:59:59";
+  const from = await getShiftPaymentFrom(shift);
   const [rows] = await safeMyWaschenQuery(
     `SELECT rp.method, SUM(rp.amount) AS amount
      FROM (${REVENUE_PAYMENTS_SQL}) rp
      JOIN tr_transaction t ON t.id = rp.transaction_id
      WHERE t.outlet_id = ? AND t.is_delete_requested = 0
      GROUP BY rp.method`,
-    [...revenuePaymentParams(shift.opened_at, until), shift.outlet_id]
+    [...revenuePaymentParams(from, until), shift.outlet_id]
   );
   let tunai = 0;
   let nonTunai = 0;
