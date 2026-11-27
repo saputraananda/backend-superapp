@@ -27,7 +27,7 @@ async function getSessionEmployee(req) {
 
 /**
  * GET /api/pm2/chat/contacts
- * Mengambil daftar rekan kerja di perusahaan yang sama beserta unread & last message info
+ * Mengambil daftar seluruh karyawan aktif (lintas company) beserta unread & last message info
  */
 export async function listChatContacts(req, res) {
   if (!requireAuth(req, res)) return;
@@ -70,15 +70,13 @@ export async function listChatContacts(req, res) {
          ) AS unread
        FROM mst_employee e
        LEFT JOIN mst_job_level jl ON jl.job_level_id = e.job_level_id
-       WHERE e.company_id = ?
-         AND e.employee_id != ?
+       WHERE e.employee_id != ?
          AND e.is_deleted = 0
        ORDER BY lastMsgTime DESC, name ASC`,
       [
         emp.employee_id, emp.employee_id,
         emp.employee_id, emp.employee_id,
         emp.employee_id,
-        emp.company_id,
         emp.employee_id
       ]
     );
