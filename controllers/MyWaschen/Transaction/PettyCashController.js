@@ -1,5 +1,6 @@
 import { safeMyWaschenQuery, safeQuery } from "../../../db/pool.js";
 import { notifyPosPettyCashUpdated } from "../utils/notifyPosPettyCash.js";
+import { posFileUrl } from "../utils/waschenPosUpload.js";
 
 function num(v, fallback = 0) {
   const n = Number(v);
@@ -51,7 +52,8 @@ function mapPettyCashRow(row, empMap = {}) {
     balanceBefore: num(row.balance_before),
     balanceAfter: num(row.balance_after),
     description: row.description,
-    receiptPhotoUrl: row.receipt_photo_url,
+    // Foto bukti disimpan di server POS (/uploads/evidence-petty-cash/...) → URL absolut POS
+    receiptPhotoUrl: posFileUrl(row.receipt_photo_url),
     status: row.status || "Pengajuan",
     approvedByEmployeeId: row.approved_by_employee_id,
     approvedByName: row.approved_by_employee_id ? empMap[row.approved_by_employee_id] || null : null,
@@ -231,7 +233,10 @@ export const getPettyCashList = async (req, res) => {
     const search = String(req.query.search || "").trim();
     const dateFrom = String(req.query.dateFrom || "").slice(0, 10);
     const dateTo = String(req.query.dateTo || "").slice(0, 10);
-    const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 100));
+    // all=1 → untuk download Excel sesuai filter (tanpa batas tampilan 200 baris)
+    const limit = req.query.all === "1"
+      ? 10000
+      : Math.min(200, Math.max(1, Number(req.query.limit) || 100));
 
     const where = [];
     const params = [];

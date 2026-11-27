@@ -1,6 +1,6 @@
 import { safeMyWaschenQuery } from "../../../db/pool.js";
 import { defaultCutoffDateRange } from "../utils/cutoffHelpers.js";
-import { REVENUE_PAYMENTS_SQL, revenuePaymentParams, TUNAI_SQL, WASCHEN_SHARE } from "../utils/revenue.js";
+import { REVENUE_PAYMENTS_SQL, revenuePaymentParams, TUNAI_SQL } from "../utils/revenue.js";
 
 /**
  * Filter nota berdasarkan tanggal order (operasional).
@@ -48,8 +48,11 @@ function buildRevenueSource({ outletId, dateFrom, dateTo }) {
   };
 }
 
-/** Nominal revenue Waschen per baris pembayaran × bagian Waschen. */
-const REVENUE_AMOUNT = () => `rp.amount * ${WASCHEN_SHARE("t")}`;
+/**
+ * Nominal revenue per baris pembayaran = 100% uang masuk, sama dengan Dashboard POS
+ * (keputusan user 2026-11-27). Bagi hasil Cleanox 30% tidak dipotong di dashboard ini.
+ */
+const REVENUE_AMOUNT = () => `rp.amount`;
 
 /** Porsi item terhadap nota (membagi pembayaran ke kategori / layanan secara proporsional). */
 const ITEM_RATIO = `(td.subtotal / NULLIF((SELECT SUM(x.subtotal) FROM tr_transaction_detail x WHERE x.transaction_id = td.transaction_id), 0))`;

@@ -5,8 +5,14 @@ import { getShiftPaymentFrom, getShiftRevenue } from "../utils/revenue.js";
 /** Batas upload bukti setoran tunai: H+1 dari tanggal closing (sama dengan POS). */
 const DEPOSIT_DUE_DAYS = 1;
 
-/** YYYY-MM-DD menurut kalender WIB. */
+/**
+ * YYYY-MM-DD menurut kalender WIB.
+ * Pool memakai dateStrings: DATETIME dari DB sudah berupa teks WIB ("2026-11-26 23:59:59") →
+ * ambil tanggalnya langsung. Jangan di-parse new Date(): di server prod (UTC) teks itu dibaca
+ * sebagai jam UTC lalu bergeser +7 jam ke hari berikutnya.
+ */
 function wibDateKey(value) {
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}/.test(value)) return value.slice(0, 10);
   const d = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(d.getTime())) return null;
   return new Intl.DateTimeFormat("en-CA", {
@@ -22,16 +28,32 @@ function dayDiff(laterKey, earlierKey) {
   return Math.round((Date.parse(`${laterKey}T00:00:00Z`) - Date.parse(`${earlierKey}T00:00:00Z`)) / 86400000);
 }
 
-/** Status setoran tunai closing Final: null jika bukan closing Final. */
-function buildDepositInfo(row, nameMap) {
+/** Baris "TUNAI : Rp ..." di report closing kasir (null bila tidak ada). */
+function parseReportTunai(text) {
+  const m = String(text || "").match(/^TUNAI\s*:\s*Rp\s*([\d.,]+)/m);
+  if (!m) return null;
+  const n = Number(m[1].replace(/\./g, "").replace(",", "."));
+  return Number.isFinite(n) ? n : null;
+}
+
+const isAutoClosed = (row) => !row.closed_by_employee_id && String(row.closing_notes || "").startsWith("Ditutup otomatis");
+
+/**
+ * Status setoran tunai closing Final (sama dengan POS): null jika bukan closing Final.
+ * Nominal setor = tunai sistem di rentang shift; tunai 0 → "none" (Tidak Perlu Setor), tidak bisa terlambat.
+ */
+function buildDepositInfo(row, nameMap, cashRevenue = null) {
   if (row.status !== "Closed" || row.close_type !== "Final" || !row.closed_at) return null;
   const uploaded = Boolean(row.deposit_proof_url);
+  const noCash = !uploaded && cashRevenue != null && Math.round(Number(cashRevenue)) <= 0;
   const refKey = uploaded
     ? wibDateKey(row.deposit_uploaded_at) || wibDateKey(new Date())
     : wibDateKey(new Date());
-  const lateDays = Math.max(0, dayDiff(refKey, wibDateKey(row.closed_at)) - DEPOSIT_DUE_DAYS);
+  const lateDays = noCash ? 0 : Math.max(0, dayDiff(refKey, wibDateKey(row.closed_at)) - DEPOSIT_DUE_DAYS);
   return {
-    status: uploaded ? "uploaded" : "pending",
+    status: uploaded ? "uploaded" : (noCash ? "none" : "pending"),
+    cashAmount: cashRevenue,
+    cashReported: parseReportTunai(row.report_text),
     isLate: lateDays > 0,
     lateDays,
     proofUrl: posFileUrl(row.deposit_proof_url),
@@ -99,9 +121,11 @@ async function enrichShiftRow(row, nameMap) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     openerName: formatEmployeeLabel(row.cashier_employee_id, nameMap),
-    closedByName: formatEmployeeLabel(row.closed_by_employee_id, nameMap),
+    closedByName: formatEmployeeLabel(row.closed_by_employee_id, nameMap)
+      || (isAutoClosed(row) ? "Sistem (otomatis ganti hari)" : null),
+    autoClosed: isAutoClosed(row),
     lastActiveName: formatEmployeeLabel(row.last_active_employee_id, nameMap),
-    deposit: buildDepositInfo(row, nameMap),
+    deposit: buildDepositInfo(row, nameMap, rev.tunai),
     outletCode: row.outlet_code,
     outletName: row.outlet_name,
     outletFullName: row.outlet_full_name,
