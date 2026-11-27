@@ -177,7 +177,7 @@ export const getServices = async (req, res) => {
                WHERE so.service_id = s.id AND so.is_active = 1
                  AND (so.name IS NOT NULL OR so.category_id IS NOT NULL OR so.unit_id IS NOT NULL OR so.unit IS NOT NULL
                       OR so.price IS NOT NULL OR so.regular_duration_days IS NOT NULL
-                      OR so.min_order_qty IS NOT NULL OR so.dc_price_add IS NOT NULL)) AS custom_outlet_count
+                      OR so.min_order_qty IS NOT NULL OR so.dc_price_add IS NOT NULL OR so.is_dc_required IS NOT NULL)) AS custom_outlet_count
        FROM mst_service s
        LEFT JOIN mst_service_category c ON s.category_id = c.id
        LEFT JOIN mst_unit u ON s.unit_id = u.id
@@ -405,7 +405,9 @@ export const getOutletServices = async (req, res) => {
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
     const [rows] = await safeMyWaschenQuery(
-      `SELECT s.id, s.code, s.is_active AS master_active, s.is_cleanox, s.is_featured, s.is_dc_required,
+      `SELECT s.id, s.code, s.is_active AS master_active, s.is_cleanox, s.is_featured,
+              s.is_dc_required AS master_is_dc_required, so.is_dc_required AS override_is_dc_required,
+              COALESCE(so.is_dc_required, s.is_dc_required) AS is_dc_required,
               s.name AS master_name, s.category_id AS master_category_id, mc.name AS master_category_name,
               s.unit_id AS master_unit_id, COALESCE(s.unit, mu.symbol) AS master_unit,
               s.price AS master_price, s.regular_duration_days AS master_duration_days,
@@ -467,19 +469,23 @@ export const upsertOutletService = async (req, res) => {
       if (!cat.length) return res.status(400).json({ success: false, message: "Kategori tidak ditemukan" });
     }
     const unitId = b.unit_id ? Number(b.unit_id) : null;
+    // Wajib DC per outlet: kosong = ikut master, 1 = wajib DC, 0 = bebas (WC/DC)
+    const dcRequired = b.is_dc_required === "" || b.is_dc_required === null || b.is_dc_required === undefined
+      ? null : Number(b.is_dc_required) === 1 ? 1 : 0;
     const isActive = b.is_active === undefined ? 1 : Number(b.is_active) === 1 ? 1 : 0;
 
     await safeMyWaschenQuery(
       `INSERT INTO mst_service_outlet
-         (service_id, outlet_id, name, category_id, unit_id, unit, price, regular_duration_days, min_order_qty, dc_price_add, is_active)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         (service_id, outlet_id, name, category_id, unit_id, unit, price, regular_duration_days, min_order_qty, dc_price_add, is_dc_required, is_active)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
          name = VALUES(name), category_id = VALUES(category_id), unit_id = VALUES(unit_id), unit = VALUES(unit),
          price = VALUES(price), regular_duration_days = VALUES(regular_duration_days),
-         min_order_qty = VALUES(min_order_qty), dc_price_add = VALUES(dc_price_add), is_active = VALUES(is_active)`,
+         min_order_qty = VALUES(min_order_qty), dc_price_add = VALUES(dc_price_add),
+         is_dc_required = VALUES(is_dc_required), is_active = VALUES(is_active)`,
       [
         serviceId, outletId, overrideText(b.name), categoryId, unitId, overrideText(b.unit),
-        price.value, duration.value, minOrder.value, dcAdd.value, isActive,
+        price.value, duration.value, minOrder.value, dcAdd.value, dcRequired, isActive,
       ]
     );
     res.json({ success: true, message: "Layanan outlet berhasil disimpan" });
