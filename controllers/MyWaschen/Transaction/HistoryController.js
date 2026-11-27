@@ -1,6 +1,7 @@
 import { safeMyWaschenQuery, safeQuery, myWaschenPool } from "../../../db/pool.js";
 import { buildProduksiPhotoUrl } from "../HRIS/hrisAssetHelpers.js";
 import { attachQueueNo } from "../utils/queueNo.js";
+import { getMemberNotaInfo } from "../utils/memberNota.js";
 import { loadItemPhotos } from "../utils/itemPhotos.js";
 import { fetchSmartlinkWorkLog, groupSmartlinkWork, isSmartlinkTransaction, smartlinkEmployeeIds } from "../utils/smartlinkWorkLog.js";
 import { posFileUrl, uploadDeleteRequestAttachment, uploadRefundApprovalProof } from "../utils/waschenPosUpload.js";
@@ -423,6 +424,17 @@ export const getTransactions = async (req, res) => {
   } catch (err) {
     console.error("getTransactions error:", err);
     res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/** GET /waschen/transactions/:id/member-info — blok member di cetak nota (null = bukan member) */
+export const getTransactionMemberInfo = async (req, res) => {
+  try {
+    const data = await getMemberNotaInfo((sql, params) => safeMyWaschenQuery(sql, params), req.params.id);
+    res.json({ success: true, data });
+  } catch (err) {
+    console.error("getTransactionMemberInfo error:", err);
+    res.status(500).json({ success: false, message: "Gagal mengambil info member nota" });
   }
 };
 

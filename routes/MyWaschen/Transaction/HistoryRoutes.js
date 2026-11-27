@@ -5,6 +5,7 @@ import { requireAuth } from "../../../middleware/auth.js";
 import {
   getTransactions,
   getTransactionById,
+  getTransactionMemberInfo,
   getTransactionSummary,
   updateTransactionPayment,
   requestDeleteTransaction,
@@ -55,6 +56,7 @@ router.patch("/payment-voids/:voidId/reject", requireAuth, rejectPaymentVoid);
 router.patch("/refunds/:refundId/approve", requireAuth, uploadDeleteAttachment, approveRefundRequest);
 router.patch("/refunds/:refundId/reject", requireAuth, rejectRefundRequest);
 router.get("/", getTransactions);
+router.get("/:id/member-info", getTransactionMemberInfo);
 router.get("/:id", getTransactionById);
 router.patch("/:id/payment", updateTransactionPayment);
 router.patch("/:id/request-delete", uploadDeleteAttachment, requestDeleteTransaction);
