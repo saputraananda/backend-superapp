@@ -1,7 +1,15 @@
 import { safeMyWaschenQuery } from "../../../db/pool.js";
 
 const SORT_COLUMNS = ["id", "code", "name", "tier", "top_up_amount", "validity_days", "created_at"];
-const TIERS = ["Gold", "Diamond"];
+const TIERS = ["Gold", "Platinum", "Diamond"];
+
+/** Outlet paket: kosong = paket umum (NULL); isi = paket khusus outlet (tanpa bonus saldo). */
+async function parseOutletId(v) {
+  const outletId = v === "" || v == null ? null : Number(v);
+  if (outletId === null) return { outletId };
+  const [outlet] = await safeMyWaschenQuery("SELECT id FROM mst_outlet WHERE id = ?", [outletId]);
+  return outlet.length ? { outletId } : { error: "Outlet tidak ditemukan" };
+}
 
 export const getMembershipPackages = async (req, res) => {
   try {
@@ -15,25 +23,37 @@ export const getMembershipPackages = async (req, res) => {
     const params = [];
 
     if (search) {
-      where.push("(code LIKE ? OR name LIKE ? OR description LIKE ?)");
+      where.push("(p.code LIKE ? OR p.name LIKE ? OR p.description LIKE ?)");
       const like = `%${search}%`;
       params.push(like, like, like);
     }
 
     if (tier && TIERS.includes(tier)) {
-      where.push("tier = ?");
+      where.push("p.tier = ?");
       params.push(tier);
     }
 
     if (isActive !== undefined && isActive !== "") {
-      where.push("is_active = ?");
+      where.push("p.is_active = ?");
       params.push(Number(isActive));
+    }
+
+    // outletId: "all" = hanya paket umum; angka = paket umum + paket khusus outlet tsb
+    const outletFilter = String(req.query.outletId || "").trim();
+    if (outletFilter === "all") where.push("p.outlet_id IS NULL");
+    else if (outletFilter) {
+      where.push("(p.outlet_id IS NULL OR p.outlet_id = ?)");
+      params.push(Number(outletFilter));
     }
 
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
     const [rows] = await safeMyWaschenQuery(
-      `SELECT * FROM mst_membership_package ${whereSql} ORDER BY ${sortBy} ${sortDir}, name ASC`,
+      `SELECT p.*, o.name AS outlet_name
+       FROM mst_membership_package p
+       LEFT JOIN mst_outlet o ON o.id = p.outlet_id
+       ${whereSql}
+       ORDER BY p.${sortBy} ${sortDir}, p.name ASC`,
       params
     );
 
@@ -61,6 +81,8 @@ export const getMembershipPackageById = async (req, res) => {
 export const createMembershipPackage = async (req, res) => {
   try {
     const { code, name, tier, top_up_amount, validity_days, description, is_active } = req.body;
+    const outlet = await parseOutletId(req.body.outlet_id);
+    if (outlet.error) return res.status(400).json({ success: false, message: outlet.error });
 
     if (!code?.trim() || !name?.trim() || !top_up_amount) {
       return res.status(400).json({ success: false, message: "Kode, Nama Paket, dan Nominal Top Up wajib diisi" });
@@ -75,12 +97,13 @@ export const createMembershipPackage = async (req, res) => {
     }
 
     const [result] = await safeMyWaschenQuery(
-      `INSERT INTO mst_membership_package (code, name, tier, top_up_amount, validity_days, description, is_active)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO mst_membership_package (code, name, tier, outlet_id, top_up_amount, validity_days, description, is_active)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         formattedCode,
         name.trim(),
         packageTier,
+        outlet.outletId,
         Number(top_up_amount) || 0,
         Number(validity_days) || 180,
         description?.trim() || null,
@@ -99,6 +122,8 @@ export const updateMembershipPackage = async (req, res) => {
   try {
     const { id } = req.params;
     const { code, name, tier, top_up_amount, validity_days, description, is_active } = req.body;
+    const outlet = await parseOutletId(req.body.outlet_id);
+    if (outlet.error) return res.status(400).json({ success: false, message: outlet.error });
 
     const [exist] = await safeMyWaschenQuery("SELECT id FROM mst_membership_package WHERE id = ?", [id]);
     if (!exist.length) {
@@ -127,6 +152,7 @@ export const updateMembershipPackage = async (req, res) => {
        SET code = COALESCE(?, code),
            name = ?,
            tier = ?,
+           outlet_id = ?,
            top_up_amount = ?,
            validity_days = ?,
            description = ?,
@@ -137,6 +163,7 @@ export const updateMembershipPackage = async (req, res) => {
         formattedCode,
         name.trim(),
         packageTier,
+        outlet.outletId,
         Number(top_up_amount) || 0,
         Number(validity_days) || 180,
         description?.trim() || null,

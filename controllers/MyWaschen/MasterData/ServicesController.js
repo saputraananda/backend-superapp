@@ -417,6 +417,8 @@ export const getOutletServices = async (req, res) => {
               so.unit AS override_unit, so.price AS override_price,
               so.regular_duration_days AS override_duration_days, so.min_order_qty AS override_min_order_qty,
               so.dc_price_add AS override_dc_price_add,
+              COALESCE(so.is_special_parfume, 0) AS is_special_parfume,
+              COALESCE(so.go_green_discount, 0) AS go_green_discount,
               COALESCE(so.name, s.name) AS name,
               COALESCE(so.category_id, s.category_id) AS category_id, ec.name AS category_name,
               COALESCE(so.unit, s.unit, eu.symbol) AS unit,
@@ -473,19 +475,27 @@ export const upsertOutletService = async (req, res) => {
     const dcRequired = b.is_dc_required === "" || b.is_dc_required === null || b.is_dc_required === undefined
       ? null : Number(b.is_dc_required) === 1 ? 1 : 0;
     const isActive = b.is_active === undefined ? 1 : Number(b.is_active) === 1 ? 1 : 0;
+    // Khusus outlet (tanpa nilai master): special parfum = parfum berbayar gratis; Go-Green 0 = tidak tersedia
+    const specialParfume = Number(b.is_special_parfume) === 1 ? 1 : 0;
+    const goGreen = b.go_green_discount === "" || b.go_green_discount == null ? 0 : Number(b.go_green_discount);
+    if (!Number.isFinite(goGreen) || goGreen < 0) {
+      return res.status(400).json({ success: false, message: "Potongan Go-Green harus angka 0 atau lebih" });
+    }
 
     await safeMyWaschenQuery(
       `INSERT INTO mst_service_outlet
-         (service_id, outlet_id, name, category_id, unit_id, unit, price, regular_duration_days, min_order_qty, dc_price_add, is_dc_required, is_active)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         (service_id, outlet_id, name, category_id, unit_id, unit, price, regular_duration_days, min_order_qty, dc_price_add, is_dc_required,
+          is_special_parfume, go_green_discount, is_active)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
          name = VALUES(name), category_id = VALUES(category_id), unit_id = VALUES(unit_id), unit = VALUES(unit),
          price = VALUES(price), regular_duration_days = VALUES(regular_duration_days),
          min_order_qty = VALUES(min_order_qty), dc_price_add = VALUES(dc_price_add),
-         is_dc_required = VALUES(is_dc_required), is_active = VALUES(is_active)`,
+         is_dc_required = VALUES(is_dc_required), is_special_parfume = VALUES(is_special_parfume),
+         go_green_discount = VALUES(go_green_discount), is_active = VALUES(is_active)`,
       [
         serviceId, outletId, overrideText(b.name), categoryId, unitId, overrideText(b.unit),
-        price.value, duration.value, minOrder.value, dcAdd.value, dcRequired, isActive,
+        price.value, duration.value, minOrder.value, dcAdd.value, dcRequired, specialParfume, goGreen, isActive,
       ]
     );
     res.json({ success: true, message: "Layanan outlet berhasil disimpan" });

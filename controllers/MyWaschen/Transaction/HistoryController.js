@@ -106,6 +106,9 @@ function mapTransactionRow(row) {
     subtotal: num(row.subtotal),
     speedSurcharge: num(row.speed_surcharge),
     promoName: row.discount_notes || null,
+    // Phase 20: bagian discount_amount dari promo member otomatis (nama = bagian terakhir discount_notes)
+    memberPromoId: row.member_promo_id != null ? Number(row.member_promo_id) : null,
+    memberDiscountAmount: num(row.member_discount_amount),
     speedId: row.speed_id != null ? Number(row.speed_id) : null,
     // speed_id 2 = Express (mst_service_speed); speed_surcharge lama sering tersimpan 0
     isExpress:
